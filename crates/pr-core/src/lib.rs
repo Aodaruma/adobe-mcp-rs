@@ -204,11 +204,16 @@ pub fn general_help_text() -> &'static str {
 
 To use this integration with Premiere Pro, follow these steps:
 
-1. Install the Premiere MCP Bridge CEP extension (via installer script)
+1. Load the Premiere MCP Bridge UXP plugin with Adobe UXP Developer Tool
 2. Open Adobe Premiere Pro
-3. Open Window > Extensions (Legacy) > Premiere MCP Bridge
+3. Open Window > UXP Plugins > Premiere MCP Bridge
 4. Enable "Auto-run commands" in the panel
 5. Use tools from your MCP client and read back results
+
+UXP bridge source:
+- src/premiere/uxp/mcp-bridge-premiere/manifest.json
+
+Legacy CEP bridge is kept as a fallback only.
 
 Best practices:
 - Prefer sequenceName/sequenceIndex to target the right sequence

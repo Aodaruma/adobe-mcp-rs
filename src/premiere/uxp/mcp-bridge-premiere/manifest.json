@@ -1,0 +1,40 @@
+{
+  "id": "io.github.aodaruma.premiere-mcp-bridge",
+  "name": "Premiere MCP Bridge",
+  "shortname": "Premiere MCP",
+  "version": "0.1.0",
+  "main": "index.html",
+  "host": {
+    "app": "premierepro",
+    "minVersion": "25.6.0"
+  },
+  "manifestVersion": 5,
+  "requiredPermissions": {
+    "localFileSystem": "fullAccess"
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "mcpBridgePanel",
+      "minimumSize": {
+        "width": 320,
+        "height": 280
+      },
+      "maximumSize": {
+        "width": 1200,
+        "height": 1200
+      },
+      "preferredDockedSize": {
+        "width": 360,
+        "height": 320
+      },
+      "preferredFloatingSize": {
+        "width": 420,
+        "height": 360
+      },
+      "label": {
+        "default": "Premiere MCP Bridge"
+      }
+    }
+  ]
+}
