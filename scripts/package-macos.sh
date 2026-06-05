@@ -34,6 +34,11 @@ if [[ ! -d "$PREMIERE_CEP_PATH" ]]; then
   echo "Premiere CEP bridge not found: $PREMIERE_CEP_PATH" >&2
   exit 1
 fi
+PREMIERE_UXP_PATH="$REPO_ROOT/src/premiere/uxp/mcp-bridge-premiere"
+if [[ ! -d "$PREMIERE_UXP_PATH" ]]; then
+  echo "Premiere UXP bridge not found: $PREMIERE_UXP_PATH" >&2
+  exit 1
+fi
 
 STAGE_DIR="$OUTPUT_DIR/stage"
 mkdir -p "$STAGE_DIR"
@@ -44,6 +49,8 @@ chmod +x "$STAGE_DIR/pr-mcp"
 cp "$BRIDGE_PANEL_PATH" "$STAGE_DIR/mcp-bridge-auto.jsx"
 mkdir -p "$STAGE_DIR/premiere-cep"
 cp -R "$PREMIERE_CEP_PATH" "$STAGE_DIR/premiere-cep/mcp-bridge-premiere"
+mkdir -p "$STAGE_DIR/premiere-uxp"
+cp -R "$PREMIERE_UXP_PATH" "$STAGE_DIR/premiere-uxp/mcp-bridge-premiere"
 
 ARCHIVE_PATH="$OUTPUT_DIR/after-effects-mcp-rs-macos-universal.tar.gz"
 tar -C "$STAGE_DIR" -czf "$ARCHIVE_PATH" .
@@ -70,6 +77,8 @@ cp "$STAGE_DIR/pr-mcp" "$INSTALL_BIN_DIR/pr-mcp"
 cp "$STAGE_DIR/mcp-bridge-auto.jsx" "$INSTALL_SHARE_DIR/mcp-bridge-auto.jsx"
 mkdir -p "$INSTALL_SHARE_DIR/premiere-cep"
 cp -R "$STAGE_DIR/premiere-cep/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere-cep/mcp-bridge-premiere"
+mkdir -p "$INSTALL_SHARE_DIR/premiere-uxp"
+cp -R "$STAGE_DIR/premiere-uxp/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere-uxp/mcp-bridge-premiere"
 
 PKG_PATH="$OUTPUT_DIR/after-effects-mcp-rs-macos-universal.pkg"
 PKG_SCRIPTS_DIR="$OUTPUT_DIR/pkgscripts"
@@ -80,6 +89,7 @@ set -euo pipefail
 
 SOURCE_SCRIPT="/usr/local/share/ae-mcp/mcp-bridge-auto.jsx"
 PREMIERE_CEP_SOURCE="/usr/local/share/ae-mcp/premiere-cep/mcp-bridge-premiere"
+PREMIERE_UXP_MANIFEST="/usr/local/share/ae-mcp/premiere-uxp/mcp-bridge-premiere/manifest.json"
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then
   echo "Bridge panel source not found: $SOURCE_SCRIPT"
   exit 0
@@ -125,6 +135,12 @@ if [[ -d "$PREMIERE_CEP_SOURCE" ]]; then
   echo "Premiere bridge installed: $CEP_ROOT/mcp-bridge-premiere"
 else
   echo "Premiere CEP source not found: $PREMIERE_CEP_SOURCE"
+fi
+
+if [[ -f "$PREMIERE_UXP_MANIFEST" ]]; then
+  echo "Premiere UXP bridge bundled. Load with Adobe UXP Developer Tool: $PREMIERE_UXP_MANIFEST"
+else
+  echo "Premiere UXP manifest not found: $PREMIERE_UXP_MANIFEST"
 fi
 POSTINSTALL
 chmod +x "$PKG_SCRIPTS_DIR/postinstall"

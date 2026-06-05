@@ -230,6 +230,7 @@ Write-Host "4. Restart After Effects"
 Write-Host "5. Open Window > mcp-bridge-auto.jsx"
 
 $premiereExtensionSource = Join-Path $repoRoot "src\premiere\cep\mcp-bridge-premiere"
+$premiereUxpManifest = Join-Path $repoRoot "src\premiere\uxp\mcp-bridge-premiere\manifest.json"
 if (Test-Path -LiteralPath $premiereExtensionSource) {
     $premiereTargets = Get-DetectedPremierePaths
     if ($premiereTargets.Count -eq 0) {
@@ -256,8 +257,17 @@ if (Test-Path -LiteralPath $premiereExtensionSource) {
             Write-Host "Premiere bridge installed."
             Write-Host "Next steps (Premiere Pro):"
             Write-Host "1. Open Adobe Premiere Pro"
-            Write-Host "2. Window > Extensions > Premiere MCP Bridge"
-            Write-Host "3. Enable Auto-run commands"
+            if (Test-Path -LiteralPath $premiereUxpManifest) {
+                Write-Host "2. Load the UXP plugin with Adobe UXP Developer Tool:"
+                Write-Host "   $premiereUxpManifest"
+                Write-Host "3. Window > UXP Plugins > Premiere MCP Bridge"
+                Write-Host "4. Enable Auto-run commands"
+                Write-Host "Legacy CEP fallback is also installed:"
+                Write-Host "   Window > Extensions > Premiere MCP Bridge"
+            } else {
+                Write-Host "2. Window > Extensions > Premiere MCP Bridge"
+                Write-Host "3. Enable Auto-run commands"
+            }
         } catch {
             Write-Warning "Failed to install Premiere bridge: $($_.Exception.Message)"
         }

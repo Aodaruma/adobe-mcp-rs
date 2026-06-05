@@ -48,6 +48,10 @@ try {
     if (!(Test-Path $premiereCepPath)) {
         throw "Premiere CEP bridge not found: $premiereCepPath"
     }
+    $premiereUxpPath = Join-Path $repoRoot "src\premiere\uxp\mcp-bridge-premiere"
+    if (!(Test-Path $premiereUxpPath)) {
+        throw "Premiere UXP bridge not found: $premiereUxpPath"
+    }
     $installerBridgeScriptPath = Join-Path $repoRoot "scripts\install-bridge-installer.ps1"
     if (!(Test-Path $installerBridgeScriptPath)) {
         throw "Installer bridge deployment script not found: $installerBridgeScriptPath"
@@ -61,6 +65,9 @@ try {
     $premiereStageDir = Join-Path $stageDir "premiere-cep"
     Ensure-Directory $premiereStageDir
     Copy-Item $premiereCepPath (Join-Path $premiereStageDir "mcp-bridge-premiere") -Recurse -Force
+    $premiereUxpStageDir = Join-Path $stageDir "premiere-uxp"
+    Ensure-Directory $premiereUxpStageDir
+    Copy-Item $premiereUxpPath (Join-Path $premiereUxpStageDir "mcp-bridge-premiere") -Recurse -Force
     Copy-Item $installerBridgeScriptPath (Join-Path $stageDir "install-bridge-installer.ps1") -Force
 
     $zipPath = Join-Path $output "after-effects-mcp-rs-windows-x86_64.zip"
@@ -90,6 +97,12 @@ try {
     $escapedPremiereCss = (Join-Path $premiereRoot "css\styles.css").Replace("\", "\\")
     $escapedPremiereJs = (Join-Path $premiereRoot "js\main.js").Replace("\", "\\")
     $escapedPremiereJsx = (Join-Path $premiereRoot "jsx\bridge.jsx").Replace("\", "\\")
+    $premiereUxpRoot = Join-Path $stageDir "premiere-uxp\mcp-bridge-premiere"
+    $escapedPremiereUxpManifest = (Join-Path $premiereUxpRoot "manifest.json").Replace("\", "\\")
+    $escapedPremiereUxpIndex = (Join-Path $premiereUxpRoot "index.html").Replace("\", "\\")
+    $escapedPremiereUxpReadme = (Join-Path $premiereUxpRoot "README.md").Replace("\", "\\")
+    $escapedPremiereUxpCss = (Join-Path $premiereUxpRoot "css\styles.css").Replace("\", "\\")
+    $escapedPremiereUxpJs = (Join-Path $premiereUxpRoot "js\main.js").Replace("\", "\\")
 
     @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -139,6 +152,29 @@ try {
             </Component>
           </Directory>
         </Directory>
+        <Directory Id="PremiereUxpRoot" Name="premiere-uxp">
+          <Directory Id="PremiereUxpExtension" Name="mcp-bridge-premiere">
+            <Directory Id="PremiereUxpCss" Name="css">
+              <Component Id="PremiereUxpCssComponent" Guid="6C70D6C3-8F6F-4F53-BC00-89E60592743B">
+                <File Id="PremiereUxpCssFile" Source="$escapedPremiereUxpCss" KeyPath="yes" />
+              </Component>
+            </Directory>
+            <Directory Id="PremiereUxpJs" Name="js">
+              <Component Id="PremiereUxpJsComponent" Guid="8C20F181-F4AC-45B9-A6E9-05ED4322A774">
+                <File Id="PremiereUxpJsFile" Source="$escapedPremiereUxpJs" KeyPath="yes" />
+              </Component>
+            </Directory>
+            <Component Id="PremiereUxpManifestComponent" Guid="B8F3412B-91CE-47C6-AB6A-6329E6D89C87">
+              <File Id="PremiereUxpManifestFile" Source="$escapedPremiereUxpManifest" KeyPath="yes" />
+            </Component>
+            <Component Id="PremiereUxpIndexComponent" Guid="C2DB879E-68E7-45DB-90B4-35E5E772834B">
+              <File Id="PremiereUxpIndexFile" Source="$escapedPremiereUxpIndex" KeyPath="yes" />
+            </Component>
+            <Component Id="PremiereUxpReadmeComponent" Guid="01D18F9B-D928-435D-A1AB-4DD40A287F4F">
+              <File Id="PremiereUxpReadmeFile" Source="$escapedPremiereUxpReadme" KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
       </Directory>
     </StandardDirectory>
     <CustomAction Id="InstallAeBridgePanels"
@@ -159,6 +195,11 @@ try {
       <ComponentRef Id="PremiereBridgeJsComponent" />
       <ComponentRef Id="PremiereBridgeJsxComponent" />
       <ComponentRef Id="PremiereBridgeIndexComponent" />
+      <ComponentRef Id="PremiereUxpManifestComponent" />
+      <ComponentRef Id="PremiereUxpIndexComponent" />
+      <ComponentRef Id="PremiereUxpReadmeComponent" />
+      <ComponentRef Id="PremiereUxpCssComponent" />
+      <ComponentRef Id="PremiereUxpJsComponent" />
     </Feature>
   </Package>
 </Wix>

@@ -51,6 +51,14 @@ function Resolve-PremiereExtensionSource {
     return $null
 }
 
+function Resolve-PremiereUxpManifest {
+    $candidate = Join-Path $PSScriptRoot "premiere-uxp\mcp-bridge-premiere\manifest.json"
+    if (Test-Path -LiteralPath $candidate) {
+        return (Resolve-Path -LiteralPath $candidate).Path
+    }
+    return $null
+}
+
 $source = Resolve-BridgeScriptPath -InputPath $BridgeScriptPath
 $targets = Get-AeInstallPaths
 
@@ -104,4 +112,9 @@ try {
     Write-Host "Premiere bridge installed: $premiereDest"
 } catch {
     Write-Warning "Failed to install Premiere bridge: $($_.Exception.Message)"
+}
+
+$premiereUxpManifest = Resolve-PremiereUxpManifest
+if ($premiereUxpManifest) {
+    Write-Host "Premiere UXP bridge bundled. Load with Adobe UXP Developer Tool: $premiereUxpManifest"
 }

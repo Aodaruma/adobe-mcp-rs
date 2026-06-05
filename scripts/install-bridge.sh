@@ -137,6 +137,7 @@ if [[ "${#AE_PATHS[@]}" -gt 0 ]]; then
 fi
 
 PREMIERE_SOURCE="$REPO_ROOT/src/premiere/cep/mcp-bridge-premiere"
+PREMIERE_UXP_MANIFEST="$REPO_ROOT/src/premiere/uxp/mcp-bridge-premiere/manifest.json"
 if [[ -d "$PREMIERE_SOURCE" ]]; then
   PREMIERE_CANDIDATES=(
     "/Applications/Adobe Premiere Pro 2030"
@@ -179,7 +180,16 @@ if [[ -d "$PREMIERE_SOURCE" ]]; then
     echo "Premiere bridge installed: $PREMIERE_DEST"
     echo "Next steps (Premiere Pro):"
     echo "1. Open Adobe Premiere Pro"
-    echo "2. Window > Extensions > Premiere MCP Bridge"
-    echo "3. Enable Auto-run commands"
+    if [[ -f "$PREMIERE_UXP_MANIFEST" ]]; then
+      echo "2. Load the UXP plugin with Adobe UXP Developer Tool:"
+      echo "   $PREMIERE_UXP_MANIFEST"
+      echo "3. Window > UXP Plugins > Premiere MCP Bridge"
+      echo "4. Enable Auto-run commands"
+      echo "Legacy CEP fallback is also installed:"
+      echo "   Window > Extensions > Premiere MCP Bridge"
+    else
+      echo "2. Window > Extensions > Premiere MCP Bridge"
+      echo "3. Enable Auto-run commands"
+    fi
   fi
 fi

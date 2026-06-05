@@ -227,7 +227,7 @@ fn dispatch_tool_inner(
             bridge.clear_results_file()?;
             bridge.write_command_file(script, parameters)?;
             Ok(tool_text(format!(
-                "Command to run \"{script}\" has been queued.\nPlease ensure the \"Premiere MCP Bridge\" panel is open in Premiere Pro.\nUse the \"get-results\" tool after a few seconds to check for results."
+                "Command to run \"{script}\" has been queued.\nPlease ensure the \"Premiere MCP Bridge\" UXP panel is open in Premiere Pro.\nUse the \"get-results\" tool after a few seconds to check for results."
             )))
         }
         "get-results" => {

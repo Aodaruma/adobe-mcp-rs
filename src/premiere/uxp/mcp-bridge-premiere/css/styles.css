@@ -1,0 +1,55 @@
+body {
+  margin: 0;
+  padding: 12px;
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-size: 12px;
+  color: #e6e6e6;
+  background: #1f1f1f;
+}
+
+.header {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.paths {
+  background: #2a2a2a;
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 12px;
+}
+
+.paths .label {
+  display: inline-block;
+  width: 90px;
+  color: #b0b0b0;
+}
+
+.paths .value {
+  word-break: break-all;
+}
+
+.log {
+  background: #101010;
+  border-radius: 6px;
+  padding: 8px;
+  height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  color: #cfcfcf;
+}

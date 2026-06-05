@@ -2,9 +2,9 @@
 <ExtensionManifest Version="7.0"
                   ExtensionBundleId="io.github.aodaruma.pr-mcp-bridge"
                   ExtensionBundleName="Premiere MCP Bridge"
-                  ExtensionBundleVersion="1.0.0">
+                  ExtensionBundleVersion="1.0.5">
   <ExtensionList>
-    <Extension Id="io.github.aodaruma.pr-mcp-bridge.panel" Version="1.0.0" />
+    <Extension Id="io.github.aodaruma.pr-mcp-bridge.panel" Version="1.0.5" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -18,24 +18,33 @@
     </RequiredRuntimeList>
   </ExecutionEnvironment>
   <DispatchInfoList>
-    <DispatchInfo>
-      <Resources>
-        <MainPath>index.html</MainPath>
-        <ScriptPath>jsx/bridge.jsx</ScriptPath>
-      </Resources>
-      <Lifecycle>
-        <AutoVisible>false</AutoVisible>
-      </Lifecycle>
-      <UI>
-        <Type>Panel</Type>
-        <Menu>Premiere MCP Bridge</Menu>
-        <Geometry>
+    <Extension Id="io.github.aodaruma.pr-mcp-bridge.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/bridge.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--disable-application-cache</Parameter>
+            <Parameter>--allow-file-access</Parameter>
+            <Parameter>--allow-file-access-from-files</Parameter>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>false</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Premiere MCP Bridge</Menu>
+          <Geometry>
           <Size>
             <Width>360</Width>
             <Height>320</Height>
           </Size>
         </Geometry>
       </UI>
-    </DispatchInfo>
+      </DispatchInfo>
+    </Extension>
   </DispatchInfoList>
 </ExtensionManifest>

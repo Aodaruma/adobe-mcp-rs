@@ -2,12 +2,57 @@
 
 if (typeof JSON === "undefined") {
     JSON = {};
-    JSON.stringify = function (obj) {
-        return obj.toString();
+}
+if (typeof JSON.parse !== "function") {
+    JSON.parse = function (text) {
+        return eval("(" + text + ")");
     };
-    JSON.parse = function () {
-        return null;
-    };
+}
+if (typeof JSON.stringify !== "function") {
+    (function () {
+        function esc(str) {
+            return (str + "")
+                .replace(/\\/g, "\\\\")
+                .replace(/"/g, '\\"')
+                .replace(/\n/g, "\\n")
+                .replace(/\r/g, "\\r")
+                .replace(/\t/g, "\\t");
+        }
+
+        function toJSON(val) {
+            if (val === null) {
+                return "null";
+            }
+            var t = typeof val;
+            if (t === "number" || t === "boolean") {
+                return String(val);
+            }
+            if (t === "string") {
+                return '"' + esc(val) + '"';
+            }
+            if (val instanceof Array) {
+                var items = [];
+                for (var i = 0; i < val.length; i++) {
+                    items.push(toJSON(val[i]));
+                }
+                return "[" + items.join(",") + "]";
+            }
+            if (t === "object") {
+                var props = [];
+                for (var k in val) {
+                    if (val.hasOwnProperty(k) && typeof val[k] !== "function" && typeof val[k] !== "undefined") {
+                        props.push('"' + esc(k) + '":' + toJSON(val[k]));
+                    }
+                }
+                return "{" + props.join(",") + "}";
+            }
+            return "null";
+        }
+
+        JSON.stringify = function (value, _replacer, _space) {
+            return toJSON(value);
+        };
+    })();
 }
 
 var mcpBridgeState = {
@@ -72,7 +117,10 @@ function mcpExecuteCommand(command, args) {
 
 function mcpWriteResult(raw) {
     var resultFile = mcpBridgeResultFile();
-    resultFile.open("w");
+    resultFile.encoding = "UTF-8";
+    if (!resultFile.open("w")) {
+        throw new Error("Failed to open result file: " + resultFile.fsName);
+    }
     resultFile.write(raw);
     resultFile.close();
 }
@@ -80,7 +128,10 @@ function mcpWriteResult(raw) {
 function mcpUpdateCommandStatus(payload, status) {
     payload.status = status;
     var cmdFile = mcpBridgeCommandFile();
-    cmdFile.open("w");
+    cmdFile.encoding = "UTF-8";
+    if (!cmdFile.open("w")) {
+        throw new Error("Failed to open command file: " + cmdFile.fsName);
+    }
     cmdFile.write(JSON.stringify(payload, null, 2));
     cmdFile.close();
 }
@@ -96,7 +147,12 @@ function mcpBridgeCheck() {
             return mcpBridgeGetState();
         }
 
-        cmdFile.open("r");
+        cmdFile.encoding = "UTF-8";
+        if (!cmdFile.open("r")) {
+            mcpBridgeState.lastStatus = "error";
+            mcpBridgeState.lastError = "Failed to open command file";
+            return mcpBridgeGetState();
+        }
         var content = cmdFile.read();
         cmdFile.close();
         if (!content) {
@@ -128,6 +184,7 @@ function mcpBridgeCheck() {
         var args = payload.args || {};
         var rawResult = "";
         try {
+            mcpUpdateCommandStatus(payload, "running");
             rawResult = mcpExecuteCommand(command, args);
         } catch (err) {
             rawResult = JSON.stringify({
