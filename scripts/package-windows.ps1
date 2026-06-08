@@ -58,6 +58,9 @@ try {
     }
 
     $stageDir = Join-Path $output "stage"
+    if (Test-Path -LiteralPath $stageDir) {
+        Remove-Item -LiteralPath $stageDir -Recurse -Force
+    }
     Ensure-Directory $stageDir
     Copy-Item $exePath (Join-Path $stageDir "ae-mcp.exe") -Force
     Copy-Item $prExePath (Join-Path $stageDir "pr-mcp.exe") -Force
@@ -179,12 +182,19 @@ try {
     </StandardDirectory>
     <CustomAction Id="InstallAeBridgePanels"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot;"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -SkipUserInstall"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
+    <CustomAction Id="InstallUserPremiereUxpAndCodexConfig"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -SkipHostBridgeInstall"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="InstallAeBridgePanels" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="InstallUserPremiereUxpAndCodexConfig" After="InstallAeBridgePanels" Condition="NOT Installed AND NOT REMOVE" />
     </InstallExecuteSequence>
     <Feature Id="MainFeature" Title="After Effects MCP" Level="1">
       <ComponentRef Id="AeMcpExeComponent" />

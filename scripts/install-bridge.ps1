@@ -143,12 +143,260 @@ function Get-DetectedPremierePaths {
     return $detected
 }
 
+function Get-PremiereProductVersion {
+    param([string]$PremierePath)
+
+    $exePath = Join-Path $PremierePath "Adobe Premiere Pro.exe"
+    if (-not (Test-Path -LiteralPath $exePath)) {
+        return $null
+    }
+
+    $rawVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
+    if ([string]::IsNullOrWhiteSpace($rawVersion)) {
+        $rawVersion = (Get-Item -LiteralPath $exePath).VersionInfo.FileVersion
+    }
+    if ([string]::IsNullOrWhiteSpace($rawVersion)) {
+        return $null
+    }
+
+    $match = [regex]::Match($rawVersion, '(\d+)\.(\d+)(?:\.(\d+))?')
+    if (-not $match.Success) {
+        return $null
+    }
+
+    $patch = if ($match.Groups[3].Success) { $match.Groups[3].Value } else { "0" }
+    return [version]::new([int]$match.Groups[1].Value, [int]$match.Groups[2].Value, [int]$patch)
+}
+
+function Test-PremiereSupportsUxp {
+    param([string]$PremierePath)
+
+    $version = Get-PremiereProductVersion -PremierePath $PremierePath
+    return ($version -ne $null -and $version -ge [version]"25.6.0")
+}
+
+function Get-UxpCapablePremierePaths {
+    param([string[]]$PremierePaths)
+
+    return @($PremierePaths | Where-Object { Test-PremiereSupportsUxp -PremierePath $_ })
+}
+
 function Get-CepExtensionsRoot {
     if (Test-IsAdministrator) {
         return "C:\Program Files (x86)\Common Files\Adobe\CEP\extensions"
     }
     $appData = [Environment]::GetFolderPath("ApplicationData")
     return (Join-Path $appData "Adobe\CEP\extensions")
+}
+
+function Find-UpiaCommand {
+    $candidates = @(
+        "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe",
+        "C:\Program Files (x86)\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
+}
+
+function New-CcxPackage {
+    param([string]$SourceDir)
+
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("premiere-mcp-uxp-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    $zipPath = Join-Path $tempRoot "Premiere-MCP-Bridge.zip"
+    $ccxPath = Join-Path $tempRoot "Premiere-MCP-Bridge.ccx"
+    Compress-Archive -Path (Join-Path $SourceDir "*") -DestinationPath $zipPath -Force
+    Move-Item -LiteralPath $zipPath -Destination $ccxPath -Force
+    return $ccxPath
+}
+
+function Install-PremiereUxpBridge {
+    param(
+        [string]$SourceDir,
+        [string[]]$PremierePaths,
+        [switch]$DryRun
+    )
+
+    $uxpTargets = Get-UxpCapablePremierePaths -PremierePaths $PremierePaths
+    if ($uxpTargets.Count -eq 0) {
+        Write-Host "No UXP-capable Premiere Pro installation was detected. Skipped Premiere UXP deployment."
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $SourceDir "manifest.json"))) {
+        Write-Host "Premiere UXP bridge source not found. Skipped UXP deployment."
+        return
+    }
+
+    $upia = Find-UpiaCommand
+    if (-not $upia) {
+        Write-Warning "UnifiedPluginInstallerAgent.exe was not found. Skipped Premiere UXP deployment."
+        Write-Host "Premiere UXP bridge bundled. Load with Adobe UXP Developer Tool: $(Join-Path $SourceDir "manifest.json")"
+        return
+    }
+
+    if ($DryRun) {
+        Write-Host "DryRun mode: Premiere UXP bridge would be installed with UPIA: $upia"
+        return
+    }
+
+    $ccx = New-CcxPackage -SourceDir $SourceDir
+    try {
+        $output = & $upia /install $ccx 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Premiere UXP install failed: $output"
+            return
+        }
+        Write-Host "Premiere UXP bridge installed via Unified Plugin Installer Agent."
+        Write-Host ("UXP-capable Premiere Pro target(s): {0}" -f ($uxpTargets -join ", "))
+    } finally {
+        $tempRoot = Split-Path -Parent $ccx
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Resolve-McpBinaryPath {
+    param(
+        [string]$RepoRoot,
+        [string]$WindowsFileName,
+        [string]$UnixFileName
+    )
+
+    $repoBinary = Join-Path $RepoRoot (Join-Path "target\release" $WindowsFileName)
+    if (Test-Path -LiteralPath $repoBinary) {
+        return (Resolve-Path -LiteralPath $repoBinary).Path
+    }
+
+    $installed = Join-Path "C:\Program Files\AfterEffectsMcp" $WindowsFileName
+    if (Test-Path -LiteralPath $installed) {
+        return (Resolve-Path -LiteralPath $installed).Path
+    }
+
+    return $null
+}
+
+function Get-CodexConfigPaths {
+    $paths = @()
+
+    if ($env:CODEX_HOME) {
+        $paths += (Join-Path $env:CODEX_HOME "config.toml")
+    }
+    if ($env:USERPROFILE) {
+        $paths += (Join-Path $env:USERPROFILE ".codex\config.toml")
+    }
+
+    return @($paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique)
+}
+
+function Format-TomlLiteral {
+    param([string]$Value)
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Remove-TrailingEmptyLines {
+    param([string[]]$Lines)
+
+    $result = @($Lines)
+    while ($result.Count -gt 0 -and $result[-1] -eq "") {
+        if ($result.Count -eq 1) {
+            return @()
+        }
+        $result = @($result[0..($result.Count - 2)])
+    }
+    return $result
+}
+
+function Set-TomlScalar {
+    param(
+        [string[]]$Lines,
+        [string]$Header,
+        [string]$Key,
+        [string]$ValueLine
+    )
+
+    $Lines = @($Lines)
+    $headerLine = "[$Header]"
+    $start = [Array]::IndexOf($Lines, $headerLine)
+    if ($start -lt 0) {
+        if ($Lines.Count -eq 0) {
+            return @($headerLine, $ValueLine)
+        }
+        return @($Lines + @("", $headerLine, $ValueLine))
+    }
+
+    $end = $Lines.Count
+    for ($i = $start + 1; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match '^\s*\[') {
+            $end = $i
+            break
+        }
+    }
+
+    $keyPattern = '^\s*' + [regex]::Escape($Key) + '\s*='
+    for ($i = $start + 1; $i -lt $end; $i++) {
+        if ($Lines[$i] -match $keyPattern) {
+            $Lines[$i] = $ValueLine
+            return $Lines
+        }
+    }
+
+    if ($end -eq $Lines.Count) {
+        return @($Lines + $ValueLine)
+    }
+    return @($Lines[0..($end - 1)] + $ValueLine + $Lines[$end..($Lines.Count - 1)])
+}
+
+function Update-CodexMcpConfig {
+    param(
+        [string]$RepoRoot,
+        [switch]$DryRun
+    )
+
+    $aePath = Resolve-McpBinaryPath -RepoRoot $RepoRoot -WindowsFileName "ae-mcp.exe" -UnixFileName "ae-mcp"
+    $prPath = Resolve-McpBinaryPath -RepoRoot $RepoRoot -WindowsFileName "pr-mcp.exe" -UnixFileName "pr-mcp"
+    if (-not $aePath -or -not $prPath) {
+        Write-Warning "MCP binaries were not found. Skipped Codex config update."
+        return
+    }
+
+    $configs = Get-CodexConfigPaths
+    if ($configs.Count -eq 0) {
+        Write-Host "Codex config.toml was not found. Skipped Codex MCP server config update."
+        return
+    }
+
+    foreach ($config in $configs) {
+        try {
+            $raw = Get-Content -Raw -LiteralPath $config
+            $lines = Remove-TrailingEmptyLines -Lines @($raw -split "`r?`n", -1)
+
+            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $aePath))
+            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "args" -ValueLine 'args = ["serve-stdio"]'
+            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
+            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $prPath))
+            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "args" -ValueLine 'args = ["serve-stdio"]'
+            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
+            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+
+            if ($DryRun) {
+                Write-Host "DryRun mode: Codex MCP server config would be updated: $config"
+            } else {
+                Set-Content -LiteralPath $config -Value ($lines -join "`r`n") -Encoding UTF8
+                Write-Host "Codex MCP server config updated: $config"
+            }
+        } catch {
+            Write-Warning "Failed to update Codex config '$config': $($_.Exception.Message)"
+        }
+    }
 }
 
 function Resolve-InstallTargets {
@@ -188,39 +436,38 @@ foreach ($aePath in $installTargets) {
 
 if ($DryRun) {
     Write-Host "DryRun mode: no file copy was executed."
-    exit 0
-}
+} else {
+    $installedDestinations = @()
+    foreach ($aePath in $installTargets) {
+        $destinationFolder = Join-Path $aePath "Support Files\Scripts\ScriptUI Panels"
+        $destinationScript = Join-Path $destinationFolder "mcp-bridge-auto.jsx"
 
-$installedDestinations = @()
-foreach ($aePath in $installTargets) {
-    $destinationFolder = Join-Path $aePath "Support Files\Scripts\ScriptUI Panels"
-    $destinationScript = Join-Path $destinationFolder "mcp-bridge-auto.jsx"
-
-    try {
-        if (!(Test-Path $destinationFolder)) {
-            New-Item -ItemType Directory -Path $destinationFolder -Force | Out-Null
-        }
-        Copy-Item -Path $sourceScript -Destination $destinationScript -Force
-        $installedDestinations += $destinationScript
-    } catch {
-        if (-not (Test-IsAdministrator)) {
-            Write-Error @"
+        try {
+            if (!(Test-Path $destinationFolder)) {
+                New-Item -ItemType Directory -Path $destinationFolder -Force | Out-Null
+            }
+            Copy-Item -Path $sourceScript -Destination $destinationScript -Force
+            $installedDestinations += $destinationScript
+        } catch {
+            if (-not (Test-IsAdministrator)) {
+                Write-Error @"
 Copy failed. Administrator privileges are required.
 Re-run in elevated PowerShell:
   powershell -ExecutionPolicy Bypass -File .\scripts\install-bridge.ps1
 Target: $destinationScript
 Original error: $($_.Exception.Message)
 "@
-            exit 1
+                exit 1
+            }
+            throw
         }
-        throw
     }
-}
 
-Write-Host ""
-Write-Host ("Bridge script installed to {0} location(s)." -f $installedDestinations.Count)
-foreach ($destination in $installedDestinations) {
-    Write-Host "  - $destination"
+    Write-Host ""
+    Write-Host ("Bridge script installed to {0} location(s)." -f $installedDestinations.Count)
+    foreach ($destination in $installedDestinations) {
+        Write-Host "  - $destination"
+    }
 }
 Write-Host "Next steps:"
 Write-Host "1. Open After Effects"
@@ -229,47 +476,51 @@ Write-Host "3. Enable Allow Scripts to Write Files and Access Network"
 Write-Host "4. Restart After Effects"
 Write-Host "5. Open Window > mcp-bridge-auto.jsx"
 
+$premiereUxpSource = Join-Path $repoRoot "src\premiere\uxp\mcp-bridge-premiere"
 $premiereExtensionSource = Join-Path $repoRoot "src\premiere\cep\mcp-bridge-premiere"
-$premiereUxpManifest = Join-Path $repoRoot "src\premiere\uxp\mcp-bridge-premiere\manifest.json"
-if (Test-Path -LiteralPath $premiereExtensionSource) {
-    $premiereTargets = Get-DetectedPremierePaths
-    if ($premiereTargets.Count -eq 0) {
-        Write-Host ""
-        Write-Host "No Adobe Premiere Pro installation detected. Skipped Premiere bridge deployment."
+$premiereTargets = Get-DetectedPremierePaths
+$uxpPremiereTargets = Get-UxpCapablePremierePaths -PremierePaths $premiereTargets
+if ($premiereTargets.Count -eq 0) {
+    Write-Host ""
+    Write-Host "No Adobe Premiere Pro installation detected. Skipped Premiere bridge deployment."
+} else {
+    Write-Host ""
+    if ($uxpPremiereTargets.Count -gt 0) {
+        Write-Host "UXP-capable Premiere Pro detected. Installing Premiere UXP bridge and skipping CEP fallback."
+        Install-PremiereUxpBridge -SourceDir $premiereUxpSource -PremierePaths $premiereTargets -DryRun:$DryRun
+        Write-Host "Next steps (Premiere Pro):"
+        Write-Host "1. Open Adobe Premiere Pro"
+        Write-Host "2. Window > UXP Plugins > Premiere MCP Bridge"
+        Write-Host "3. Enable Auto-run commands"
+    } elseif (-not (Test-Path -LiteralPath $premiereExtensionSource)) {
+        Write-Host "Premiere CEP extension source not found. Skipped Premiere CEP fallback deployment."
     } else {
         $cepRoot = Get-CepExtensionsRoot
         $premiereDest = Join-Path $cepRoot "mcp-bridge-premiere"
-        Write-Host ""
+        Write-Host "No UXP-capable Premiere Pro detected. Installing CEP fallback."
         Write-Host "Premiere CEP destination: $premiereDest"
         if ($DryRun) {
-            Write-Host "DryRun mode: Premiere bridge not installed."
-            exit 0
-        }
+            Write-Host "DryRun mode: Premiere CEP bridge would be installed."
+        } else {
+            try {
+                if (!(Test-Path -LiteralPath $cepRoot)) {
+                    New-Item -ItemType Directory -Path $cepRoot -Force | Out-Null
+                }
+                if (Test-Path -LiteralPath $premiereDest) {
+                    Remove-Item -LiteralPath $premiereDest -Recurse -Force
+                }
+                Copy-Item -Path $premiereExtensionSource -Destination $premiereDest -Recurse -Force
+                Write-Host "Premiere CEP bridge installed."
+            } catch {
+                Write-Warning "Failed to install Premiere CEP bridge: $($_.Exception.Message)"
+            }
 
-        try {
-            if (!(Test-Path -LiteralPath $cepRoot)) {
-                New-Item -ItemType Directory -Path $cepRoot -Force | Out-Null
-            }
-            if (Test-Path -LiteralPath $premiereDest) {
-                Remove-Item -LiteralPath $premiereDest -Recurse -Force
-            }
-            Copy-Item -Path $premiereExtensionSource -Destination $premiereDest -Recurse -Force
-            Write-Host "Premiere bridge installed."
             Write-Host "Next steps (Premiere Pro):"
             Write-Host "1. Open Adobe Premiere Pro"
-            if (Test-Path -LiteralPath $premiereUxpManifest) {
-                Write-Host "2. Load the UXP plugin with Adobe UXP Developer Tool:"
-                Write-Host "   $premiereUxpManifest"
-                Write-Host "3. Window > UXP Plugins > Premiere MCP Bridge"
-                Write-Host "4. Enable Auto-run commands"
-                Write-Host "Legacy CEP fallback is also installed:"
-                Write-Host "   Window > Extensions > Premiere MCP Bridge"
-            } else {
-                Write-Host "2. Window > Extensions > Premiere MCP Bridge"
-                Write-Host "3. Enable Auto-run commands"
-            }
-        } catch {
-            Write-Warning "Failed to install Premiere bridge: $($_.Exception.Message)"
+            Write-Host "2. Window > Extensions > Premiere MCP Bridge"
+            Write-Host "3. Enable Auto-run commands"
         }
     }
 }
+
+Update-CodexMcpConfig -RepoRoot $repoRoot -DryRun:$DryRun
