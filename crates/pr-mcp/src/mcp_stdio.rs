@@ -1,14 +1,17 @@
 use anyhow::{anyhow, Context, Result};
-use bridge_core::BridgeClient;
+use bridge_core::{BridgeClient, BridgeRunOptions, BridgeTarget};
 use mcp_core::AppConfig;
 use pr_core::{general_help_text, prompt_messages, prompt_specs, tool_specs};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::fs;
 use std::time::Duration;
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
 use tracing::{debug, error, info};
+
+const MAX_JSX_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, Copy)]
 enum MessageFormat {
@@ -206,12 +209,16 @@ fn dispatch_tool(cfg: &AppConfig, bridge: &BridgeClient, name: &str, args: Value
 }
 
 fn dispatch_tool_inner(
-    _cfg: &AppConfig,
+    cfg: &AppConfig,
     bridge: &BridgeClient,
     name: &str,
     args: Value,
 ) -> Result<Value> {
     match name {
+        "run-jsx" => run_jsx_tool(cfg, bridge, args),
+        "run-jsx-file" => run_jsx_file_tool(cfg, bridge, args),
+        "get-jsx-result" => get_jsx_result_tool(bridge, args),
+        "list-premiere-instances" => list_premiere_instances_tool(cfg, bridge),
         "run-script" => {
             let script = args
                 .get("script")
@@ -231,8 +238,18 @@ fn dispatch_tool_inner(
             )))
         }
         "get-results" => {
-            let text = bridge.read_results_with_stale_warning(Duration::from_secs(30))?;
-            Ok(tool_text(text))
+            if let Some(request_id) = args.get("requestId").and_then(Value::as_str) {
+                let record = bridge.get_request_record(request_id)?;
+                Ok(tool_json(premiere_record_value(record.to_value()))?)
+            } else {
+                let value = bridge
+                    .latest_request_record()?
+                    .map(|record| premiere_record_value(record.to_value()))
+                    .unwrap_or_else(
+                        || json!({ "status": "empty", "message": "No retained request result." }),
+                    );
+                Ok(tool_json(value)?)
+            }
         }
         "get-help" => Ok(tool_text(general_help_text().to_string())),
         "list-sequences" => {
@@ -267,7 +284,215 @@ fn dispatch_tool_inner(
                 "Command to export sequence has been queued.\nOutput: {output_path}\nUse the \"get-results\" tool after a few seconds to check for results."
             )))
         }
+        "run-bridge-test" => {
+            run_direct_bridge_call(cfg, bridge, "ping", json!({}), "Error running bridge test")
+        }
         _ => Ok(tool_error(format!("Unknown tool: {name}"))),
+    }
+}
+
+fn run_jsx_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Result<Value> {
+    let code = required_non_empty_string(&args, "code")?;
+    validate_unsafe_mode(&args)?;
+    let description = required_non_empty_string(&args, "description")?;
+    validate_jsx_size(code)?;
+
+    let payload = json!({
+        "code": code,
+        "args": args.get("args").cloned().unwrap_or_else(|| json!({})),
+        "mode": "unsafe",
+        "description": description,
+    });
+    let timeout_ms = timeout_ms_from_args(cfg, &args);
+
+    run_bridge_command(
+        cfg,
+        bridge,
+        "executeJsx",
+        payload,
+        &args,
+        timeout_ms,
+        "Error running Premiere UXP code",
+    )
+}
+
+fn run_jsx_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Result<Value> {
+    let path = required_non_empty_string(&args, "path")?;
+    validate_unsafe_mode(&args)?;
+    let description = required_non_empty_string(&args, "description")?;
+    let code = fs::read_to_string(path)
+        .with_context(|| format!("failed to read Premiere UXP code file: {path}"))?;
+    validate_jsx_size(&code)?;
+
+    let payload = json!({
+        "code": code,
+        "args": args.get("args").cloned().unwrap_or_else(|| json!({})),
+        "mode": "unsafe",
+        "description": description,
+        "sourcePath": path,
+    });
+    let timeout_ms = timeout_ms_from_args(cfg, &args);
+
+    run_bridge_command(
+        cfg,
+        bridge,
+        "executeJsx",
+        payload,
+        &args,
+        timeout_ms,
+        "Error running Premiere UXP file",
+    )
+}
+
+fn get_jsx_result_tool(bridge: &BridgeClient, args: Value) -> Result<Value> {
+    let request_id = required_non_empty_string(&args, "requestId")?;
+    let record = bridge.get_request_record(request_id)?;
+    Ok(tool_json(premiere_record_value(record.to_value()))?)
+}
+
+fn list_premiere_instances_tool(cfg: &AppConfig, bridge: &BridgeClient) -> Result<Value> {
+    let instances =
+        bridge.list_active_instances(Duration::from_millis(cfg.instance_heartbeat_stale_ms))?;
+    Ok(tool_json(json!({
+        "instances": instances,
+        "count": instances.len(),
+        "staleThresholdMs": cfg.instance_heartbeat_stale_ms
+    }))?)
+}
+
+fn run_direct_bridge_call(
+    cfg: &AppConfig,
+    bridge: &BridgeClient,
+    command: &str,
+    args: Value,
+    error_prefix: &str,
+) -> Result<Value> {
+    let timeout_ms = timeout_ms_from_args(cfg, &args);
+    run_bridge_command(
+        cfg,
+        bridge,
+        command,
+        args.clone(),
+        &args,
+        timeout_ms,
+        error_prefix,
+    )
+}
+
+fn run_bridge_command(
+    cfg: &AppConfig,
+    bridge: &BridgeClient,
+    command: &str,
+    command_args: Value,
+    option_args: &Value,
+    timeout_ms: u64,
+    error_prefix: &str,
+) -> Result<Value> {
+    let retention_seconds = option_args
+        .get("resultRetentionSeconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(cfg.result_retention_seconds);
+    if retention_seconds == 0 {
+        anyhow::bail!("resultRetentionSeconds must be greater than 0");
+    }
+    if retention_seconds > cfg.result_retention_max_seconds {
+        anyhow::bail!(
+            "resultRetentionSeconds exceeds the configured maximum: {} > {}",
+            retention_seconds,
+            cfg.result_retention_max_seconds
+        );
+    }
+
+    let options = BridgeRunOptions {
+        target: BridgeTarget {
+            instance_id: option_args
+                .get("targetInstanceId")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            version: option_args
+                .get("targetVersion")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+        },
+        timeout: Duration::from_millis(timeout_ms),
+        poll_interval: Duration::from_millis(cfg.poll_interval_ms),
+        retention_seconds,
+    };
+
+    match bridge.run_command_sync(command, command_args, options) {
+        Ok(outcome) => Ok(tool_json(premiere_record_value(outcome.to_value()))?),
+        Err(error) => Ok(tool_error(format!("{error_prefix}: {error}"))),
+    }
+}
+
+fn required_non_empty_string<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("'{key}' is required and must be a non-empty string"))
+}
+
+fn validate_unsafe_mode(args: &Value) -> Result<()> {
+    let mode = required_non_empty_string(args, "mode")?;
+    if mode != "unsafe" {
+        anyhow::bail!("only mode='unsafe' is currently supported for Premiere UXP execution");
+    }
+    Ok(())
+}
+
+fn validate_jsx_size(code: &str) -> Result<()> {
+    if code.len() > MAX_JSX_BYTES {
+        anyhow::bail!(
+            "Premiere UXP code is too large: {} bytes > {} bytes",
+            code.len(),
+            MAX_JSX_BYTES
+        );
+    }
+    Ok(())
+}
+
+fn timeout_ms_from_args(cfg: &AppConfig, args: &Value) -> u64 {
+    args.get("timeoutMs")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .unwrap_or(cfg.result_timeout_ms)
+}
+
+fn premiere_record_value(mut value: Value) -> Value {
+    normalize_premiere_host_text(&mut value);
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(instance) = obj.remove("aeInstance") {
+            obj.insert("premiereInstance".to_string(), instance);
+        }
+    }
+    value
+}
+
+fn normalize_premiere_host_text(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            *text = text
+                .replace("After Effects", "Premiere Pro")
+                .replace(
+                    "Open Window > mcp-bridge-auto.jsx and enable Auto-run commands.",
+                    "Open Window > UXP Plugins > Premiere MCP Bridge and enable Auto-run commands.",
+                )
+                .replace("AE to", "Premiere Pro to")
+                .replace("AE instance", "Premiere Pro instance")
+                .replace("AE bridge", "Premiere Pro bridge");
+        }
+        Value::Array(items) => {
+            for item in items {
+                normalize_premiere_host_text(item);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values_mut() {
+                normalize_premiere_host_text(item);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -280,6 +505,12 @@ fn tool_text(text: String) -> Value {
             }
         ]
     })
+}
+
+fn tool_json(value: Value) -> Result<Value> {
+    Ok(tool_text(
+        serde_json::to_string_pretty(&value).with_context(|| "failed to serialize tool JSON")?,
+    ))
 }
 
 fn tool_error(text: String) -> Value {
@@ -423,7 +654,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_list_contains_run_script() {
+    fn tools_list_contains_generic_execution_tools() {
         let result = tools_list_result();
         let tools = result
             .get("tools")
@@ -431,7 +662,13 @@ mod tests {
             .expect("tools array");
         assert!(tools
             .iter()
-            .any(|t| t.get("name").and_then(Value::as_str) == Some("run-script")));
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("run-jsx")));
+        assert!(tools
+            .iter()
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("run-jsx-file")));
+        assert!(tools
+            .iter()
+            .all(|t| t.get("name").and_then(Value::as_str) != Some("list-sequences")));
     }
 
     #[test]

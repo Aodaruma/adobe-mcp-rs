@@ -16,23 +16,60 @@ pub fn is_allowed_script(script: &str) -> bool {
 pub fn tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
-            name: "run-script",
-            description: "Run a predefined script in Premiere Pro (read/write depending on script)",
+            name: "run-jsx",
+            description: "Run unsafe JavaScript/JSX-style code in Premiere Pro UXP and wait for a result",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "script": { "type": "string" },
-                    "parameters": { "type": "object" }
+                    "code": { "type": "string", "minLength": 1 },
+                    "args": { "type": "object" },
+                    "mode": { "type": "string", "enum": ["unsafe"] },
+                    "description": { "type": "string", "minLength": 1 },
+                    "timeoutMs": { "type": "integer", "minimum": 1 },
+                    "resultRetentionSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+                    "targetInstanceId": { "type": "string", "minLength": 1 },
+                    "targetVersion": { "type": "string", "minLength": 1 }
                 },
-                "required": ["script"]
+                "required": ["code", "mode", "description"]
+            }),
+        },
+        ToolSpec {
+            name: "run-jsx-file",
+            description: "Run an unsafe local JavaScript/JSX-style file in Premiere Pro UXP and wait for a result",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "minLength": 1 },
+                    "args": { "type": "object" },
+                    "mode": { "type": "string", "enum": ["unsafe"] },
+                    "description": { "type": "string", "minLength": 1 },
+                    "timeoutMs": { "type": "integer", "minimum": 1 },
+                    "resultRetentionSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+                    "targetInstanceId": { "type": "string", "minLength": 1 },
+                    "targetVersion": { "type": "string", "minLength": 1 }
+                },
+                "required": ["path", "mode", "description"]
+            }),
+        },
+        ToolSpec {
+            name: "get-jsx-result",
+            description: "Get a retained Premiere Pro UXP request result by requestId",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "requestId": { "type": "string", "minLength": 1 }
+                },
+                "required": ["requestId"]
             }),
         },
         ToolSpec {
             name: "get-results",
-            description: "Get results from the last script executed in Premiere Pro",
+            description: "Get the latest retained Premiere Pro request result, or a specific result by requestId",
             input_schema: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "requestId": { "type": "string", "minLength": 1 }
+                }
             }),
         },
         ToolSpec {
@@ -44,48 +81,19 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
-            name: "list-sequences",
-            description: "List sequences in the current Premiere Pro project",
+            name: "list-premiere-instances",
+            description: "List active Premiere Pro UXP bridge panel instances and versions",
             input_schema: json!({
                 "type": "object",
                 "properties": {}
             }),
         },
         ToolSpec {
-            name: "get-active-sequence",
-            description: "Get the active sequence in Premiere Pro",
+            name: "run-bridge-test",
+            description: "Run a Premiere Pro bridge test command to verify communication",
             input_schema: json!({
                 "type": "object",
                 "properties": {}
-            }),
-        },
-        ToolSpec {
-            name: "set-playhead-time",
-            description: "Set the playhead time (in seconds) for a sequence",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "timeSeconds": { "type": "number", "minimum": 0 },
-                    "timeTicks": { "type": "number", "minimum": 0 },
-                    "sequenceName": { "type": "string" },
-                    "sequenceIndex": { "type": "integer", "minimum": 0 }
-                },
-                "required": ["timeSeconds"]
-            }),
-        },
-        ToolSpec {
-            name: "export-sequence",
-            description: "Export a sequence using an Adobe Media Encoder preset",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "outputPath": { "type": "string" },
-                    "presetPath": { "type": "string" },
-                    "sequenceName": { "type": "string" },
-                    "sequenceIndex": { "type": "integer", "minimum": 0 },
-                    "workAreaType": { "type": "integer", "minimum": 0, "maximum": 1 }
-                },
-                "required": ["outputPath", "presetPath"]
             }),
         },
     ]
@@ -216,12 +224,14 @@ UXP bridge source:
 Legacy CEP bridge is kept as a fallback only.
 
 Best practices:
+- Prefer run-jsx or run-jsx-file for new automation. The code runs inside the Premiere UXP panel.
+- Pass mode="unsafe" and a short description so the call is explicit.
+- Use get-jsx-result with requestId when a command times out or needs later inspection.
 - Prefer sequenceName/sequenceIndex to target the right sequence
-- Call get-results after queueing any tool command
 - outputPath and presetPath should be absolute paths
 - workAreaType: 0 = full sequence, 1 = work area only
 
-Available scripts:
+Compatibility scripts still accepted by run-script/legacy dispatch:
 "#
 }
 
@@ -233,5 +243,18 @@ mod tests {
     fn allowlist_contains_core_scripts() {
         assert!(is_allowed_script("listSequences"));
         assert!(!is_allowed_script("unknown"));
+    }
+
+    #[test]
+    fn public_tools_use_generic_execution_surface() {
+        let names = tool_specs()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"run-jsx"));
+        assert!(names.contains(&"run-jsx-file"));
+        assert!(names.contains(&"get-jsx-result"));
+        assert!(names.contains(&"list-premiere-instances"));
+        assert!(!names.contains(&"list-sequences"));
     }
 }

@@ -497,8 +497,137 @@
     return { project: project, sequence: active };
   }
 
+  function toSerializable(value, depth, seen) {
+    if (value === null || value === undefined) {
+      return value === undefined ? null : value;
+    }
+    var valueType = typeof value;
+    if (valueType === "string" || valueType === "number" || valueType === "boolean") {
+      return value;
+    }
+    if (valueType === "function") {
+      return "[Function]";
+    }
+    if (valueType !== "object") {
+      return String(value);
+    }
+    if (depth > 6) {
+      return "[MaxDepth]";
+    }
+
+    seen = seen || [];
+    for (var i = 0; i < seen.length; i++) {
+      if (seen[i] === value) {
+        return "[Circular]";
+      }
+    }
+    seen.push(value);
+
+    if (Object.prototype.toString.call(value) === "[object Date]") {
+      return value.toISOString ? value.toISOString() : String(value);
+    }
+    if (Array.isArray(value)) {
+      var items = [];
+      for (var a = 0; a < value.length; a++) {
+        items.push(toSerializable(value[a], depth + 1, seen));
+      }
+      seen.pop();
+      return items;
+    }
+
+    var result = {};
+    for (var key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) {
+        continue;
+      }
+      try {
+        result[key] = toSerializable(value[key], depth + 1, seen);
+      } catch (err) {
+        result[key] = "[Unserializable: " + errorText(err) + "]";
+      }
+    }
+    seen.pop();
+    return result;
+  }
+
+  function createExecutionBridge() {
+    return {
+      getActiveProject: getActiveProject,
+      getProjectSequences: getProjectSequences,
+      listSequences: listSequences,
+      getActiveSequence: getActiveSequence,
+      setPlayheadTime: setPlayheadTime,
+      exportSequence: exportSequence,
+      readJsonFile: readJsonFile,
+      writeJsonFile: writeJsonFile,
+      readTextFile: readTextFile,
+      writeTextFile: writeTextFile,
+      joinPath: joinPath,
+      getBridgePaths: getBridgePaths,
+      require: safeRequire
+    };
+  }
+
+  async function executeJsx(args) {
+    args = args || {};
+    if (args.mode !== "unsafe") {
+      throw new Error("executeJsx requires mode='unsafe'");
+    }
+    var description = String(args.description || "").trim();
+    if (!description) {
+      throw new Error("executeJsx requires a non-empty description");
+    }
+    var code = args.code;
+    if (typeof code !== "string" || !code.trim()) {
+      throw new Error("executeJsx requires non-empty string code");
+    }
+
+    var userArgs = args.args || {};
+    var bridge = createExecutionBridge();
+    var sourcePath = args.sourcePath || null;
+    setState({
+      lastMessage: "Running UXP code: " + description + (sourcePath ? " (" + sourcePath + ")" : "")
+    });
+
+    var fn = new Function(
+      "args",
+      "ppro",
+      "premierepro",
+      "uxp",
+      "fs",
+      "os",
+      "bridge",
+      "\"use strict\";\nreturn (async function () {\n" + code + "\n}).call(bridge);"
+    );
+    var result = await fn(userArgs, ppro, ppro, uxp, fs, os, bridge);
+    return {
+      status: "success",
+      description: description,
+      sourcePath: sourcePath,
+      result: toSerializable(result, 0, [])
+    };
+  }
+
+  async function executeJsxFile(args) {
+    args = args || {};
+    var filePath = args.path || args.sourcePath;
+    if (!filePath) {
+      throw new Error("executeJsxFile requires path");
+    }
+    if (!fs) {
+      throw new Error("UXP fs module is not available.");
+    }
+    args.code = fs.readFileSync(filePath, { encoding: "utf-8" });
+    args.sourcePath = filePath;
+    return await executeJsx(args);
+  }
+
   async function dispatchCommand(command, args) {
     switch (command) {
+      case "executeJsx":
+        return await executeJsx(args);
+      case "executeJsxFile":
+        return await executeJsxFile(args);
       case "ping":
         return ping();
       case "listSequences":
