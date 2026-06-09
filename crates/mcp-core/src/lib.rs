@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::{ffi::OsString, os::windows::ffi::OsStringExt, ptr};
 
 pub const ALLOWED_SCRIPTS: &[&str] = &[
     "listCompositions",
@@ -145,11 +147,76 @@ pub fn default_bridge_root_dir() -> PathBuf {
 }
 
 pub fn default_bridge_root_dir_named(folder: &str) -> PathBuf {
+    default_documents_dir().join(folder)
+}
+
+fn default_documents_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    if let Some(path) = windows_documents_dir() {
+        return path;
+    }
+
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    home.join("Documents").join(folder)
+    home.join("Documents")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_documents_dir() -> Option<PathBuf> {
+    let mut raw_path = ptr::null_mut();
+    let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_DOCUMENTS, 0, ptr::null_mut(), &mut raw_path) };
+    if hr < 0 || raw_path.is_null() {
+        return None;
+    }
+
+    let path = unsafe { path_buf_from_pwstr(raw_path) };
+    unsafe { CoTaskMemFree(raw_path.cast()) };
+    Some(path)
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn path_buf_from_pwstr(raw_path: *const u16) -> PathBuf {
+    let mut len = 0usize;
+    while *raw_path.add(len) != 0 {
+        len += 1;
+    }
+    PathBuf::from(OsString::from_wide(std::slice::from_raw_parts(raw_path, len)))
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct Guid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
+
+#[cfg(target_os = "windows")]
+const FOLDERID_DOCUMENTS: Guid = Guid {
+    data1: 0xFDD3_9AD0,
+    data2: 0x238F,
+    data3: 0x46AF,
+    data4: [0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7],
+};
+
+#[cfg(target_os = "windows")]
+#[link(name = "shell32")]
+extern "system" {
+    fn SHGetKnownFolderPath(
+        rfid: *const Guid,
+        dwflags: u32,
+        htoken: *mut std::ffi::c_void,
+        ppszpath: *mut *mut u16,
+    ) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "ole32")]
+extern "system" {
+    fn CoTaskMemFree(pv: *mut std::ffi::c_void);
 }
 
 pub fn is_allowed_script(script: &str) -> bool {
