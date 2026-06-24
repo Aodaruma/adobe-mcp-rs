@@ -6,6 +6,8 @@ members = [
     "crates/platform-service",
     "crates/pr-core",
     "crates/pr-mcp",
+    "crates/ps-core",
+    "crates/ps-mcp",
 ]
 resolver = "2"
 

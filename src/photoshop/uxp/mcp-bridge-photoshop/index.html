@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Photoshop MCP Bridge</title>
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <div class="header">Photoshop MCP Bridge</div>
+    <div class="status-row">
+      <span class="label">Status</span>
+      <span class="value" id="status">Initializing...</span>
+    </div>
+    <label class="checkbox-row">
+      <input type="checkbox" id="autoRun" checked />
+      <span>Auto-run commands</span>
+    </label>
+    <div class="paths">
+      <div><span class="label">Bridge root</span><span class="value" id="bridgeRoot">-</span></div>
+      <div><span class="label">Command file</span><span class="value" id="commandFile">-</span></div>
+      <div><span class="label">Result file</span><span class="value" id="resultFile">-</span></div>
+      <div><span class="label">Instance</span><span class="value" id="instanceId">-</span></div>
+    </div>
+    <div class="log" id="log">Waiting for commands...</div>
+    <script src="js/main.js"></script>
+  </body>
+</html>
