@@ -166,7 +166,8 @@ fn default_documents_dir() -> PathBuf {
 #[cfg(target_os = "windows")]
 fn windows_documents_dir() -> Option<PathBuf> {
     let mut raw_path = ptr::null_mut();
-    let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_DOCUMENTS, 0, ptr::null_mut(), &mut raw_path) };
+    let hr =
+        unsafe { SHGetKnownFolderPath(&FOLDERID_DOCUMENTS, 0, ptr::null_mut(), &mut raw_path) };
     if hr < 0 || raw_path.is_null() {
         return None;
     }
@@ -182,7 +183,9 @@ unsafe fn path_buf_from_pwstr(raw_path: *const u16) -> PathBuf {
     while *raw_path.add(len) != 0 {
         len += 1;
     }
-    PathBuf::from(OsString::from_wide(std::slice::from_raw_parts(raw_path, len)))
+    PathBuf::from(OsString::from_wide(std::slice::from_raw_parts(
+        raw_path, len,
+    )))
 }
 
 #[cfg(target_os = "windows")]

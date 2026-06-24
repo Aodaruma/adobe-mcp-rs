@@ -1,0 +1,44 @@
+{
+  "id": "io.github.aodaruma.photoshop-mcp-bridge",
+  "name": "Photoshop MCP Bridge",
+  "shortname": "Photoshop MCP",
+  "version": "0.1.0",
+  "main": "index.html",
+  "host": {
+    "app": "PS",
+    "minVersion": "23.3.0",
+    "data": {
+      "apiVersion": 2,
+      "loadEvent": "use"
+    }
+  },
+  "manifestVersion": 5,
+  "requiredPermissions": {
+    "localFileSystem": "fullAccess"
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "mcpBridgePanel",
+      "minimumSize": {
+        "width": 320,
+        "height": 280
+      },
+      "maximumSize": {
+        "width": 1200,
+        "height": 1200
+      },
+      "preferredDockedSize": {
+        "width": 360,
+        "height": 320
+      },
+      "preferredFloatingSize": {
+        "width": 420,
+        "height": 360
+      },
+      "label": {
+        "default": "Photoshop MCP Bridge"
+      }
+    }
+  ]
+}

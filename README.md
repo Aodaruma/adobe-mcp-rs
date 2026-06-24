@@ -2,7 +2,7 @@
 
 Rust-based MCP servers and Adobe host bridge panels for LLM-driven local automation.
 
-This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the project can grow beyond After Effects. The current codebase contains the most complete implementation for After Effects, an experimental Premiere Pro path, and the shared Rust pieces needed to add Photoshop and Illustrator.
+This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the project can grow beyond After Effects. The current codebase contains the most complete implementation for After Effects, experimental Premiere Pro and Photoshop paths, and the shared Rust pieces needed to add Illustrator.
 
 - Japanese: [README-ja.md](README-ja.md)
 
@@ -12,7 +12,7 @@ This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the
 |---|---|---|---|
 | After Effects | `ae-mcp` | ScriptUI / JSX panel | Primary supported path |
 | Premiere Pro | `pr-mcp` | UXP panel, CEP fallback | Experimental; API surface exists, install/release path still needs hardening |
-| Photoshop | planned `ps-mcp` | UXP plugin preferred | Planned |
+| Photoshop | `ps-mcp` | UXP panel | Experimental; small generic execution and read-only script surface |
 | Illustrator | planned `ai-mcp` | ExtendScript/CEP or native plugin first; UXP only after public host support is confirmed | Planned |
 
 ## Current Architecture
@@ -23,17 +23,22 @@ The workspace is split into reusable Rust crates and host-specific binaries:
 |---|---|
 | `crates/ae-mcp` | After Effects CLI, MCP stdio server, daemon, and bridge commands |
 | `crates/pr-mcp` | Premiere Pro CLI and MCP stdio server |
+| `crates/ps-mcp` | Photoshop CLI and MCP stdio server |
 | `crates/mcp-core` | Shared config, MCP tool/prompt specs, bridge path defaults |
 | `crates/bridge-core` | File bridge client, instance discovery, request registry, result retention |
 | `crates/platform-service` | Windows/macOS service and autostart helpers |
 | `crates/pr-core` | Premiere Pro tool specs, prompts, and allowlisted script names |
+| `crates/ps-core` | Photoshop tool specs, help text, and allowlisted script names |
 | `src/scripts` | After Effects JSX bridge and helper scripts |
 | `src/premiere/uxp` | Premiere Pro UXP bridge panel |
 | `src/premiere/cep` | Legacy Premiere Pro CEP bridge fallback |
+| `src/photoshop/uxp` | Photoshop UXP bridge panel |
 
 After Effects uses `ae-mcp serve-daemon` as a local broker. Bridge panels register under `~/Documents/ae-mcp-bridge/instances/<instanceId>/`, and MCP calls are routed to a target instance with retained `requestId` results.
 
 Premiere Pro currently reuses the same file-bridge pattern under `~/Documents/pr-mcp-bridge`. The UXP bridge is the intended path, while the CEP bridge remains a fallback. `pr-mcp serve-daemon` is not yet equivalent to the After Effects broker, so Premiere should still be treated as experimental.
+
+Photoshop currently reuses the same file-bridge pattern under `~/Documents/ps-mcp-bridge`. The UXP bridge exposes a small tool surface for arbitrary UXP code plus allowlisted read-only document/layer inspection scripts. `ps-mcp serve-daemon` is a heartbeat daemon only, matching the current Premiere shape rather than the After Effects broker.
 
 ## Setup
 
@@ -54,6 +59,7 @@ Build one host binary:
 ```powershell
 cargo build --release -p ae-mcp
 cargo build --release -p pr-mcp
+cargo build --release -p ps-mcp
 ```
 
 ### After Effects
@@ -103,6 +109,22 @@ Register the MCP server:
 codex mcp add premiere -- "<ABSOLUTE_PATH>\target\release\pr-mcp.exe" serve-stdio
 ```
 
+### Photoshop
+
+Build the binary:
+
+```powershell
+cargo build --release -p ps-mcp
+```
+
+Load the UXP bridge from `src/photoshop/uxp/mcp-bridge-photoshop` with Adobe UXP Developer Tool, then open `Photoshop MCP Bridge` from the Photoshop Plugins menu and keep `Auto-run commands` enabled.
+
+Register the MCP server:
+
+```powershell
+codex mcp add photoshop -- "<ABSOLUTE_PATH>\target\release\ps-mcp.exe" serve-stdio
+```
+
 ## Quick Validation
 
 After Effects:
@@ -123,6 +145,13 @@ Premiere Pro:
 ```powershell
 .\target\release\pr-mcp.exe health
 '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list-premiere-instances","arguments":{}}}' | .\target\release\pr-mcp.exe serve-stdio
+```
+
+Photoshop:
+
+```powershell
+.\target\release\ps-mcp.exe health
+'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list-photoshop-instances","arguments":{}}}' | .\target\release\ps-mcp.exe serve-stdio
 ```
 
 ## MCP Tool Surface
@@ -150,6 +179,17 @@ Premiere Pro currently exposes:
 - `list-premiere-instances`
 - `run-bridge-test`
 
+Photoshop currently exposes:
+
+- `run-jsx`
+- `run-jsx-file`
+- `run-script`
+- `get-jsx-result`
+- `get-results`
+- `get-help`
+- `list-photoshop-instances`
+- `run-bridge-test`
+
 For arbitrary code execution, pass `mode: "unsafe"` and a short `description`. This is intentional: host-side JavaScript/JSX execution is powerful and should be explicit in MCP calls.
 
 ## Expansion Plan
@@ -159,7 +199,7 @@ The next step is to make host support a first-class concept instead of cloning t
 1. Extract a small host adapter layer for host names, bridge root names, tool names, executable names, help text, and installer behavior.
 2. Normalize the bridge protocol across hosts: `heartbeat.json`, command files, result files, instance metadata, capabilities, and retained request records.
 3. Harden Premiere Pro to match the After Effects broker model or explicitly document it as direct file-bridge only.
-4. Add Photoshop through a UXP bridge first, using the Photoshop DOM and `batchPlay` for operations that are not covered by the DOM.
+4. Harden the initial Photoshop UXP bridge with write operations, modal execution policies, and installer support.
 5. Add Illustrator after a short spike that confirms the best bridge technology for current Illustrator versions. Treat ExtendScript/CEP or a native plugin bridge as the practical baseline until public UXP support is clear enough for third-party automation.
 
 Detailed notes are in [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md).

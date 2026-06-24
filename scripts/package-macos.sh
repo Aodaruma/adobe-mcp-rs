@@ -12,7 +12,7 @@ mkdir -p "$OUTPUT_DIR"
 pushd "$REPO_ROOT" >/dev/null
 
 echo "Building release binaries..."
-cargo build --release -p ae-mcp -p pr-mcp
+cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp
 
 BIN_PATH_AE="$REPO_ROOT/target/release/ae-mcp"
 if [[ ! -f "$BIN_PATH_AE" ]]; then
@@ -22,6 +22,11 @@ fi
 BIN_PATH_PR="$REPO_ROOT/target/release/pr-mcp"
 if [[ ! -f "$BIN_PATH_PR" ]]; then
   echo "Release binary not found: $BIN_PATH_PR" >&2
+  exit 1
+fi
+BIN_PATH_PS="$REPO_ROOT/target/release/ps-mcp"
+if [[ ! -f "$BIN_PATH_PS" ]]; then
+  echo "Release binary not found: $BIN_PATH_PS" >&2
   exit 1
 fi
 BRIDGE_PANEL_PATH="$REPO_ROOT/src/scripts/mcp-bridge-auto.jsx"
@@ -39,6 +44,11 @@ if [[ ! -d "$PREMIERE_UXP_PATH" ]]; then
   echo "Premiere UXP bridge not found: $PREMIERE_UXP_PATH" >&2
   exit 1
 fi
+PHOTOSHOP_UXP_PATH="$REPO_ROOT/src/photoshop/uxp/mcp-bridge-photoshop"
+if [[ ! -d "$PHOTOSHOP_UXP_PATH" ]]; then
+  echo "Photoshop UXP bridge not found: $PHOTOSHOP_UXP_PATH" >&2
+  exit 1
+fi
 
 STAGE_DIR="$OUTPUT_DIR/stage"
 mkdir -p "$STAGE_DIR"
@@ -46,11 +56,15 @@ cp "$BIN_PATH_AE" "$STAGE_DIR/ae-mcp"
 chmod +x "$STAGE_DIR/ae-mcp"
 cp "$BIN_PATH_PR" "$STAGE_DIR/pr-mcp"
 chmod +x "$STAGE_DIR/pr-mcp"
+cp "$BIN_PATH_PS" "$STAGE_DIR/ps-mcp"
+chmod +x "$STAGE_DIR/ps-mcp"
 cp "$BRIDGE_PANEL_PATH" "$STAGE_DIR/mcp-bridge-auto.jsx"
 mkdir -p "$STAGE_DIR/premiere-cep"
 cp -R "$PREMIERE_CEP_PATH" "$STAGE_DIR/premiere-cep/mcp-bridge-premiere"
 mkdir -p "$STAGE_DIR/premiere-uxp"
 cp -R "$PREMIERE_UXP_PATH" "$STAGE_DIR/premiere-uxp/mcp-bridge-premiere"
+mkdir -p "$STAGE_DIR/photoshop-uxp"
+cp -R "$PHOTOSHOP_UXP_PATH" "$STAGE_DIR/photoshop-uxp/mcp-bridge-photoshop"
 
 ARCHIVE_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.tar.gz"
 tar -C "$STAGE_DIR" -czf "$ARCHIVE_PATH" .
@@ -74,11 +88,14 @@ mkdir -p "$INSTALL_BIN_DIR"
 mkdir -p "$INSTALL_SHARE_DIR"
 cp "$STAGE_DIR/ae-mcp" "$INSTALL_BIN_DIR/ae-mcp"
 cp "$STAGE_DIR/pr-mcp" "$INSTALL_BIN_DIR/pr-mcp"
+cp "$STAGE_DIR/ps-mcp" "$INSTALL_BIN_DIR/ps-mcp"
 cp "$STAGE_DIR/mcp-bridge-auto.jsx" "$INSTALL_SHARE_DIR/mcp-bridge-auto.jsx"
 mkdir -p "$INSTALL_SHARE_DIR/premiere-cep"
 cp -R "$STAGE_DIR/premiere-cep/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere-cep/mcp-bridge-premiere"
 mkdir -p "$INSTALL_SHARE_DIR/premiere-uxp"
 cp -R "$STAGE_DIR/premiere-uxp/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere-uxp/mcp-bridge-premiere"
+mkdir -p "$INSTALL_SHARE_DIR/photoshop-uxp"
+cp -R "$STAGE_DIR/photoshop-uxp/mcp-bridge-photoshop" "$INSTALL_SHARE_DIR/photoshop-uxp/mcp-bridge-photoshop"
 
 PKG_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.pkg"
 PKG_SCRIPTS_DIR="$OUTPUT_DIR/pkgscripts"
@@ -90,6 +107,7 @@ set -euo pipefail
 SOURCE_SCRIPT="/usr/local/share/ae-mcp/mcp-bridge-auto.jsx"
 PREMIERE_CEP_SOURCE="/usr/local/share/ae-mcp/premiere-cep/mcp-bridge-premiere"
 PREMIERE_UXP_MANIFEST="/usr/local/share/ae-mcp/premiere-uxp/mcp-bridge-premiere/manifest.json"
+PHOTOSHOP_UXP_MANIFEST="/usr/local/share/ae-mcp/photoshop-uxp/mcp-bridge-photoshop/manifest.json"
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then
   echo "Bridge panel source not found: $SOURCE_SCRIPT"
   exit 0
@@ -141,6 +159,22 @@ if [[ -f "$PREMIERE_UXP_MANIFEST" ]]; then
   echo "Premiere UXP bridge bundled. Load with Adobe UXP Developer Tool: $PREMIERE_UXP_MANIFEST"
 else
   echo "Premiere UXP manifest not found: $PREMIERE_UXP_MANIFEST"
+fi
+
+photoshop_installed=0
+for ps_path in /Applications/Adobe\ Photoshop\ *; do
+  [[ -d "$ps_path" ]] || continue
+  ps_name="$(basename "$ps_path")"
+  [[ "$ps_name" =~ ^Adobe\ Photoshop\ [0-9]{4}$ ]] || continue
+  photoshop_installed=$((photoshop_installed + 1))
+done
+
+if [[ "$photoshop_installed" -eq 0 ]]; then
+  echo "No Adobe Photoshop installation found. Photoshop UXP bridge deployment skipped."
+elif [[ -f "$PHOTOSHOP_UXP_MANIFEST" ]]; then
+  echo "Photoshop UXP bridge bundled. Load with Adobe UXP Developer Tool: $PHOTOSHOP_UXP_MANIFEST"
+else
+  echo "Photoshop UXP manifest not found: $PHOTOSHOP_UXP_MANIFEST"
 fi
 POSTINSTALL
 chmod +x "$PKG_SCRIPTS_DIR/postinstall"

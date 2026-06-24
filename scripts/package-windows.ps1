@@ -30,7 +30,7 @@ if (-not $output) {
 Push-Location $repoRoot
 try {
     Write-Host "Building release binaries..."
-    cargo build --release -p ae-mcp -p pr-mcp
+    cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp
 
     $exePath = Join-Path $repoRoot "target\release\ae-mcp.exe"
     if (!(Test-Path $exePath)) {
@@ -39,6 +39,10 @@ try {
     $prExePath = Join-Path $repoRoot "target\release\pr-mcp.exe"
     if (!(Test-Path $prExePath)) {
         throw "Release binary not found: $prExePath"
+    }
+    $psExePath = Join-Path $repoRoot "target\release\ps-mcp.exe"
+    if (!(Test-Path $psExePath)) {
+        throw "Release binary not found: $psExePath"
     }
     $bridgePanelPath = Join-Path $repoRoot "src\scripts\mcp-bridge-auto.jsx"
     if (!(Test-Path $bridgePanelPath)) {
@@ -52,6 +56,10 @@ try {
     if (!(Test-Path $premiereUxpPath)) {
         throw "Premiere UXP bridge not found: $premiereUxpPath"
     }
+    $photoshopUxpPath = Join-Path $repoRoot "src\photoshop\uxp\mcp-bridge-photoshop"
+    if (!(Test-Path $photoshopUxpPath)) {
+        throw "Photoshop UXP bridge not found: $photoshopUxpPath"
+    }
     $installerBridgeScriptPath = Join-Path $repoRoot "scripts\install-bridge-installer.ps1"
     if (!(Test-Path $installerBridgeScriptPath)) {
         throw "Installer bridge deployment script not found: $installerBridgeScriptPath"
@@ -64,6 +72,7 @@ try {
     Ensure-Directory $stageDir
     Copy-Item $exePath (Join-Path $stageDir "ae-mcp.exe") -Force
     Copy-Item $prExePath (Join-Path $stageDir "pr-mcp.exe") -Force
+    Copy-Item $psExePath (Join-Path $stageDir "ps-mcp.exe") -Force
     Copy-Item $bridgePanelPath (Join-Path $stageDir "mcp-bridge-auto.jsx") -Force
     $premiereStageDir = Join-Path $stageDir "premiere-cep"
     Ensure-Directory $premiereStageDir
@@ -71,6 +80,9 @@ try {
     $premiereUxpStageDir = Join-Path $stageDir "premiere-uxp"
     Ensure-Directory $premiereUxpStageDir
     Copy-Item $premiereUxpPath (Join-Path $premiereUxpStageDir "mcp-bridge-premiere") -Recurse -Force
+    $photoshopUxpStageDir = Join-Path $stageDir "photoshop-uxp"
+    Ensure-Directory $photoshopUxpStageDir
+    Copy-Item $photoshopUxpPath (Join-Path $photoshopUxpStageDir "mcp-bridge-photoshop") -Recurse -Force
     Copy-Item $installerBridgeScriptPath (Join-Path $stageDir "install-bridge-installer.ps1") -Force
 
     $zipPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.zip"
@@ -92,6 +104,7 @@ try {
     $msiPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.msi"
     $escapedExe = (Join-Path $stageDir "ae-mcp.exe").Replace("\", "\\")
     $escapedPrExe = (Join-Path $stageDir "pr-mcp.exe").Replace("\", "\\")
+    $escapedPsExe = (Join-Path $stageDir "ps-mcp.exe").Replace("\", "\\")
     $escapedBridgePanel = (Join-Path $stageDir "mcp-bridge-auto.jsx").Replace("\", "\\")
     $escapedBridgeInstallerPs1 = (Join-Path $stageDir "install-bridge-installer.ps1").Replace("\", "\\")
     $premiereRoot = Join-Path $stageDir "premiere-cep\mcp-bridge-premiere"
@@ -106,6 +119,12 @@ try {
     $escapedPremiereUxpReadme = (Join-Path $premiereUxpRoot "README.md").Replace("\", "\\")
     $escapedPremiereUxpCss = (Join-Path $premiereUxpRoot "css\styles.css").Replace("\", "\\")
     $escapedPremiereUxpJs = (Join-Path $premiereUxpRoot "js\main.js").Replace("\", "\\")
+    $photoshopUxpRoot = Join-Path $stageDir "photoshop-uxp\mcp-bridge-photoshop"
+    $escapedPhotoshopUxpManifest = (Join-Path $photoshopUxpRoot "manifest.json").Replace("\", "\\")
+    $escapedPhotoshopUxpIndex = (Join-Path $photoshopUxpRoot "index.html").Replace("\", "\\")
+    $escapedPhotoshopUxpReadme = (Join-Path $photoshopUxpRoot "README.md").Replace("\", "\\")
+    $escapedPhotoshopUxpCss = (Join-Path $photoshopUxpRoot "css\styles.css").Replace("\", "\\")
+    $escapedPhotoshopUxpJs = (Join-Path $photoshopUxpRoot "js\main.js").Replace("\", "\\")
 
     @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -123,6 +142,9 @@ try {
         </Component>
         <Component Id="PrMcpExeComponent" Guid="E1E8E4F4-3D8C-4C8D-A44B-5D2BB9F5D311">
           <File Id="PrMcpExeFile" Source="$escapedPrExe" KeyPath="yes" />
+        </Component>
+        <Component Id="PsMcpExeComponent" Guid="6B0F686E-D199-4F9B-9B0E-643FA63F1C30">
+          <File Id="PsMcpExeFile" Source="$escapedPsExe" KeyPath="yes" />
         </Component>
         <Component Id="BridgeAssetsComponent" Guid="6EFCE0CF-7EFD-4A28-9DF9-9A4B1A16F9D4">
           <File Id="BridgePanelFile" Source="$escapedBridgePanel" KeyPath="yes" />
@@ -178,6 +200,29 @@ try {
             </Component>
           </Directory>
         </Directory>
+        <Directory Id="PhotoshopUxpRoot" Name="photoshop-uxp">
+          <Directory Id="PhotoshopUxpExtension" Name="mcp-bridge-photoshop">
+            <Directory Id="PhotoshopUxpCss" Name="css">
+              <Component Id="PhotoshopUxpCssComponent" Guid="8F568B8E-DB60-4653-B6F3-FEE033F9F92E">
+                <File Id="PhotoshopUxpCssFile" Source="$escapedPhotoshopUxpCss" KeyPath="yes" />
+              </Component>
+            </Directory>
+            <Directory Id="PhotoshopUxpJs" Name="js">
+              <Component Id="PhotoshopUxpJsComponent" Guid="4F96FD3D-E305-461B-8582-1CB5B00D42BA">
+                <File Id="PhotoshopUxpJsFile" Source="$escapedPhotoshopUxpJs" KeyPath="yes" />
+              </Component>
+            </Directory>
+            <Component Id="PhotoshopUxpManifestComponent" Guid="4C00817C-CB15-4240-BA24-6E7983BB0370">
+              <File Id="PhotoshopUxpManifestFile" Source="$escapedPhotoshopUxpManifest" KeyPath="yes" />
+            </Component>
+            <Component Id="PhotoshopUxpIndexComponent" Guid="6371FCA7-FE43-474B-8360-C11F0E9FC939">
+              <File Id="PhotoshopUxpIndexFile" Source="$escapedPhotoshopUxpIndex" KeyPath="yes" />
+            </Component>
+            <Component Id="PhotoshopUxpReadmeComponent" Guid="0932A804-48A2-4FF6-B763-69A2E3019E41">
+              <File Id="PhotoshopUxpReadmeFile" Source="$escapedPhotoshopUxpReadme" KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
       </Directory>
     </StandardDirectory>
     <CustomAction Id="InstallAeBridgePanels"
@@ -199,6 +244,7 @@ try {
     <Feature Id="MainFeature" Title="Adobe MCP" Level="1">
       <ComponentRef Id="AeMcpExeComponent" />
       <ComponentRef Id="PrMcpExeComponent" />
+      <ComponentRef Id="PsMcpExeComponent" />
       <ComponentRef Id="BridgeAssetsComponent" />
       <ComponentRef Id="PremiereBridgeManifestComponent" />
       <ComponentRef Id="PremiereBridgeCssComponent" />
@@ -210,6 +256,11 @@ try {
       <ComponentRef Id="PremiereUxpReadmeComponent" />
       <ComponentRef Id="PremiereUxpCssComponent" />
       <ComponentRef Id="PremiereUxpJsComponent" />
+      <ComponentRef Id="PhotoshopUxpManifestComponent" />
+      <ComponentRef Id="PhotoshopUxpIndexComponent" />
+      <ComponentRef Id="PhotoshopUxpReadmeComponent" />
+      <ComponentRef Id="PhotoshopUxpCssComponent" />
+      <ComponentRef Id="PhotoshopUxpJsComponent" />
     </Feature>
   </Package>
 </Wix>
