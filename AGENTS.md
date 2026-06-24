@@ -1,10 +1,13 @@
 # AGENTS.md
 
-このファイルは、`after-effects-mcp-rs` の現状と運用注意点を、作業エージェント向けに簡潔にまとめたものです。
+このファイルは、`adobe-mcp-rs` の現状と運用注意点を、作業エージェント向けに簡潔にまとめたものです。
 
-## 現状サマリ（2026-03-23）
+## 現状サマリ（2026-06-25）
 
+- repository 名は Adobe アプリ横断の `adobe-mcp-rs` へ変更済み。
 - 主要実装は Rust バイナリ `ae-mcp`（`serve-stdio` / `serve-daemon` / `service` / `bridge`）で稼働。
+- Premiere Pro 向けに `pr-mcp` と UXP bridge（CEP fallback あり）が追加済み。ただし `pr-mcp serve-daemon` は AE broker と同等ではないため実験的扱い。
+- Photoshop / Illustrator は未実装。`docs/adobe-host-roadmap.md` に今後の方針を記載。
 - npm/TypeScript サーバー実装は削除済み（`package.json` / `src/index.ts` 等は廃止）。
 - AE 連携は `mcp-bridge-auto.jsx` 経由（`~/Documents/ae-mcp-bridge` の command/result ファイル）。
 - `applyEffect` / `applyEffectTemplate` は ExtendScript 互換化済み（`Object.keys` 非依存）。
@@ -23,6 +26,7 @@
 
 ## 運用上の注意
 
+- この checkout は linked worktree 化済み。親ディレクトリに bare repo `adobe-mcp-rs.git` がある想定。詳細は `docs/worktree.md`。
 - AE 側で `Window > mcp-bridge-auto.jsx` を開き、`Auto-run commands` を ON にすること。
 - `ae_command.json` が `pending` のままなら、パネル未起動・Auto-run OFF・AE再読込漏れを疑うこと。
 - `getLayerInfo`（ブリッジ版）は「アクティブコンポ」前提。アクティブでないと `No active composition` を返す。

@@ -13,7 +13,7 @@ resolver = "2"
 edition = "2021"
 license = "MIT"
 version = "0.2.0"
-authors = ["after-effects-mcp-rs contributors"]
+authors = ["adobe-mcp-rs contributors"]
 
 [workspace.dependencies]
 anyhow = "1.0"

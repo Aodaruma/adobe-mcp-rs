@@ -52,7 +52,7 @@ cp -R "$PREMIERE_CEP_PATH" "$STAGE_DIR/premiere-cep/mcp-bridge-premiere"
 mkdir -p "$STAGE_DIR/premiere-uxp"
 cp -R "$PREMIERE_UXP_PATH" "$STAGE_DIR/premiere-uxp/mcp-bridge-premiere"
 
-ARCHIVE_PATH="$OUTPUT_DIR/after-effects-mcp-rs-macos-universal.tar.gz"
+ARCHIVE_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.tar.gz"
 tar -C "$STAGE_DIR" -czf "$ARCHIVE_PATH" .
 echo "Created archive: $ARCHIVE_PATH"
 
@@ -80,7 +80,7 @@ cp -R "$STAGE_DIR/premiere-cep/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere
 mkdir -p "$INSTALL_SHARE_DIR/premiere-uxp"
 cp -R "$STAGE_DIR/premiere-uxp/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere-uxp/mcp-bridge-premiere"
 
-PKG_PATH="$OUTPUT_DIR/after-effects-mcp-rs-macos-universal.pkg"
+PKG_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.pkg"
 PKG_SCRIPTS_DIR="$OUTPUT_DIR/pkgscripts"
 mkdir -p "$PKG_SCRIPTS_DIR"
 cat > "$PKG_SCRIPTS_DIR/postinstall" <<'POSTINSTALL'
@@ -148,7 +148,7 @@ chmod +x "$PKG_SCRIPTS_DIR/postinstall"
 pkgbuild \
   --root "$PKG_ROOT" \
   --scripts "$PKG_SCRIPTS_DIR" \
-  --identifier "io.github.aodaruma.after-effects-mcp-rs" \
+  --identifier "io.github.aodaruma.adobe-mcp-rs" \
   --version "0.2.0" \
   --install-location "/" \
   "$PKG_PATH"

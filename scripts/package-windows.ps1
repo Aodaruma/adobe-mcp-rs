@@ -73,7 +73,7 @@ try {
     Copy-Item $premiereUxpPath (Join-Path $premiereUxpStageDir "mcp-bridge-premiere") -Recurse -Force
     Copy-Item $installerBridgeScriptPath (Join-Path $stageDir "install-bridge-installer.ps1") -Force
 
-    $zipPath = Join-Path $output "after-effects-mcp-rs-windows-x86_64.zip"
+    $zipPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
     Write-Host "Created archive: $zipPath"
@@ -89,7 +89,7 @@ try {
     }
 
     $wxsPath = Join-Path $output "ae-mcp.wxs"
-    $msiPath = Join-Path $output "after-effects-mcp-rs-windows-x86_64.msi"
+    $msiPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.msi"
     $escapedExe = (Join-Path $stageDir "ae-mcp.exe").Replace("\", "\\")
     $escapedPrExe = (Join-Path $stageDir "pr-mcp.exe").Replace("\", "\\")
     $escapedBridgePanel = (Join-Path $stageDir "mcp-bridge-auto.jsx").Replace("\", "\\")
@@ -110,8 +110,8 @@ try {
     @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="After Effects MCP (Rust)"
-           Manufacturer="after-effects-mcp-rs contributors"
+  <Package Name="Adobe MCP (Rust)"
+           Manufacturer="adobe-mcp-rs contributors"
            Version="0.2.0.0"
            UpgradeCode="D7C1D860-4DA9-4E1E-B64A-8F64B7D9CC6E"
            Compressed="yes">
@@ -196,7 +196,7 @@ try {
       <Custom Action="InstallAeBridgePanels" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
       <Custom Action="InstallUserPremiereUxpAndCodexConfig" After="InstallAeBridgePanels" Condition="NOT Installed AND NOT REMOVE" />
     </InstallExecuteSequence>
-    <Feature Id="MainFeature" Title="After Effects MCP" Level="1">
+    <Feature Id="MainFeature" Title="Adobe MCP" Level="1">
       <ComponentRef Id="AeMcpExeComponent" />
       <ComponentRef Id="PrMcpExeComponent" />
       <ComponentRef Id="BridgeAssetsComponent" />

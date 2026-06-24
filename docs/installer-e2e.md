@@ -13,8 +13,8 @@
 
 ## 2.1 Windows
 
-- `after-effects-mcp-rs-windows-x86_64.zip`
-- `after-effects-mcp-rs-windows-x86_64.msi`
+- `adobe-mcp-rs-windows-x86_64.zip`
+- `adobe-mcp-rs-windows-x86_64.msi`
 
 生成コマンド:
 
@@ -24,8 +24,8 @@
 
 ## 2.2 macOS
 
-- `after-effects-mcp-rs-macos-universal.tar.gz`
-- `after-effects-mcp-rs-macos-universal.pkg`
+- `adobe-mcp-rs-macos-universal.tar.gz`
+- `adobe-mcp-rs-macos-universal.pkg`
 
 生成コマンド:
 
