@@ -513,6 +513,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-core"
+version = "0.2.0"
+dependencies = [
+ "mcp-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ps-mcp"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "bridge-core",
+ "clap",
+ "mcp-core",
+ "platform-service",
+ "ps-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"

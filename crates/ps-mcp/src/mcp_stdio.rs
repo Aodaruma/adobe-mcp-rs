@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use bridge_core::{BridgeClient, BridgeRunOptions, BridgeTarget};
 use mcp_core::AppConfig;
-use pr_core::{general_help_text, prompt_messages, prompt_specs, tool_specs};
+use ps_core::{general_help_text, prompt_messages, prompt_specs, tool_specs};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -74,7 +74,7 @@ async fn handle_request(
         "initialize" => Ok(json!({
             "protocolVersion": "2025-06-18",
             "serverInfo": {
-                "name": "PremiereServer",
+                "name": "PhotoshopServer",
                 "version": env!("CARGO_PKG_VERSION")
             },
             "capabilities": {
@@ -121,9 +121,9 @@ fn resources_list_result() -> Value {
     json!({
         "resources": [
             {
-                "name": "sequences",
-                "description": "List sequences in the current Premiere Pro project",
-                "uri": "premiere://sequences",
+                "name": "documents",
+                "description": "List open Photoshop documents",
+                "uri": "photoshop://documents",
                 "mimeType": "application/json"
             }
         ]
@@ -164,14 +164,14 @@ fn resources_read_result(cfg: &AppConfig, bridge: &BridgeClient, params: &Value)
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("resources/read requires parameter 'uri'"))?;
 
-    if uri != "premiere://sequences" {
+    if uri != "photoshop://documents" {
         return Err(anyhow!("unknown resource URI: {uri}"));
     }
 
     bridge.clear_results_file()?;
-    bridge.write_command_file("listSequences", json!({}))?;
+    bridge.write_command_file("listDocuments", json!({}))?;
     let text = bridge.wait_for_bridge_result(
-        Some("listSequences"),
+        Some("listDocuments"),
         Duration::from_millis(cfg.result_timeout_ms + 1_000),
         Duration::from_millis(cfg.poll_interval_ms),
     )?;
@@ -218,16 +218,16 @@ fn dispatch_tool_inner(
         "run-jsx" => run_jsx_tool(cfg, bridge, args),
         "run-jsx-file" => run_jsx_file_tool(cfg, bridge, args),
         "get-jsx-result" => get_jsx_result_tool(bridge, args),
-        "list-premiere-instances" => list_premiere_instances_tool(cfg, bridge),
+        "list-photoshop-instances" => list_photoshop_instances_tool(cfg, bridge),
         "run-script" => run_script_tool(cfg, bridge, args),
         "get-results" => {
             if let Some(request_id) = args.get("requestId").and_then(Value::as_str) {
                 let record = bridge.get_request_record(request_id)?;
-                Ok(tool_json(premiere_record_value(record.to_value()))?)
+                Ok(tool_json(photoshop_record_value(record.to_value()))?)
             } else {
                 let value = bridge
                     .latest_request_record()?
-                    .map(|record| premiere_record_value(record.to_value()))
+                    .map(|record| photoshop_record_value(record.to_value()))
                     .unwrap_or_else(
                         || json!({ "status": "empty", "message": "No retained request result." }),
                     );
@@ -244,10 +244,10 @@ fn dispatch_tool_inner(
 
 fn run_script_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Result<Value> {
     let script = required_non_empty_string(&args, "script")?;
-    if !pr_core::is_allowed_script(script) {
+    if !ps_core::is_allowed_script(script) {
         return Ok(tool_error(format!(
             "Script \"{script}\" is not allowed. Allowed scripts are: {}",
-            pr_core::ALLOWED_SCRIPTS.join(", ")
+            ps_core::ALLOWED_SCRIPTS.join(", ")
         )));
     }
 
@@ -264,7 +264,7 @@ fn run_script_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Resul
         parameters,
         &args,
         timeout_ms,
-        "Error running Premiere script",
+        "Error running Photoshop script",
     )
 }
 
@@ -289,7 +289,7 @@ fn run_jsx_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Result<V
         payload,
         &args,
         timeout_ms,
-        "Error running Premiere UXP code",
+        "Error running Photoshop UXP code",
     )
 }
 
@@ -298,7 +298,7 @@ fn run_jsx_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Res
     validate_unsafe_mode(&args)?;
     let description = required_non_empty_string(&args, "description")?;
     let code = fs::read_to_string(path)
-        .with_context(|| format!("failed to read Premiere UXP code file: {path}"))?;
+        .with_context(|| format!("failed to read Photoshop UXP code file: {path}"))?;
     validate_jsx_size(&code)?;
 
     let payload = json!({
@@ -317,24 +317,22 @@ fn run_jsx_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Res
         payload,
         &args,
         timeout_ms,
-        "Error running Premiere UXP file",
+        "Error running Photoshop UXP file",
     )
 }
 
 fn get_jsx_result_tool(bridge: &BridgeClient, args: Value) -> Result<Value> {
     let request_id = required_non_empty_string(&args, "requestId")?;
     let record = bridge.get_request_record(request_id)?;
-    Ok(tool_json(premiere_record_value(record.to_value()))?)
+    Ok(tool_json(photoshop_record_value(record.to_value()))?)
 }
 
-fn list_premiere_instances_tool(cfg: &AppConfig, bridge: &BridgeClient) -> Result<Value> {
-    let report =
-        bridge.discover_instances(Duration::from_millis(cfg.instance_heartbeat_stale_ms))?;
-    let count = report.instances.len();
+fn list_photoshop_instances_tool(cfg: &AppConfig, bridge: &BridgeClient) -> Result<Value> {
+    let instances =
+        bridge.list_active_instances(Duration::from_millis(cfg.instance_heartbeat_stale_ms))?;
     Ok(tool_json(json!({
-        "instances": report.instances,
-        "inactiveInstances": report.inactive_instances,
-        "count": count,
+        "instances": instances,
+        "count": instances.len(),
         "staleThresholdMs": cfg.instance_heartbeat_stale_ms
     }))?)
 }
@@ -399,7 +397,7 @@ fn run_bridge_command(
     };
 
     match bridge.run_command_sync(command, command_args, options) {
-        Ok(outcome) => Ok(tool_json(premiere_record_value(outcome.to_value()))?),
+        Ok(outcome) => Ok(tool_json(photoshop_record_value(outcome.to_value()))?),
         Err(error) => Ok(tool_error(format!("{error_prefix}: {error}"))),
     }
 }
@@ -415,7 +413,7 @@ fn required_non_empty_string<'a>(args: &'a Value, key: &str) -> Result<&'a str> 
 fn validate_unsafe_mode(args: &Value) -> Result<()> {
     let mode = required_non_empty_string(args, "mode")?;
     if mode != "unsafe" {
-        anyhow::bail!("only mode='unsafe' is currently supported for Premiere UXP execution");
+        anyhow::bail!("only mode='unsafe' is currently supported for Photoshop UXP execution");
     }
     Ok(())
 }
@@ -423,7 +421,7 @@ fn validate_unsafe_mode(args: &Value) -> Result<()> {
 fn validate_jsx_size(code: &str) -> Result<()> {
     if code.len() > MAX_JSX_BYTES {
         anyhow::bail!(
-            "Premiere UXP code is too large: {} bytes > {} bytes",
+            "Photoshop UXP code is too large: {} bytes > {} bytes",
             code.len(),
             MAX_JSX_BYTES
         );
@@ -438,37 +436,37 @@ fn timeout_ms_from_args(cfg: &AppConfig, args: &Value) -> u64 {
         .unwrap_or(cfg.result_timeout_ms)
 }
 
-fn premiere_record_value(mut value: Value) -> Value {
-    normalize_premiere_host_text(&mut value);
+fn photoshop_record_value(mut value: Value) -> Value {
+    normalize_photoshop_host_text(&mut value);
     if let Some(obj) = value.as_object_mut() {
         if let Some(instance) = obj.remove("aeInstance") {
-            obj.insert("premiereInstance".to_string(), instance);
+            obj.insert("photoshopInstance".to_string(), instance);
         }
     }
     value
 }
 
-fn normalize_premiere_host_text(value: &mut Value) {
+fn normalize_photoshop_host_text(value: &mut Value) {
     match value {
         Value::String(text) => {
             *text = text
-                .replace("After Effects", "Premiere Pro")
+                .replace("After Effects", "Photoshop")
                 .replace(
                     "Open Window > mcp-bridge-auto.jsx and enable Auto-run commands.",
-                    "Open Window > UXP Plugins > Premiere MCP Bridge and enable Auto-run commands.",
+                    "Open the Photoshop MCP Bridge panel and enable Auto-run commands.",
                 )
-                .replace("AE to", "Premiere Pro to")
-                .replace("AE instance", "Premiere Pro instance")
-                .replace("AE bridge", "Premiere Pro bridge");
+                .replace("AE to", "Photoshop to")
+                .replace("AE instance", "Photoshop instance")
+                .replace("AE bridge", "Photoshop bridge");
         }
         Value::Array(items) => {
             for item in items {
-                normalize_premiere_host_text(item);
+                normalize_photoshop_host_text(item);
             }
         }
         Value::Object(map) => {
             for item in map.values_mut() {
-                normalize_premiere_host_text(item);
+                normalize_photoshop_host_text(item);
             }
         }
         _ => {}
@@ -633,7 +631,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_list_contains_generic_execution_tools() {
+    fn tools_list_contains_photoshop_execution_tools() {
         let result = tools_list_result();
         let tools = result
             .get("tools")
@@ -650,7 +648,7 @@ mod tests {
             .any(|t| t.get("name").and_then(Value::as_str) == Some("run-script")));
         assert!(tools
             .iter()
-            .all(|t| t.get("name").and_then(Value::as_str) != Some("list-sequences")));
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("list-photoshop-instances")));
     }
 
     #[test]

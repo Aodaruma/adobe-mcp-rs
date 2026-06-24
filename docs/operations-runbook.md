@@ -54,10 +54,16 @@ ae-mcp autostart uninstall
 2. `get-results` が stale warning
 - AEの `mcp-bridge-auto.jsx` を開く
 - `Auto-run commands` を ON にする
+- `list-ae-instances` / `list-premiere-instances` の `inactiveInstances` を確認し、`heartbeat is stale`、parse error、空の `instanceId` などの理由を見る
 
 3. `method not found`（MCP）
 - クライアントが `serve-stdio` で起動しているか確認
 - 古いNode設定が残っていないか確認
+
+4. panel / UXP を開いたまま host app を再起動した後に instance が見えない
+- AE: `mcp-bridge-auto.jsx` を一度閉じて開き直し、heartbeat task のログを確認
+- Premiere UXP: `Window > UXP Plugins > Premiere MCP Bridge` を開き、Instance 表示と `~/Documents/pr-mcp-bridge/instances/<instanceId>/heartbeat.json` の更新時刻を確認
+- Premiere CEP fallback: `~/Documents/pr-mcp-bridge/instances/<instanceId>/heartbeat.json` が作成されているか確認
 
 ## 4. 監視ポイント
 

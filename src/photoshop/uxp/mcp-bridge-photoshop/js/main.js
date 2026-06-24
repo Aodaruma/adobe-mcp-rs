@@ -2,7 +2,10 @@
   var fs = safeRequire("fs");
   var os = safeRequire("os");
   var uxp = safeRequire("uxp");
-  var ppro = safeRequire("premierepro");
+  var photoshop = safeRequire("photoshop");
+  var app = photoshop && photoshop.app ? photoshop.app : null;
+  var action = photoshop && photoshop.action ? photoshop.action : null;
+  var core = photoshop && photoshop.core ? photoshop.core : null;
 
   var autoRunCheckbox = null;
   var statusEl = null;
@@ -32,15 +35,11 @@
       if (typeof require === "function") {
         return require(name);
       }
+      if (typeof window !== "undefined" && typeof window.require === "function") {
+        return window.require(name);
+      }
     } catch (_e) {}
     return null;
-  }
-
-  function refreshRequiredModules() {
-    fs = fs || safeRequire("fs");
-    os = os || safeRequire("os");
-    uxp = uxp || safeRequire("uxp");
-    ppro = ppro || safeRequire("premierepro");
   }
 
   function setText(el, text) {
@@ -84,34 +83,23 @@
   }
 
   function getHomeDir() {
-    refreshRequiredModules();
     if (os && os.homedir) {
       return os.homedir();
     }
     return "";
   }
 
-  function isValidInstanceId(value) {
-    return typeof value === "string" &&
-      /^pr-uxp-[A-Za-z0-9_.-]+$/.test(value) &&
-      value.length <= 128;
-  }
-
-  function createInstanceId() {
-    var random = Math.random().toString(36).slice(2, 10);
-    return "pr-uxp-" + Date.now().toString(36) + "-" + random;
-  }
-
   function getInstanceId() {
-    var key = "premiereMcpBridgeInstanceId";
+    var key = "photoshopMcpBridgeInstanceId";
     try {
       var stored = window.localStorage && window.localStorage.getItem(key);
-      if (isValidInstanceId(stored)) {
+      if (stored) {
         return stored;
       }
     } catch (_e) {}
 
-    var id = createInstanceId();
+    var random = Math.random().toString(36).slice(2, 10);
+    var id = "ps-uxp-" + Date.now().toString(36) + "-" + random;
     try {
       if (window.localStorage) {
         window.localStorage.setItem(key, id);
@@ -122,25 +110,17 @@
 
   var instanceId = getInstanceId();
 
-  function ensureInstanceId() {
-    if (!isValidInstanceId(instanceId)) {
-      instanceId = getInstanceId();
-    }
-    return instanceId;
-  }
-
   function getBridgePaths() {
-    ensureInstanceId();
-    var root = joinPath(getHomeDir(), "Documents", "pr-mcp-bridge");
+    var root = joinPath(getHomeDir(), "Documents", "ps-mcp-bridge");
     var instanceRoot = joinPath(root, "instances", instanceId);
     return {
       root: root,
-      commandFile: joinPath(root, "pr_command.json"),
-      resultFile: joinPath(root, "pr_mcp_result.json"),
+      commandFile: joinPath(root, "ps_command.json"),
+      resultFile: joinPath(root, "ps_mcp_result.json"),
       instancesRoot: joinPath(root, "instances"),
       instanceRoot: instanceRoot,
-      instanceCommandFile: joinPath(instanceRoot, "pr_command.json"),
-      instanceResultFile: joinPath(instanceRoot, "pr_mcp_result.json"),
+      instanceCommandFile: joinPath(instanceRoot, "ps_command.json"),
+      instanceResultFile: joinPath(instanceRoot, "ps_mcp_result.json"),
       heartbeatFile: joinPath(instanceRoot, "heartbeat.json")
     };
   }
@@ -197,32 +177,188 @@
     writeTextFile(path, JSON.stringify(value, null, 2));
   }
 
-  async function getProjectPath() {
+  function safeGet(target, key) {
+    if (!target) {
+      return null;
+    }
     try {
-      var project = await getActiveProject();
-      return project && project.path ? project.path : null;
+      var value = target[key];
+      return value === undefined ? null : value;
     } catch (_e) {
       return null;
     }
   }
 
+  function primitiveOrString(value) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    var valueType = typeof value;
+    if (valueType === "string" || valueType === "number" || valueType === "boolean") {
+      return value;
+    }
+    try {
+      if (value.value !== undefined && value.unit !== undefined) {
+        return {
+          value: value.value,
+          unit: String(value.unit)
+        };
+      }
+    } catch (_e) {}
+    try {
+      if (value.toString && value.toString !== Object.prototype.toString) {
+        var text = value.toString();
+        if (text && text !== "[object Object]") {
+          return text;
+        }
+      }
+    } catch (_e2) {}
+    return toSerializable(value, 0, []);
+  }
+
+  function collectionToArray(collection) {
+    var items = [];
+    if (!collection) {
+      return items;
+    }
+    if (Array.isArray(collection)) {
+      return collection.slice(0);
+    }
+    if (typeof collection.forEach === "function") {
+      try {
+        collection.forEach(function (item) {
+          items.push(item);
+        });
+        return items;
+      } catch (_e) {}
+    }
+    var length = collectionLength(collection);
+    for (var i = 0; i < length; i++) {
+      try {
+        items.push(collection[i]);
+      } catch (_e2) {}
+    }
+    return items;
+  }
+
+  function collectionLength(collection) {
+    if (!collection) {
+      return 0;
+    }
+    var keys = ["length", "count", "numItems"];
+    for (var i = 0; i < keys.length; i++) {
+      var value = safeGet(collection, keys[i]);
+      if (typeof value === "number" && !isNaN(value)) {
+        return value;
+      }
+    }
+    if (Array.isArray(collection)) {
+      return collection.length;
+    }
+    return 0;
+  }
+
+  function getDocumentsArray() {
+    if (!app) {
+      return [];
+    }
+    return collectionToArray(safeGet(app, "documents"));
+  }
+
+  function getActiveDocumentOrNull() {
+    if (!app) {
+      return null;
+    }
+    try {
+      return app.activeDocument || null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function summarizeDocument(doc, index) {
+    if (!doc) {
+      return null;
+    }
+    var title = safeGet(doc, "title") || safeGet(doc, "name") || "";
+    return {
+      index: index,
+      id: safeGet(doc, "id"),
+      title: title,
+      name: safeGet(doc, "name") || title,
+      path: safeGet(doc, "path"),
+      width: primitiveOrString(safeGet(doc, "width")),
+      height: primitiveOrString(safeGet(doc, "height")),
+      resolution: primitiveOrString(safeGet(doc, "resolution")),
+      mode: primitiveOrString(safeGet(doc, "mode")),
+      saved: safeGet(doc, "saved"),
+      layerCount: collectionLength(safeGet(doc, "layers"))
+    };
+  }
+
+  function resolveDocument(args) {
+    args = args || {};
+    var documents = getDocumentsArray();
+    if (args.documentId !== undefined && args.documentId !== null) {
+      var targetId = String(args.documentId);
+      for (var idIndex = 0; idIndex < documents.length; idIndex++) {
+        if (String(safeGet(documents[idIndex], "id")) === targetId) {
+          return documents[idIndex];
+        }
+      }
+      return null;
+    }
+
+    if (args.documentTitle || args.documentName) {
+      var needle = String(args.documentTitle || args.documentName).toLowerCase();
+      for (var nameIndex = 0; nameIndex < documents.length; nameIndex++) {
+        var title = String(safeGet(documents[nameIndex], "title") || safeGet(documents[nameIndex], "name") || "").toLowerCase();
+        if (title === needle) {
+          return documents[nameIndex];
+        }
+      }
+      return null;
+    }
+
+    if (args.documentIndex !== undefined && args.documentIndex !== null) {
+      var idxNumber = Number(args.documentIndex);
+      if (!isNaN(idxNumber)) {
+        var oneBased = idxNumber - 1;
+        if (oneBased >= 0 && oneBased < documents.length) {
+          return documents[oneBased];
+        }
+        if (idxNumber >= 0 && idxNumber < documents.length) {
+          return documents[idxNumber];
+        }
+      }
+      return null;
+    }
+
+    return getActiveDocumentOrNull();
+  }
+
   async function writeHeartbeat(status) {
     var paths = getBridgePaths();
     var host = uxp && uxp.host ? uxp.host : {};
-    var appVersion = host.version || "";
-    var projectPath = await getProjectPath();
+    var appVersion = host.version || safeGet(app, "version") || "";
+    var activeDocument = getActiveDocumentOrNull();
     var payload = {
+      protocolVersion: 1,
       instanceId: instanceId,
-      appName: host.name || "Premiere Pro",
+      hostId: "photoshop",
+      appName: host.name || "Photoshop",
       appVersion: appVersion,
-      displayName: appVersion ? "Premiere Pro " + appVersion : "Premiere Pro UXP",
-      projectPath: projectPath,
+      displayName: appVersion ? "Photoshop " + appVersion : "Photoshop UXP",
+      projectPath: activeDocument ? safeGet(activeDocument, "path") : null,
+      bridgeRuntime: "uxp",
+      capabilities: ["run-jsx", "documents.list", "layers.list", "batchPlay"],
       status: status || state.lastStatus || "idle",
       currentRequestId: currentRequestId,
       bridgeRoot: paths.root,
       commandFile: paths.instanceCommandFile,
       resultFile: paths.instanceResultFile,
       lastHeartbeatAt: nowIso(),
+      updatedAt: nowIso(),
       heartbeatPath: paths.heartbeatFile
     };
     writeJsonFile(paths.heartbeatFile, payload);
@@ -385,19 +521,11 @@
     }
     pollInFlight = true;
     try {
-      refreshRequiredModules();
-      if (!fs || !os) {
-        throw new Error("Required UXP file system modules are not available.");
+      if (!fs || !os || !photoshop || !app) {
+        throw new Error("Required Photoshop UXP modules are not available.");
       }
       await ensureBridgeDirs();
       await writeHeartbeat(state.lastStatus || "idle");
-      if (!ppro) {
-        setState({
-          lastStatus: "error",
-          lastError: "Premiere UXP module is not available yet."
-        });
-        return;
-      }
       if (!autoRun) {
         setState({
           lastStatus: "idle",
@@ -424,196 +552,120 @@
     }
   }
 
-  async function getActiveProject() {
-    if (!ppro || !ppro.Project || !ppro.Project.getActiveProject) {
-      throw new Error("Premiere UXP Project API is not available.");
-    }
-    return await ppro.Project.getActiveProject();
+  function getAppInfo() {
+    var host = uxp && uxp.host ? uxp.host : {};
+    var documents = getDocumentsArray();
+    var activeDocument = getActiveDocumentOrNull();
+    return {
+      status: "success",
+      app: {
+        name: host.name || "Photoshop",
+        version: host.version || safeGet(app, "version") || null,
+        locale: safeGet(app, "locale"),
+        documentCount: documents.length,
+        activeDocument: activeDocument ? summarizeDocument(activeDocument, null) : null
+      }
+    };
   }
 
-  function stringifyIdentifier(value) {
-    if (value === undefined || value === null) {
+  function listDocuments() {
+    var documents = getDocumentsArray();
+    var activeDocument = getActiveDocumentOrNull();
+    var activeId = activeDocument ? safeGet(activeDocument, "id") : null;
+    var items = [];
+    for (var i = 0; i < documents.length; i++) {
+      var summary = summarizeDocument(documents[i], i + 1);
+      if (summary) {
+        summary.active = activeId !== null && String(summary.id) === String(activeId);
+        items.push(summary);
+      }
+    }
+    return {
+      status: "success",
+      total: items.length,
+      documents: items
+    };
+  }
+
+  function getActiveDocument() {
+    var doc = getActiveDocumentOrNull();
+    if (!doc) {
+      return {
+        status: "error",
+        message: "No active Photoshop document."
+      };
+    }
+    return {
+      status: "success",
+      document: summarizeDocument(doc, null)
+    };
+  }
+
+  function summarizeLayer(layer, index, depth, recursive, maxDepth) {
+    if (!layer) {
       return null;
     }
-    if (typeof value === "string") {
-      return value || null;
-    }
-    if (typeof value === "number" || typeof value === "boolean") {
-      return String(value);
-    }
-    try {
-      if (value.toString && value.toString !== Object.prototype.toString) {
-        var text = value.toString();
-        if (text && text !== "[object Object]") {
-          return text;
+    var childCollection = safeGet(layer, "layers");
+    var children = [];
+    if (recursive && depth < maxDepth) {
+      var childLayers = collectionToArray(childCollection);
+      for (var i = 0; i < childLayers.length; i++) {
+        var child = summarizeLayer(childLayers[i], i + 1, depth + 1, recursive, maxDepth);
+        if (child) {
+          children.push(child);
         }
       }
-    } catch (_e) {}
-    try {
-      if (value.valueOf && value.valueOf !== Object.prototype.valueOf) {
-        var primitive = value.valueOf();
-        if (primitive !== value) {
-          return stringifyIdentifier(primitive);
-        }
-      }
-    } catch (_e2) {}
-    return null;
+    }
+
+    var item = {
+      index: index,
+      id: safeGet(layer, "id"),
+      name: safeGet(layer, "name") || "",
+      kind: primitiveOrString(safeGet(layer, "kind")),
+      visible: safeGet(layer, "visible"),
+      opacity: primitiveOrString(safeGet(layer, "opacity")),
+      blendMode: primitiveOrString(safeGet(layer, "blendMode")),
+      locked: safeGet(layer, "locked"),
+      isBackgroundLayer: safeGet(layer, "isBackgroundLayer"),
+      childCount: collectionLength(childCollection)
+    };
+    if (children.length) {
+      item.layers = children;
+    }
+    return item;
   }
 
-  function getSequenceId(sequence) {
-    if (!sequence) {
-      return null;
-    }
-    var candidates = [sequence.guid, sequence.sequenceID, sequence.id];
-    for (var i = 0; i < candidates.length; i++) {
-      var id = stringifyIdentifier(candidates[i]);
-      if (id) {
-        return id;
-      }
-    }
-    return null;
-  }
-
-  async function getProjectSequences(project) {
-    if (!project || !project.getSequences) {
-      return [];
-    }
-    var sequences = await project.getSequences();
-    return sequences || [];
-  }
-
-  async function findSequenceIndex(project, target) {
-    var sequences = await getProjectSequences(project);
-    var targetId = getSequenceId(target);
-    for (var i = 0; i < sequences.length; i++) {
-      var seq = sequences[i];
-      if (seq === target) {
-        return i + 1;
-      }
-      if (targetId && getSequenceId(seq) === targetId) {
-        return i + 1;
-      }
-    }
-    return null;
-  }
-
-  async function resolveSequence(args) {
+  function listLayers(args) {
     args = args || {};
-    var project = await getActiveProject();
-    if (!project) {
-      return { project: null, sequence: null };
-    }
-
-    var sequences = await getProjectSequences(project);
-    if (args.sequenceName) {
-      var needle = String(args.sequenceName).toLowerCase();
-      for (var i = 0; i < sequences.length; i++) {
-        if (sequences[i] && String(sequences[i].name || "").toLowerCase() === needle) {
-          return { project: project, sequence: sequences[i] };
-        }
-      }
-    }
-
-    if (args.sequenceIndex !== undefined && args.sequenceIndex !== null) {
-      var idxNumber = Number(args.sequenceIndex);
-      if (!isNaN(idxNumber)) {
-        var oneBased = idxNumber - 1;
-        if (oneBased >= 0 && oneBased < sequences.length) {
-          return { project: project, sequence: sequences[oneBased] };
-        }
-        if (idxNumber >= 0 && idxNumber < sequences.length) {
-          return { project: project, sequence: sequences[idxNumber] };
-        }
-      }
-    }
-
-    var active = project.getActiveSequence ? await project.getActiveSequence() : null;
-    return { project: project, sequence: active };
-  }
-
-  function collectionLength(collection) {
-    if (!collection) {
-      return 0;
-    }
-    var keys = ["length", "numTracks", "numItems", "numSequences"];
-    for (var i = 0; i < keys.length; i++) {
-      var value = collection[keys[i]];
-      if (typeof value === "number" && !isNaN(value)) {
-        return value;
-      }
-    }
-    return 0;
-  }
-
-  async function getSequencePlayhead(sequence) {
-    if (!sequence || !sequence.getPlayerPosition) {
-      return null;
-    }
-    try {
-      var position = await sequence.getPlayerPosition();
-      return {
-        seconds: position && position.seconds !== undefined ? position.seconds : null,
-        ticks: position && position.ticks !== undefined ? String(position.ticks) : null
-      };
-    } catch (_e) {
-      return null;
-    }
-  }
-
-  async function summarizeSequence(project, sequence) {
-    if (!sequence) {
-      return null;
-    }
-    return {
-      name: sequence.name || "",
-      index: project ? await findSequenceIndex(project, sequence) : null,
-      id: getSequenceId(sequence),
-      videoTrackCount: collectionLength(sequence.videoTracks),
-      audioTrackCount: collectionLength(sequence.audioTracks),
-      playhead: await getSequencePlayhead(sequence)
-    };
-  }
-
-  async function getProjectInfo() {
-    var project = await getActiveProject();
-    if (!project) {
+    var doc = resolveDocument(args);
+    if (!doc) {
       return {
         status: "error",
-        message: "Premiere project is not available."
+        message: "Photoshop document not found."
       };
     }
 
-    var sequences = await getProjectSequences(project);
-    var active = project.getActiveSequence ? await project.getActiveSequence() : null;
-    return {
-      status: "success",
-      project: {
-        name: project.name || "",
-        path: project.path || null,
-        sequenceCount: sequences.length || 0,
-        activeSequence: await summarizeSequence(project, active)
+    var recursive = args.recursive !== undefined ? !!args.recursive : true;
+    var maxDepth = args.maxDepth !== undefined && args.maxDepth !== null ? Number(args.maxDepth) : 10;
+    if (isNaN(maxDepth) || maxDepth < 0) {
+      maxDepth = 10;
+    }
+
+    var layers = collectionToArray(safeGet(doc, "layers"));
+    var items = [];
+    for (var i = 0; i < layers.length; i++) {
+      var summary = summarizeLayer(layers[i], i + 1, 0, recursive, maxDepth);
+      if (summary) {
+        items.push(summary);
       }
-    };
-  }
-
-  async function getSequenceInfo(args) {
-    var resolved = await resolveSequence(args || {});
-    if (!resolved.project) {
-      return {
-        status: "error",
-        message: "Premiere project is not available."
-      };
-    }
-    if (!resolved.sequence) {
-      return {
-        status: "error",
-        message: "Sequence not found."
-      };
     }
 
     return {
       status: "success",
-      sequence: await summarizeSequence(resolved.project, resolved.sequence)
+      document: summarizeDocument(doc, null),
+      total: items.length,
+      recursive: recursive,
+      layers: items
     };
   }
 
@@ -644,6 +696,7 @@
     seen.push(value);
 
     if (Object.prototype.toString.call(value) === "[object Date]") {
+      seen.pop();
       return value.toISOString ? value.toISOString() : String(value);
     }
     if (Array.isArray(value)) {
@@ -672,20 +725,33 @@
 
   function createExecutionBridge() {
     return {
-      getActiveProject: getActiveProject,
-      getProjectSequences: getProjectSequences,
-      getProjectInfo: getProjectInfo,
-      listSequences: listSequences,
-      getActiveSequence: getActiveSequence,
-      getSequenceInfo: getSequenceInfo,
-      setPlayheadTime: setPlayheadTime,
-      exportSequence: exportSequence,
+      getAppInfo: getAppInfo,
+      listDocuments: listDocuments,
+      getActiveDocument: getActiveDocument,
+      listLayers: listLayers,
+      getDocumentsArray: getDocumentsArray,
+      getActiveDocumentOrNull: getActiveDocumentOrNull,
+      summarizeDocument: summarizeDocument,
+      summarizeLayer: summarizeLayer,
       readJsonFile: readJsonFile,
       writeJsonFile: writeJsonFile,
       readTextFile: readTextFile,
       writeTextFile: writeTextFile,
       joinPath: joinPath,
       getBridgePaths: getBridgePaths,
+      toSerializable: toSerializable,
+      batchPlay: function (commands, options) {
+        if (!action || !action.batchPlay) {
+          throw new Error("Photoshop action.batchPlay API is not available.");
+        }
+        return action.batchPlay(commands, options || {});
+      },
+      executeAsModal: function (fn, options) {
+        if (core && core.executeAsModal) {
+          return core.executeAsModal(fn, options || { commandName: "Photoshop MCP command" });
+        }
+        return fn();
+      },
       require: safeRequire
     };
   }
@@ -713,15 +779,29 @@
 
     var fn = new Function(
       "args",
-      "ppro",
-      "premierepro",
+      "photoshop",
+      "app",
+      "action",
+      "core",
+      "batchPlay",
       "uxp",
       "fs",
       "os",
       "bridge",
       "\"use strict\";\nreturn (async function () {\n" + code + "\n}).call(bridge);"
     );
-    var result = await fn(userArgs, ppro, ppro, uxp, fs, os, bridge);
+    var result = await fn(
+      userArgs,
+      photoshop,
+      app,
+      action,
+      core,
+      bridge.batchPlay,
+      uxp,
+      fs,
+      os,
+      bridge
+    );
     return {
       status: "success",
       description: description,
@@ -752,18 +832,14 @@
         return await executeJsxFile(args);
       case "ping":
         return ping();
-      case "getProjectInfo":
-        return await getProjectInfo();
-      case "listSequences":
-        return await listSequences();
-      case "getActiveSequence":
-        return await getActiveSequence();
-      case "getSequenceInfo":
-        return await getSequenceInfo(args);
-      case "setPlayheadTime":
-        return await setPlayheadTime(args);
-      case "exportSequence":
-        return await exportSequence(args);
+      case "getAppInfo":
+        return getAppInfo();
+      case "listDocuments":
+        return listDocuments();
+      case "getActiveDocument":
+        return getActiveDocument();
+      case "listLayers":
+        return listLayers(args);
       default:
         return {
           status: "error",
@@ -776,170 +852,6 @@
     return {
       status: "success",
       message: "ok"
-    };
-  }
-
-  async function listSequences() {
-    var project = await getActiveProject();
-    if (!project) {
-      return {
-        status: "error",
-        message: "Premiere project is not available."
-      };
-    }
-
-    var sequences = await getProjectSequences(project);
-    if (!sequences || sequences.length === 0) {
-      return {
-        status: "error",
-        message: "No sequences found in the current project."
-      };
-    }
-
-    var items = [];
-    for (var i = 0; i < sequences.length; i++) {
-      var seq = sequences[i];
-      if (!seq) {
-        continue;
-      }
-      items.push({
-        index: i + 1,
-        name: seq.name || "",
-        id: getSequenceId(seq)
-      });
-    }
-
-    return {
-      status: "success",
-      total: items.length,
-      sequences: items
-    };
-  }
-
-  async function getActiveSequence() {
-    var project = await getActiveProject();
-    if (!project) {
-      return {
-        status: "error",
-        message: "Premiere project is not available."
-      };
-    }
-
-    var seq = project.getActiveSequence ? await project.getActiveSequence() : null;
-    if (!seq) {
-      return {
-        status: "error",
-        message: "No active sequence."
-      };
-    }
-
-    return {
-      status: "success",
-      sequence: {
-        name: seq.name || "",
-        index: await findSequenceIndex(project, seq),
-        id: getSequenceId(seq)
-      }
-    };
-  }
-
-  function makeTickTime(args) {
-    if (!ppro || !ppro.TickTime) {
-      throw new Error("Premiere UXP TickTime API is not available.");
-    }
-    if (args.timeTicks !== undefined && args.timeTicks !== null) {
-      return ppro.TickTime.createWithTicks(String(args.timeTicks));
-    }
-    if (args.timeSeconds !== undefined && args.timeSeconds !== null) {
-      var seconds = Number(args.timeSeconds);
-      if (isNaN(seconds)) {
-        throw new Error("timeSeconds must be a number.");
-      }
-      return ppro.TickTime.createWithSeconds(seconds);
-    }
-    throw new Error("timeSeconds or timeTicks is required.");
-  }
-
-  async function setPlayheadTime(args) {
-    args = args || {};
-    var resolved = await resolveSequence(args);
-    var seq = resolved.sequence;
-    if (!seq) {
-      return {
-        status: "error",
-        message: "Sequence not found."
-      };
-    }
-
-    var tickTime = makeTickTime(args);
-    var result = await seq.setPlayerPosition(tickTime);
-    return {
-      status: "success",
-      result: result,
-      sequenceName: seq.name || "",
-      timeSeconds: tickTime.seconds,
-      timeTicks: tickTime.ticks
-    };
-  }
-
-  async function exportSequence(args) {
-    args = args || {};
-    var resolved = await resolveSequence(args);
-    var seq = resolved.sequence;
-    if (!seq) {
-      return {
-        status: "error",
-        message: "Sequence not found."
-      };
-    }
-
-    var outputPath = args.outputPath;
-    if (!outputPath) {
-      return {
-        status: "error",
-        message: "outputPath is required."
-      };
-    }
-
-    var presetPath = args.presetPath;
-    if (!presetPath) {
-      return {
-        status: "error",
-        message: "presetPath is required."
-      };
-    }
-
-    if (!ppro || !ppro.EncoderManager || !ppro.EncoderManager.getManager) {
-      throw new Error("Premiere UXP EncoderManager API is not available.");
-    }
-
-    var constants = ppro.Constants || ppro.constants;
-    if (!constants || !constants.ExportType || !constants.ExportType.IMMEDIATELY) {
-      throw new Error("Premiere UXP ExportType constants are not available.");
-    }
-
-    var workAreaType = args.workAreaType !== undefined && args.workAreaType !== null
-      ? Number(args.workAreaType)
-      : 0;
-    var exportFull = args.exportFull !== undefined ? !!args.exportFull : workAreaType !== 1;
-
-    var encoder = await ppro.EncoderManager.getManager();
-    var result = await encoder.exportSequence(
-      seq,
-      constants.ExportType.IMMEDIATELY,
-      outputPath,
-      presetPath,
-      exportFull
-    );
-
-    return {
-      status: "success",
-      result: result,
-      sequenceName: seq.name || "",
-      outputPath: outputPath,
-      presetPath: presetPath,
-      workAreaType: workAreaType,
-      exportFull: exportFull
     };
   }
 
@@ -971,11 +883,16 @@
     });
   }
 
-  function startHeartbeatTimer() {
-    refreshRequiredModules();
+  async function startBridge() {
+    if (!initialized) {
+      initElements();
+    }
+    await pollOnce();
+    if (!pollTimer) {
+      pollTimer = window.setInterval(pollOnce, 1000);
+    }
     if (!heartbeatTimer) {
       heartbeatTimer = window.setInterval(function () {
-        refreshRequiredModules();
         ensureBridgeDirs()
           .then(function () {
             return writeHeartbeat(state.lastStatus || "idle");
@@ -988,28 +905,6 @@
           });
       }, 3000);
     }
-    ensureBridgeDirs()
-      .then(function () {
-        return writeHeartbeat(state.lastStatus || "idle");
-      })
-      .catch(function (err) {
-        setState({
-          lastStatus: "error",
-          lastError: errorText(err)
-        });
-      });
-  }
-
-  async function startBridge() {
-    refreshRequiredModules();
-    if (!initialized) {
-      initElements();
-    }
-    startHeartbeatTimer();
-    await pollOnce();
-    if (!pollTimer) {
-      pollTimer = window.setInterval(pollOnce, 1000);
-    }
   }
 
   function stopBridge() {
@@ -1017,9 +912,6 @@
       window.clearInterval(pollTimer);
       pollTimer = null;
     }
-  }
-
-  function stopHeartbeat() {
     if (heartbeatTimer) {
       window.clearInterval(heartbeatTimer);
       heartbeatTimer = null;
@@ -1032,24 +924,17 @@
         uxp.entrypoints.setup({
           panels: {
             mcpBridgePanel: {
+              create: function () {
+                startBridge();
+              },
               show: function () {
                 startBridge();
               },
               hide: function () {
-                setState({
-                  lastStatus: "hidden",
-                  lastMessage: "Panel hidden; heartbeat remains active.",
-                  lastError: null
-                });
-                startHeartbeatTimer();
-                if (pollTimer) {
-                  window.clearInterval(pollTimer);
-                  pollTimer = null;
-                }
+                stopBridge();
               },
               destroy: function () {
                 stopBridge();
-                stopHeartbeat();
               }
             }
           }

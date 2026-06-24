@@ -12,7 +12,7 @@ mkdir -p "$OUTPUT_DIR"
 pushd "$REPO_ROOT" >/dev/null
 
 echo "Building release binaries..."
-cargo build --release -p ae-mcp -p pr-mcp -p ai-mcp
+cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp
 
 BIN_PATH_AE="$REPO_ROOT/target/release/ae-mcp"
 if [[ ! -f "$BIN_PATH_AE" ]]; then
@@ -22,6 +22,11 @@ fi
 BIN_PATH_PR="$REPO_ROOT/target/release/pr-mcp"
 if [[ ! -f "$BIN_PATH_PR" ]]; then
   echo "Release binary not found: $BIN_PATH_PR" >&2
+  exit 1
+fi
+BIN_PATH_PS="$REPO_ROOT/target/release/ps-mcp"
+if [[ ! -f "$BIN_PATH_PS" ]]; then
+  echo "Release binary not found: $BIN_PATH_PS" >&2
   exit 1
 fi
 BIN_PATH_AI="$REPO_ROOT/target/release/ai-mcp"
@@ -44,6 +49,11 @@ if [[ ! -d "$PREMIERE_UXP_PATH" ]]; then
   echo "Premiere UXP bridge not found: $PREMIERE_UXP_PATH" >&2
   exit 1
 fi
+PHOTOSHOP_UXP_PATH="$REPO_ROOT/src/photoshop/uxp/mcp-bridge-photoshop"
+if [[ ! -d "$PHOTOSHOP_UXP_PATH" ]]; then
+  echo "Photoshop UXP bridge not found: $PHOTOSHOP_UXP_PATH" >&2
+  exit 1
+fi
 ILLUSTRATOR_CEP_PATH="$REPO_ROOT/src/illustrator/cep/mcp-bridge-illustrator"
 if [[ ! -d "$ILLUSTRATOR_CEP_PATH" ]]; then
   echo "Illustrator CEP bridge not found: $ILLUSTRATOR_CEP_PATH" >&2
@@ -56,6 +66,8 @@ cp "$BIN_PATH_AE" "$STAGE_DIR/ae-mcp"
 chmod +x "$STAGE_DIR/ae-mcp"
 cp "$BIN_PATH_PR" "$STAGE_DIR/pr-mcp"
 chmod +x "$STAGE_DIR/pr-mcp"
+cp "$BIN_PATH_PS" "$STAGE_DIR/ps-mcp"
+chmod +x "$STAGE_DIR/ps-mcp"
 cp "$BIN_PATH_AI" "$STAGE_DIR/ai-mcp"
 chmod +x "$STAGE_DIR/ai-mcp"
 cp "$BRIDGE_PANEL_PATH" "$STAGE_DIR/mcp-bridge-auto.jsx"
@@ -63,6 +75,8 @@ mkdir -p "$STAGE_DIR/premiere-cep"
 cp -R "$PREMIERE_CEP_PATH" "$STAGE_DIR/premiere-cep/mcp-bridge-premiere"
 mkdir -p "$STAGE_DIR/premiere-uxp"
 cp -R "$PREMIERE_UXP_PATH" "$STAGE_DIR/premiere-uxp/mcp-bridge-premiere"
+mkdir -p "$STAGE_DIR/photoshop-uxp"
+cp -R "$PHOTOSHOP_UXP_PATH" "$STAGE_DIR/photoshop-uxp/mcp-bridge-photoshop"
 mkdir -p "$STAGE_DIR/illustrator-cep"
 cp -R "$ILLUSTRATOR_CEP_PATH" "$STAGE_DIR/illustrator-cep/mcp-bridge-illustrator"
 
@@ -88,12 +102,15 @@ mkdir -p "$INSTALL_BIN_DIR"
 mkdir -p "$INSTALL_SHARE_DIR"
 cp "$STAGE_DIR/ae-mcp" "$INSTALL_BIN_DIR/ae-mcp"
 cp "$STAGE_DIR/pr-mcp" "$INSTALL_BIN_DIR/pr-mcp"
+cp "$STAGE_DIR/ps-mcp" "$INSTALL_BIN_DIR/ps-mcp"
 cp "$STAGE_DIR/ai-mcp" "$INSTALL_BIN_DIR/ai-mcp"
 cp "$STAGE_DIR/mcp-bridge-auto.jsx" "$INSTALL_SHARE_DIR/mcp-bridge-auto.jsx"
 mkdir -p "$INSTALL_SHARE_DIR/premiere-cep"
 cp -R "$STAGE_DIR/premiere-cep/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere-cep/mcp-bridge-premiere"
 mkdir -p "$INSTALL_SHARE_DIR/premiere-uxp"
 cp -R "$STAGE_DIR/premiere-uxp/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere-uxp/mcp-bridge-premiere"
+mkdir -p "$INSTALL_SHARE_DIR/photoshop-uxp"
+cp -R "$STAGE_DIR/photoshop-uxp/mcp-bridge-photoshop" "$INSTALL_SHARE_DIR/photoshop-uxp/mcp-bridge-photoshop"
 mkdir -p "$INSTALL_SHARE_DIR/illustrator-cep"
 cp -R "$STAGE_DIR/illustrator-cep/mcp-bridge-illustrator" "$INSTALL_SHARE_DIR/illustrator-cep/mcp-bridge-illustrator"
 
@@ -107,6 +124,8 @@ set -euo pipefail
 SOURCE_SCRIPT="/usr/local/share/ae-mcp/mcp-bridge-auto.jsx"
 PREMIERE_CEP_SOURCE="/usr/local/share/ae-mcp/premiere-cep/mcp-bridge-premiere"
 PREMIERE_UXP_MANIFEST="/usr/local/share/ae-mcp/premiere-uxp/mcp-bridge-premiere/manifest.json"
+PHOTOSHOP_UXP_MANIFEST="/usr/local/share/ae-mcp/photoshop-uxp/mcp-bridge-photoshop/manifest.json"
+ILLUSTRATOR_CEP_SOURCE="/usr/local/share/ae-mcp/illustrator-cep/mcp-bridge-illustrator"
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then
   echo "Bridge panel source not found: $SOURCE_SCRIPT"
   exit 0
@@ -141,23 +160,58 @@ done
 
 if [[ "$premiere_installed" -eq 0 ]]; then
   echo "No Adobe Premiere Pro installation found. Premiere bridge deployment skipped."
-  exit 0
+else
+  if [[ -d "$PREMIERE_CEP_SOURCE" ]]; then
+    CEP_ROOT="/Library/Application Support/Adobe/CEP/extensions"
+    mkdir -p "$CEP_ROOT"
+    rm -rf "$CEP_ROOT/mcp-bridge-premiere"
+    cp -R "$PREMIERE_CEP_SOURCE" "$CEP_ROOT/mcp-bridge-premiere"
+    echo "Premiere bridge installed: $CEP_ROOT/mcp-bridge-premiere"
+  else
+    echo "Premiere CEP source not found: $PREMIERE_CEP_SOURCE"
+  fi
+
+  if [[ -f "$PREMIERE_UXP_MANIFEST" ]]; then
+    echo "Premiere UXP bridge bundled. Load with Adobe UXP Developer Tool: $PREMIERE_UXP_MANIFEST"
+  else
+    echo "Premiere UXP manifest not found: $PREMIERE_UXP_MANIFEST"
+  fi
 fi
 
-if [[ -d "$PREMIERE_CEP_SOURCE" ]]; then
+photoshop_installed=0
+for ps_path in /Applications/Adobe\ Photoshop\ *; do
+  [[ -d "$ps_path" ]] || continue
+  ps_name="$(basename "$ps_path")"
+  [[ "$ps_name" =~ ^Adobe\ Photoshop\ [0-9]{4}$ ]] || continue
+  photoshop_installed=$((photoshop_installed + 1))
+done
+
+if [[ "$photoshop_installed" -eq 0 ]]; then
+  echo "No Adobe Photoshop installation found. Photoshop UXP bridge deployment skipped."
+elif [[ -f "$PHOTOSHOP_UXP_MANIFEST" ]]; then
+  echo "Photoshop UXP bridge bundled. Load with Adobe UXP Developer Tool: $PHOTOSHOP_UXP_MANIFEST"
+else
+  echo "Photoshop UXP manifest not found: $PHOTOSHOP_UXP_MANIFEST"
+fi
+
+illustrator_installed=0
+for ai_path in /Applications/Adobe\ Illustrator\ *; do
+  [[ -d "$ai_path" ]] || continue
+  ai_name="$(basename "$ai_path")"
+  [[ "$ai_name" =~ ^Adobe\ Illustrator\ [0-9]{4}$ ]] || continue
+  illustrator_installed=$((illustrator_installed + 1))
+done
+
+if [[ "$illustrator_installed" -eq 0 ]]; then
+  echo "No Adobe Illustrator installation found. Illustrator CEP bridge deployment skipped."
+elif [[ -d "$ILLUSTRATOR_CEP_SOURCE" ]]; then
   CEP_ROOT="/Library/Application Support/Adobe/CEP/extensions"
   mkdir -p "$CEP_ROOT"
-  rm -rf "$CEP_ROOT/mcp-bridge-premiere"
-  cp -R "$PREMIERE_CEP_SOURCE" "$CEP_ROOT/mcp-bridge-premiere"
-  echo "Premiere bridge installed: $CEP_ROOT/mcp-bridge-premiere"
+  rm -rf "$CEP_ROOT/mcp-bridge-illustrator"
+  cp -R "$ILLUSTRATOR_CEP_SOURCE" "$CEP_ROOT/mcp-bridge-illustrator"
+  echo "Illustrator CEP bridge installed: $CEP_ROOT/mcp-bridge-illustrator"
 else
-  echo "Premiere CEP source not found: $PREMIERE_CEP_SOURCE"
-fi
-
-if [[ -f "$PREMIERE_UXP_MANIFEST" ]]; then
-  echo "Premiere UXP bridge bundled. Load with Adobe UXP Developer Tool: $PREMIERE_UXP_MANIFEST"
-else
-  echo "Premiere UXP manifest not found: $PREMIERE_UXP_MANIFEST"
+  echo "Illustrator CEP source not found: $ILLUSTRATOR_CEP_SOURCE"
 fi
 POSTINSTALL
 chmod +x "$PKG_SCRIPTS_DIR/postinstall"

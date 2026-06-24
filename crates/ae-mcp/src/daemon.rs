@@ -129,12 +129,14 @@ fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Va
     match request.op.as_str() {
         "ping" => Ok(json!({ "status": "ok" })),
         "listInstances" => {
-            let instances = state.bridge.list_active_instances(Duration::from_millis(
-                state.cfg.instance_heartbeat_stale_ms,
-            ))?;
+            let report = state
+                .bridge
+                .discover_instances(Duration::from_millis(state.cfg.instance_heartbeat_stale_ms))?;
+            let count = report.instances.len();
             Ok(json!({
-                "instances": instances,
-                "count": instances.len(),
+                "instances": report.instances,
+                "inactiveInstances": report.inactive_instances,
+                "count": count,
                 "staleThresholdMs": state.cfg.instance_heartbeat_stale_ms
             }))
         }

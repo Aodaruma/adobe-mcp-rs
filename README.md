@@ -2,7 +2,7 @@
 
 Rust-based MCP servers and Adobe host bridge panels for LLM-driven local automation.
 
-This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the project can grow beyond After Effects. The current codebase contains the most complete implementation for After Effects, experimental Premiere Pro and Illustrator paths, and the shared Rust pieces needed to add Photoshop.
+This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the project can grow beyond After Effects. The current codebase contains the most complete implementation for After Effects, plus experimental Premiere Pro, Photoshop, and Illustrator paths.
 
 - Japanese: [README-ja.md](README-ja.md)
 
@@ -12,8 +12,8 @@ This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the
 |---|---|---|---|
 | After Effects | `ae-mcp` | ScriptUI / JSX panel | Primary supported path |
 | Premiere Pro | `pr-mcp` | UXP panel, CEP fallback | Experimental; API surface exists, install/release path still needs hardening |
-| Photoshop | planned `ps-mcp` | UXP plugin preferred | Planned |
-| Illustrator | `ai-mcp` | CEP / ExtendScript panel | Experimental; small file-bridge surface exists |
+| Photoshop | `ps-mcp` | UXP panel | Experimental; small generic execution and read-only script surface |
+| Illustrator | `ai-mcp` | CEP / ExtendScript panel | Experimental; small generic execution and document/artboard/layer script surface |
 
 ## Current Architecture
 
@@ -23,22 +23,27 @@ The workspace is split into reusable Rust crates and host-specific binaries:
 |---|---|
 | `crates/ae-mcp` | After Effects CLI, MCP stdio server, daemon, and bridge commands |
 | `crates/pr-mcp` | Premiere Pro CLI and MCP stdio server |
+| `crates/ps-mcp` | Photoshop CLI and MCP stdio server |
 | `crates/ai-core` | Illustrator tool specs, prompts, and allowlisted script names |
 | `crates/ai-mcp` | Illustrator CLI and MCP stdio server |
 | `crates/mcp-core` | Shared config, MCP tool/prompt specs, bridge path defaults |
 | `crates/bridge-core` | File bridge client, instance discovery, request registry, result retention |
 | `crates/platform-service` | Windows/macOS service and autostart helpers |
 | `crates/pr-core` | Premiere Pro tool specs, prompts, and allowlisted script names |
+| `crates/ps-core` | Photoshop tool specs, help text, and allowlisted script names |
 | `src/scripts` | After Effects JSX bridge and helper scripts |
 | `src/premiere/uxp` | Premiere Pro UXP bridge panel |
 | `src/premiere/cep` | Legacy Premiere Pro CEP bridge fallback |
+| `src/photoshop/uxp` | Photoshop UXP bridge panel |
 | `src/illustrator/cep` | Illustrator CEP / ExtendScript bridge panel |
 
 After Effects uses `ae-mcp serve-daemon` as a local broker. Bridge panels register under `~/Documents/ae-mcp-bridge/instances/<instanceId>/`, and MCP calls are routed to a target instance with retained `requestId` results.
 
 Premiere Pro currently reuses the same file-bridge pattern under `~/Documents/pr-mcp-bridge`. The UXP bridge is the intended path, while the CEP bridge remains a fallback. `pr-mcp serve-daemon` is not yet equivalent to the After Effects broker, so Premiere should still be treated as experimental.
 
-Illustrator currently uses a CEP panel backed by ExtendScript under `~/Documents/ai-mcp-bridge`. It shares the same `instances/` heartbeat and `registry/` retained-result pattern as Premiere, but installer automation is not yet wired.
+Photoshop currently reuses the same file-bridge pattern under `~/Documents/ps-mcp-bridge`. The UXP bridge exposes a small tool surface for arbitrary UXP code plus allowlisted read-only document/layer inspection scripts. `ps-mcp serve-daemon` is a heartbeat daemon only, matching the current Premiere shape rather than the After Effects broker.
+
+Illustrator currently uses a CEP panel backed by ExtendScript under `~/Documents/ai-mcp-bridge`. It shares the same `instances/` heartbeat and `registry/` retained-result pattern as Premiere and Photoshop, but installer automation is not yet wired.
 
 ## Setup
 
@@ -59,6 +64,7 @@ Build one host binary:
 ```powershell
 cargo build --release -p ae-mcp
 cargo build --release -p pr-mcp
+cargo build --release -p ps-mcp
 cargo build --release -p ai-mcp
 ```
 
@@ -109,6 +115,22 @@ Register the MCP server:
 codex mcp add premiere -- "<ABSOLUTE_PATH>\target\release\pr-mcp.exe" serve-stdio
 ```
 
+### Photoshop
+
+Build the binary:
+
+```powershell
+cargo build --release -p ps-mcp
+```
+
+Load the UXP bridge from `src/photoshop/uxp/mcp-bridge-photoshop` with Adobe UXP Developer Tool, then open `Photoshop MCP Bridge` from the Photoshop Plugins menu and keep `Auto-run commands` enabled.
+
+Register the MCP server:
+
+```powershell
+codex mcp add photoshop -- "<ABSOLUTE_PATH>\target\release\ps-mcp.exe" serve-stdio
+```
+
 ### Illustrator
 
 Build the binary:
@@ -147,6 +169,13 @@ Premiere Pro:
 '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list-premiere-instances","arguments":{}}}' | .\target\release\pr-mcp.exe serve-stdio
 ```
 
+Photoshop:
+
+```powershell
+.\target\release\ps-mcp.exe health
+'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list-photoshop-instances","arguments":{}}}' | .\target\release\ps-mcp.exe serve-stdio
+```
+
 Illustrator:
 
 ```powershell
@@ -179,6 +208,17 @@ Premiere Pro currently exposes:
 - `list-premiere-instances`
 - `run-bridge-test`
 
+Photoshop currently exposes:
+
+- `run-jsx`
+- `run-jsx-file`
+- `run-script`
+- `get-jsx-result`
+- `get-results`
+- `get-help`
+- `list-photoshop-instances`
+- `run-bridge-test`
+
 Illustrator currently exposes:
 
 - `run-jsx`
@@ -199,8 +239,8 @@ The next step is to make host support a first-class concept instead of cloning t
 1. Extract a small host adapter layer for host names, bridge root names, tool names, executable names, help text, and installer behavior.
 2. Normalize the bridge protocol across hosts: `heartbeat.json`, command files, result files, instance metadata, capabilities, and retained request records.
 3. Harden Premiere Pro to match the After Effects broker model or explicitly document it as direct file-bridge only.
-4. Add Photoshop through a UXP bridge first, using the Photoshop DOM and `batchPlay` for operations that are not covered by the DOM.
-5. Harden Illustrator installation and export coverage after validating the CEP bridge on current Illustrator versions. Keep UXP optional until public host support is clear enough for third-party automation.
+4. Harden the initial Photoshop UXP bridge with write operations, modal execution policies, and installer support.
+5. Harden the initial Illustrator CEP bridge with installer support, export coverage, and current-version runtime validation. Keep UXP optional until public host support is clear enough for third-party automation.
 
 Detailed notes are in [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md).
 
