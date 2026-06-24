@@ -36,6 +36,13 @@
     return null;
   }
 
+  function refreshRequiredModules() {
+    fs = fs || safeRequire("fs");
+    os = os || safeRequire("os");
+    uxp = uxp || safeRequire("uxp");
+    ppro = ppro || safeRequire("premierepro");
+  }
+
   function setText(el, text) {
     if (el) {
       el.textContent = text;
@@ -77,23 +84,34 @@
   }
 
   function getHomeDir() {
+    refreshRequiredModules();
     if (os && os.homedir) {
       return os.homedir();
     }
     return "";
   }
 
+  function isValidInstanceId(value) {
+    return typeof value === "string" &&
+      /^pr-uxp-[A-Za-z0-9_.-]+$/.test(value) &&
+      value.length <= 128;
+  }
+
+  function createInstanceId() {
+    var random = Math.random().toString(36).slice(2, 10);
+    return "pr-uxp-" + Date.now().toString(36) + "-" + random;
+  }
+
   function getInstanceId() {
     var key = "premiereMcpBridgeInstanceId";
     try {
       var stored = window.localStorage && window.localStorage.getItem(key);
-      if (stored) {
+      if (isValidInstanceId(stored)) {
         return stored;
       }
     } catch (_e) {}
 
-    var random = Math.random().toString(36).slice(2, 10);
-    var id = "pr-uxp-" + Date.now().toString(36) + "-" + random;
+    var id = createInstanceId();
     try {
       if (window.localStorage) {
         window.localStorage.setItem(key, id);
@@ -104,7 +122,15 @@
 
   var instanceId = getInstanceId();
 
+  function ensureInstanceId() {
+    if (!isValidInstanceId(instanceId)) {
+      instanceId = getInstanceId();
+    }
+    return instanceId;
+  }
+
   function getBridgePaths() {
+    ensureInstanceId();
     var root = joinPath(getHomeDir(), "Documents", "pr-mcp-bridge");
     var instanceRoot = joinPath(root, "instances", instanceId);
     return {
@@ -359,11 +385,19 @@
     }
     pollInFlight = true;
     try {
-      if (!fs || !os || !ppro) {
-        throw new Error("Required UXP modules are not available.");
+      refreshRequiredModules();
+      if (!fs || !os) {
+        throw new Error("Required UXP file system modules are not available.");
       }
       await ensureBridgeDirs();
       await writeHeartbeat(state.lastStatus || "idle");
+      if (!ppro) {
+        setState({
+          lastStatus: "error",
+          lastError: "Premiere UXP module is not available yet."
+        });
+        return;
+      }
       if (!autoRun) {
         setState({
           lastStatus: "idle",
@@ -937,16 +971,11 @@
     });
   }
 
-  async function startBridge() {
-    if (!initialized) {
-      initElements();
-    }
-    await pollOnce();
-    if (!pollTimer) {
-      pollTimer = window.setInterval(pollOnce, 1000);
-    }
+  function startHeartbeatTimer() {
+    refreshRequiredModules();
     if (!heartbeatTimer) {
       heartbeatTimer = window.setInterval(function () {
+        refreshRequiredModules();
         ensureBridgeDirs()
           .then(function () {
             return writeHeartbeat(state.lastStatus || "idle");
@@ -959,6 +988,28 @@
           });
       }, 3000);
     }
+    ensureBridgeDirs()
+      .then(function () {
+        return writeHeartbeat(state.lastStatus || "idle");
+      })
+      .catch(function (err) {
+        setState({
+          lastStatus: "error",
+          lastError: errorText(err)
+        });
+      });
+  }
+
+  async function startBridge() {
+    refreshRequiredModules();
+    if (!initialized) {
+      initElements();
+    }
+    startHeartbeatTimer();
+    await pollOnce();
+    if (!pollTimer) {
+      pollTimer = window.setInterval(pollOnce, 1000);
+    }
   }
 
   function stopBridge() {
@@ -966,6 +1017,9 @@
       window.clearInterval(pollTimer);
       pollTimer = null;
     }
+  }
+
+  function stopHeartbeat() {
     if (heartbeatTimer) {
       window.clearInterval(heartbeatTimer);
       heartbeatTimer = null;
@@ -982,10 +1036,20 @@
                 startBridge();
               },
               hide: function () {
-                stopBridge();
+                setState({
+                  lastStatus: "hidden",
+                  lastMessage: "Panel hidden; heartbeat remains active.",
+                  lastError: null
+                });
+                startHeartbeatTimer();
+                if (pollTimer) {
+                  window.clearInterval(pollTimer);
+                  pollTimer = null;
+                }
               },
               destroy: function () {
                 stopBridge();
+                stopHeartbeat();
               }
             }
           }

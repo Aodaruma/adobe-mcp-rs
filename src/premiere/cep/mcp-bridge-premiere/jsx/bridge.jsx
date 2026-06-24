@@ -64,8 +64,12 @@ var mcpBridgeState = {
     lastRunAt: null,
     bridgeRoot: null,
     commandFile: null,
-    resultFile: null
+    resultFile: null,
+    instanceId: null,
+    heartbeatFile: null
 };
+
+var mcpBridgeInstanceId = null;
 
 function mcpBridgeRootFolder() {
     var docs = Folder.myDocuments;
@@ -74,6 +78,48 @@ function mcpBridgeRootFolder() {
         root.create();
     }
     return root;
+}
+
+function mcpSanitizeBridgePathSegment(value) {
+    return String(value || "unknown").replace(/[^A-Za-z0-9_.-]/g, "_");
+}
+
+function mcpCreateBridgeInstanceId() {
+    var version = "unknown";
+    try {
+        version = app.version || "unknown";
+    } catch (_versionErr) {}
+    return "pr-cep-" +
+        mcpSanitizeBridgePathSegment(version) +
+        "-" +
+        (new Date().getTime()) +
+        "-" +
+        Math.floor(Math.random() * 1000000);
+}
+
+function mcpGetBridgeInstanceId() {
+    if (!mcpBridgeInstanceId) {
+        mcpBridgeInstanceId = mcpCreateBridgeInstanceId();
+    }
+    return mcpBridgeInstanceId;
+}
+
+function mcpBridgeInstancesFolder() {
+    var root = mcpBridgeRootFolder();
+    var folder = new Folder(root.fsName + "/instances");
+    if (!folder.exists) {
+        folder.create();
+    }
+    return folder;
+}
+
+function mcpBridgeInstanceFolder() {
+    var instances = mcpBridgeInstancesFolder();
+    var folder = new Folder(instances.fsName + "/" + mcpGetBridgeInstanceId());
+    if (!folder.exists) {
+        folder.create();
+    }
+    return folder;
 }
 
 function mcpBridgeCommandFile() {
@@ -86,13 +132,67 @@ function mcpBridgeResultFile() {
     return new File(root.fsName + "/pr_mcp_result.json");
 }
 
+function mcpBridgeInstanceCommandFile() {
+    var folder = mcpBridgeInstanceFolder();
+    return new File(folder.fsName + "/pr_command.json");
+}
+
+function mcpBridgeInstanceResultFile() {
+    var folder = mcpBridgeInstanceFolder();
+    return new File(folder.fsName + "/pr_mcp_result.json");
+}
+
+function mcpBridgeHeartbeatFile() {
+    var folder = mcpBridgeInstanceFolder();
+    return new File(folder.fsName + "/heartbeat.json");
+}
+
+function mcpBridgeWriteJsonFile(file, value) {
+    file.encoding = "UTF-8";
+    if (!file.open("w")) {
+        throw new Error("Failed to open file: " + file.fsName);
+    }
+    file.write(JSON.stringify(value, null, 2));
+    file.close();
+}
+
+function mcpBridgeWriteHeartbeat() {
+    var root = mcpBridgeRootFolder();
+    var cmd = mcpBridgeInstanceCommandFile();
+    var res = mcpBridgeInstanceResultFile();
+    var heartbeat = mcpBridgeHeartbeatFile();
+    var appVersion = "";
+    try {
+        appVersion = app.version ? String(app.version) : "";
+    } catch (_versionErr) {}
+    var payload = {
+        instanceId: mcpGetBridgeInstanceId(),
+        appName: "Premiere Pro",
+        appVersion: appVersion,
+        displayName: appVersion ? "Premiere Pro " + appVersion : "Premiere Pro CEP",
+        projectPath: null,
+        status: mcpBridgeState.lastStatus || "idle",
+        currentRequestId: mcpBridgeState.currentRequestId || null,
+        bridgeRoot: root.fsName,
+        commandFile: cmd.fsName,
+        resultFile: res.fsName,
+        lastHeartbeatAt: new Date().toISOString(),
+        heartbeatPath: heartbeat.fsName
+    };
+    mcpBridgeWriteJsonFile(heartbeat, payload);
+}
+
 function mcpBridgeGetState() {
     var root = mcpBridgeRootFolder();
-    var cmd = mcpBridgeCommandFile();
-    var res = mcpBridgeResultFile();
+    var cmd = mcpBridgeInstanceCommandFile();
+    var res = mcpBridgeInstanceResultFile();
+    var heartbeat = mcpBridgeHeartbeatFile();
     mcpBridgeState.bridgeRoot = root.fsName;
     mcpBridgeState.commandFile = cmd.fsName;
     mcpBridgeState.resultFile = res.fsName;
+    mcpBridgeState.instanceId = mcpGetBridgeInstanceId();
+    mcpBridgeState.heartbeatFile = heartbeat.fsName;
+    mcpBridgeWriteHeartbeat();
     return JSON.stringify(mcpBridgeState);
 }
 
@@ -115,60 +215,93 @@ function mcpExecuteCommand(command, args) {
     });
 }
 
-function mcpWriteResult(raw) {
-    var resultFile = mcpBridgeResultFile();
+function mcpWriteResult(raw, resultFile) {
+    resultFile = resultFile || mcpBridgeResultFile();
     resultFile.encoding = "UTF-8";
     if (!resultFile.open("w")) {
         throw new Error("Failed to open result file: " + resultFile.fsName);
     }
     resultFile.write(raw);
     resultFile.close();
+    var globalResultFile = mcpBridgeResultFile();
+    if (globalResultFile.fsName !== resultFile.fsName) {
+        globalResultFile.encoding = "UTF-8";
+        if (globalResultFile.open("w")) {
+            globalResultFile.write(raw);
+            globalResultFile.close();
+        }
+    }
 }
 
-function mcpUpdateCommandStatus(payload, status) {
+function mcpUpdateCommandStatus(commandFile, payload, status) {
     payload.status = status;
-    var cmdFile = mcpBridgeCommandFile();
-    cmdFile.encoding = "UTF-8";
-    if (!cmdFile.open("w")) {
-        throw new Error("Failed to open command file: " + cmdFile.fsName);
+    commandFile.encoding = "UTF-8";
+    if (!commandFile.open("w")) {
+        throw new Error("Failed to open command file: " + commandFile.fsName);
     }
-    cmdFile.write(JSON.stringify(payload, null, 2));
-    cmdFile.close();
+    commandFile.write(JSON.stringify(payload, null, 2));
+    commandFile.close();
+}
+
+function mcpReadCommandPayload(commandFile) {
+    if (!commandFile.exists) {
+        return null;
+    }
+    commandFile.encoding = "UTF-8";
+    if (!commandFile.open("r")) {
+        throw new Error("Failed to open command file: " + commandFile.fsName);
+    }
+    var content = commandFile.read();
+    commandFile.close();
+    if (!content) {
+        return null;
+    }
+    return JSON.parse(content);
+}
+
+function mcpFindCommandContext() {
+    var instanceCommandFile = mcpBridgeInstanceCommandFile();
+    var instancePayload = mcpReadCommandPayload(instanceCommandFile);
+    if (instancePayload && instancePayload.command) {
+        return {
+            commandFile: instanceCommandFile,
+            resultFile: mcpBridgeInstanceResultFile(),
+            payload: instancePayload
+        };
+    }
+    var globalCommandFile = mcpBridgeCommandFile();
+    var globalPayload = mcpReadCommandPayload(globalCommandFile);
+    if (globalPayload && globalPayload.command) {
+        return {
+            commandFile: globalCommandFile,
+            resultFile: mcpBridgeResultFile(),
+            payload: globalPayload
+        };
+    }
+    return null;
 }
 
 function mcpBridgeCheck() {
     try {
+        mcpBridgeWriteHeartbeat();
         if (!mcpBridgeState.autoRun) {
             return mcpBridgeGetState();
         }
-        var cmdFile = mcpBridgeCommandFile();
-        if (!cmdFile.exists) {
-            mcpBridgeState.lastStatus = "waiting";
-            return mcpBridgeGetState();
-        }
-
-        cmdFile.encoding = "UTF-8";
-        if (!cmdFile.open("r")) {
-            mcpBridgeState.lastStatus = "error";
-            mcpBridgeState.lastError = "Failed to open command file";
-            return mcpBridgeGetState();
-        }
-        var content = cmdFile.read();
-        cmdFile.close();
-        if (!content) {
-            mcpBridgeState.lastStatus = "waiting";
-            return mcpBridgeGetState();
-        }
-
-        var payload = null;
+        var context = null;
         try {
-            payload = JSON.parse(content);
+            context = mcpFindCommandContext();
         } catch (parseErr) {
             mcpBridgeState.lastStatus = "error";
             mcpBridgeState.lastError = "Invalid command JSON";
             return mcpBridgeGetState();
         }
 
+        if (!context) {
+            mcpBridgeState.lastStatus = "waiting";
+            return mcpBridgeGetState();
+        }
+
+        var payload = context.payload;
         if (!payload || !payload.command) {
             mcpBridgeState.lastStatus = "waiting";
             return mcpBridgeGetState();
@@ -184,7 +317,8 @@ function mcpBridgeCheck() {
         var args = payload.args || {};
         var rawResult = "";
         try {
-            mcpUpdateCommandStatus(payload, "running");
+            mcpBridgeState.currentRequestId = payload.requestId || payload.request_id || null;
+            mcpUpdateCommandStatus(context.commandFile, payload, "running");
             rawResult = mcpExecuteCommand(command, args);
         } catch (err) {
             rawResult = JSON.stringify({
@@ -201,12 +335,15 @@ function mcpBridgeCheck() {
             var resultObj = JSON.parse(resultString);
             if (resultObj) {
                 resultObj._commandExecuted = command;
+                if (payload.requestId || payload.request_id) {
+                    resultObj._requestId = payload.requestId || payload.request_id;
+                }
                 resultObj._responseTimestamp = new Date().toISOString();
                 resultString = JSON.stringify(resultObj, null, 2);
             }
         } catch (_e) {}
 
-        mcpWriteResult(resultString);
+        mcpWriteResult(resultString, context.resultFile);
 
         var finalStatus = "completed";
         try {
@@ -216,16 +353,18 @@ function mcpBridgeCheck() {
             }
         } catch (_e2) {}
 
-        mcpUpdateCommandStatus(payload, finalStatus);
+        mcpUpdateCommandStatus(context.commandFile, payload, finalStatus);
 
         mcpBridgeState.lastStatus = finalStatus;
         mcpBridgeState.lastCommand = command;
         mcpBridgeState.lastMessage = "Executed command: " + command;
         mcpBridgeState.lastError = finalStatus === "error" ? "Command failed" : null;
         mcpBridgeState.lastRunAt = new Date().toISOString();
+        mcpBridgeState.currentRequestId = null;
     } catch (err) {
         mcpBridgeState.lastStatus = "error";
         mcpBridgeState.lastError = err.toString();
+        mcpBridgeState.currentRequestId = null;
     }
 
     return mcpBridgeGetState();

@@ -328,11 +328,13 @@ fn get_jsx_result_tool(bridge: &BridgeClient, args: Value) -> Result<Value> {
 }
 
 fn list_premiere_instances_tool(cfg: &AppConfig, bridge: &BridgeClient) -> Result<Value> {
-    let instances =
-        bridge.list_active_instances(Duration::from_millis(cfg.instance_heartbeat_stale_ms))?;
+    let report =
+        bridge.discover_instances(Duration::from_millis(cfg.instance_heartbeat_stale_ms))?;
+    let count = report.instances.len();
     Ok(tool_json(json!({
-        "instances": instances,
-        "count": instances.len(),
+        "instances": report.instances,
+        "inactiveInstances": report.inactive_instances,
+        "count": count,
         "staleThresholdMs": cfg.instance_heartbeat_stale_ms
     }))?)
 }
