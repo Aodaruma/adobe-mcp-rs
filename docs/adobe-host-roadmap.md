@@ -9,7 +9,7 @@
 | After Effects | `ae-mcp`、ScriptUI JSX bridge、daemon broker、instance registry が実装済み | 既存機能の整理と broker の安定化を継続 |
 | Premiere Pro | `pr-mcp`、UXP bridge、CEP fallback、allowlist script が実装済み | 実験的。daemon は AE と同等ではないため hardening が必要 |
 | Photoshop | repository 内には未実装 | UXP plugin を第一候補にする。Photoshop DOM と `batchPlay` で実装可能範囲を広げる |
-| Illustrator | repository 内には未実装 | まず公開 API / plugin 技術の確認 spike が必要。ExtendScript/CEP または native plugin bridge を baseline にする |
+| Illustrator | `ai-mcp` と CEP / ExtendScript bridge の初期実装あり | 実験的。読み取り系と exportDocument から検証し、installer hardening は別作業 |
 
 参考:
 
@@ -103,12 +103,18 @@ Spike:
 - CEP fallback のサポート状況を確認
 - 必要なら native C++ plugin + localhost bridge の実現性を検討
 
-Phase 1 の候補:
+Phase 1 実装済み:
 
 - `crates/ai-core` と `crates/ai-mcp`
 - `list-illustrator-instances`
 - `run-script` allowlist: `ping`, `getAppInfo`, `listDocuments`, `getActiveDocument`, `listArtboards`, `listLayers`, `exportDocument`
 - artboard / layer / selection / export の読み取り系を優先
+
+残作業:
+
+- CEP bridge の署名・debug mode・配置手順を installer に組み込む
+- `exportDocument` の format/options を実機 Illustrator で検証する
+- Illustrator DOM の selection / pageItem 操作を allowlist script として追加する
 
 ## Premiere hardening
 

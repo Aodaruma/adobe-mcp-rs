@@ -30,7 +30,7 @@ if (-not $output) {
 Push-Location $repoRoot
 try {
     Write-Host "Building release binaries..."
-    cargo build --release -p ae-mcp -p pr-mcp
+    cargo build --release -p ae-mcp -p pr-mcp -p ai-mcp
 
     $exePath = Join-Path $repoRoot "target\release\ae-mcp.exe"
     if (!(Test-Path $exePath)) {
@@ -39,6 +39,10 @@ try {
     $prExePath = Join-Path $repoRoot "target\release\pr-mcp.exe"
     if (!(Test-Path $prExePath)) {
         throw "Release binary not found: $prExePath"
+    }
+    $aiExePath = Join-Path $repoRoot "target\release\ai-mcp.exe"
+    if (!(Test-Path $aiExePath)) {
+        throw "Release binary not found: $aiExePath"
     }
     $bridgePanelPath = Join-Path $repoRoot "src\scripts\mcp-bridge-auto.jsx"
     if (!(Test-Path $bridgePanelPath)) {
@@ -52,6 +56,10 @@ try {
     if (!(Test-Path $premiereUxpPath)) {
         throw "Premiere UXP bridge not found: $premiereUxpPath"
     }
+    $illustratorCepPath = Join-Path $repoRoot "src\illustrator\cep\mcp-bridge-illustrator"
+    if (!(Test-Path $illustratorCepPath)) {
+        throw "Illustrator CEP bridge not found: $illustratorCepPath"
+    }
     $installerBridgeScriptPath = Join-Path $repoRoot "scripts\install-bridge-installer.ps1"
     if (!(Test-Path $installerBridgeScriptPath)) {
         throw "Installer bridge deployment script not found: $installerBridgeScriptPath"
@@ -64,6 +72,7 @@ try {
     Ensure-Directory $stageDir
     Copy-Item $exePath (Join-Path $stageDir "ae-mcp.exe") -Force
     Copy-Item $prExePath (Join-Path $stageDir "pr-mcp.exe") -Force
+    Copy-Item $aiExePath (Join-Path $stageDir "ai-mcp.exe") -Force
     Copy-Item $bridgePanelPath (Join-Path $stageDir "mcp-bridge-auto.jsx") -Force
     $premiereStageDir = Join-Path $stageDir "premiere-cep"
     Ensure-Directory $premiereStageDir
@@ -71,6 +80,9 @@ try {
     $premiereUxpStageDir = Join-Path $stageDir "premiere-uxp"
     Ensure-Directory $premiereUxpStageDir
     Copy-Item $premiereUxpPath (Join-Path $premiereUxpStageDir "mcp-bridge-premiere") -Recurse -Force
+    $illustratorCepStageDir = Join-Path $stageDir "illustrator-cep"
+    Ensure-Directory $illustratorCepStageDir
+    Copy-Item $illustratorCepPath (Join-Path $illustratorCepStageDir "mcp-bridge-illustrator") -Recurse -Force
     Copy-Item $installerBridgeScriptPath (Join-Path $stageDir "install-bridge-installer.ps1") -Force
 
     $zipPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.zip"

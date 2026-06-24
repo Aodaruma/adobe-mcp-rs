@@ -29,6 +29,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-core"
+version = "0.2.0"
+dependencies = [
+ "mcp-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ai-mcp"
+version = "0.2.0"
+dependencies = [
+ "ai-core",
+ "anyhow",
+ "bridge-core",
+ "clap",
+ "mcp-core",
+ "platform-service",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

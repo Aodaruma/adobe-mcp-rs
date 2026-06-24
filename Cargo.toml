@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/ae-mcp",
+    "crates/ai-core",
+    "crates/ai-mcp",
     "crates/bridge-core",
     "crates/mcp-core",
     "crates/platform-service",

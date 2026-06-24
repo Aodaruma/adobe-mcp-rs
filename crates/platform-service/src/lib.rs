@@ -305,7 +305,11 @@ fn autostart_stop(cfg: &AutostartConfig) -> Result<String> {
 fn autostart_status(cfg: &AutostartConfig) -> Result<String> {
     let installed = is_autostart_installed(cfg)?;
     let running = running_pid_for_config(cfg)?;
-    let install_state = if installed { "installed" } else { "not installed" };
+    let install_state = if installed {
+        "installed"
+    } else {
+        "not installed"
+    };
     let running_state = match running {
         Some(pid) => format!("running (pid={pid})"),
         None => "not running".to_string(),
@@ -538,7 +542,10 @@ mod tests {
     fn build_windows_command_line_quotes_spaces() {
         let command = build_windows_command_line(
             std::path::Path::new(r"C:\Program Files\AfterEffectsMcp\ae-mcp.exe"),
-            &[r"--config".to_string(), r"C:\Users\foo bar\ae-mcp.toml".to_string()],
+            &[
+                r"--config".to_string(),
+                r"C:\Users\foo bar\ae-mcp.toml".to_string(),
+            ],
         );
         assert!(command.contains(r#""C:\Program Files\AfterEffectsMcp\ae-mcp.exe""#));
         assert!(command.contains(r#""C:\Users\foo bar\ae-mcp.toml""#));
