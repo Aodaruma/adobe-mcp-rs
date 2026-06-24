@@ -71,6 +71,9 @@
     setText(resultFileEl, state.resultFile || "-");
 
     var logLines = [];
+    if (state.instanceId) {
+      logLines.push("Instance: " + state.instanceId);
+    }
     if (state.lastCommand) {
       logLines.push("Last command: " + state.lastCommand);
     }

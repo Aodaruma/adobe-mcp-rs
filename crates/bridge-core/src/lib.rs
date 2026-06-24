@@ -66,6 +66,34 @@ pub struct AeInstance {
     pub heartbeat_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceDiscoveryIssue {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_name: Option<String>,
+    pub heartbeat_path: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceDiscoveryReport {
+    pub instances: Vec<AeInstance>,
+    pub inactive_instances: Vec<InstanceDiscoveryIssue>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BridgeTarget {
     pub instance_id: Option<String>,
@@ -283,48 +311,131 @@ impl BridgeClient {
     }
 
     pub fn list_active_instances(&self, stale_threshold: Duration) -> Result<Vec<AeInstance>> {
+        Ok(self.discover_instances(stale_threshold)?.instances)
+    }
+
+    pub fn discover_instances(&self, stale_threshold: Duration) -> Result<InstanceDiscoveryReport> {
         let mut instances = Vec::new();
+        let mut inactive_instances = Vec::new();
         let dir = self.instances_dir();
         if !dir.exists() {
-            return Ok(instances);
+            return Ok(InstanceDiscoveryReport {
+                instances,
+                inactive_instances,
+            });
         }
 
         for entry in fs::read_dir(&dir)
             .with_context(|| format!("failed to read instances directory: {}", dir.display()))?
         {
             let entry = entry?;
+            let folder_name = entry
+                .file_name()
+                .to_str()
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
             let heartbeat_path = entry.path().join("heartbeat.json");
             if !heartbeat_path.exists() {
+                inactive_instances.push(instance_discovery_issue(
+                    folder_name,
+                    &heartbeat_path,
+                    "missing heartbeat.json",
+                    None,
+                    None,
+                ));
                 continue;
             }
             let metadata = match fs::metadata(&heartbeat_path) {
                 Ok(value) => value,
-                Err(_) => continue,
+                Err(error) => {
+                    inactive_instances.push(instance_discovery_issue(
+                        folder_name,
+                        &heartbeat_path,
+                        format!("failed to stat heartbeat.json: {error}"),
+                        None,
+                        None,
+                    ));
+                    continue;
+                }
             };
             let modified = metadata
                 .modified()
                 .unwrap_or_else(|_| SystemTime::now() - stale_threshold);
-            if SystemTime::now()
+            let age = SystemTime::now()
                 .duration_since(modified)
-                .unwrap_or_else(|_| Duration::from_secs(0))
-                > stale_threshold
-            {
-                continue;
-            }
+                .unwrap_or_else(|_| Duration::from_secs(0));
             let raw = match fs::read_to_string(&heartbeat_path) {
                 Ok(value) => value,
-                Err(_) => continue,
+                Err(error) => {
+                    inactive_instances.push(instance_discovery_issue(
+                        folder_name,
+                        &heartbeat_path,
+                        format!("failed to read heartbeat.json: {error}"),
+                        Some(age),
+                        None,
+                    ));
+                    continue;
+                }
             };
             let mut instance = match serde_json::from_str::<AeInstance>(&raw) {
                 Ok(value) => value,
-                Err(_) => continue,
+                Err(error) => {
+                    inactive_instances.push(instance_discovery_issue(
+                        folder_name,
+                        &heartbeat_path,
+                        format!("failed to parse heartbeat.json: {error}"),
+                        Some(age),
+                        None,
+                    ));
+                    continue;
+                }
             };
+            let parsed_issue = instance_discovery_issue_from_instance(
+                folder_name.clone(),
+                &heartbeat_path,
+                Some(age),
+                &instance,
+            );
+            if age > stale_threshold {
+                inactive_instances.push(InstanceDiscoveryIssue {
+                    reason: "heartbeat is stale".to_string(),
+                    ..parsed_issue
+                });
+                continue;
+            }
+            if instance.instance_id.trim().is_empty() {
+                inactive_instances.push(InstanceDiscoveryIssue {
+                    reason: "heartbeat has empty instanceId".to_string(),
+                    ..parsed_issue
+                });
+                continue;
+            }
+            if instance.bridge_root.trim().is_empty()
+                || instance.command_file.trim().is_empty()
+                || instance.result_file.trim().is_empty()
+            {
+                inactive_instances.push(InstanceDiscoveryIssue {
+                    reason: "heartbeat is missing bridgeRoot, commandFile, or resultFile"
+                        .to_string(),
+                    ..parsed_issue
+                });
+                continue;
+            }
             instance.heartbeat_path = Some(heartbeat_path.display().to_string());
             instances.push(instance);
         }
 
         instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
-        Ok(instances)
+        inactive_instances.sort_by(|a, b| {
+            a.folder_name
+                .as_deref()
+                .unwrap_or_default()
+                .cmp(b.folder_name.as_deref().unwrap_or_default())
+        });
+        Ok(InstanceDiscoveryReport {
+            instances,
+            inactive_instances,
+        })
     }
 
     pub fn run_command_sync(
@@ -905,6 +1016,55 @@ pub fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 
 fn instance_command_path(instance: &AeInstance) -> PathBuf {
     PathBuf::from(&instance.command_file)
+}
+
+fn instance_discovery_issue(
+    folder_name: Option<String>,
+    heartbeat_path: &Path,
+    reason: impl Into<String>,
+    age: Option<Duration>,
+    instance: Option<&AeInstance>,
+) -> InstanceDiscoveryIssue {
+    let mut issue = instance
+        .map(|value| {
+            instance_discovery_issue_from_instance(folder_name.clone(), heartbeat_path, age, value)
+        })
+        .unwrap_or_else(|| InstanceDiscoveryIssue {
+            instance_id: None,
+            folder_name: folder_name.clone(),
+            heartbeat_path: heartbeat_path.display().to_string(),
+            reason: String::new(),
+            age_ms: age.map(duration_millis_u64),
+            last_heartbeat_at: None,
+            app_name: None,
+            app_version: None,
+            status: None,
+        });
+    issue.reason = reason.into();
+    issue
+}
+
+fn instance_discovery_issue_from_instance(
+    folder_name: Option<String>,
+    heartbeat_path: &Path,
+    age: Option<Duration>,
+    instance: &AeInstance,
+) -> InstanceDiscoveryIssue {
+    InstanceDiscoveryIssue {
+        instance_id: Some(instance.instance_id.clone()),
+        folder_name,
+        heartbeat_path: heartbeat_path.display().to_string(),
+        reason: String::new(),
+        age_ms: age.map(duration_millis_u64),
+        last_heartbeat_at: Some(instance.last_heartbeat_at.clone()),
+        app_name: instance.app_name.clone(),
+        app_version: instance.app_version.clone(),
+        status: instance.status.clone(),
+    }
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 fn instance_result_path(instance: &AeInstance) -> PathBuf {

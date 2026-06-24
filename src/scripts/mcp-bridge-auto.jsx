@@ -2552,12 +2552,14 @@ debugLogCheckbox.value = false;
 
 // Check interval (ms)
 var checkInterval = 2000;
+var heartbeatInterval = 3000;
 var isChecking = false;
 var permissionStateKnown = false;
 var hasFileNetworkPermission = false;
 var hasShownPermissionDialog = false;
 var autoRunValueBeforePermissionLock = autoRunCheckbox.value;
 var commandCheckerTaskId = 0;
+var heartbeatTaskId = 0;
 var lastCommandCheckerState = "";
 var debugLogEnabled = false;
 var debugLogPathOverride = "";
@@ -2847,6 +2849,10 @@ function writeInstanceHeartbeat() {
     } catch (heartbeatError) {
         logToPanel("Failed to write instance heartbeat: " + heartbeatError.toString());
     }
+}
+
+function heartbeatTick() {
+    writeInstanceHeartbeat();
 }
 
 function hasFileNetworkAccessPermission() {
@@ -3618,14 +3624,33 @@ function stopCommandChecker() {
     commandCheckerTaskId = 0;
 }
 
+function startHeartbeatTask() {
+    stopHeartbeatTask();
+    writeInstanceHeartbeat();
+    heartbeatTaskId = app.scheduleTask("aeMcpHeartbeatTick()", heartbeatInterval, true);
+    logToPanel("Heartbeat task scheduled. taskId=" + heartbeatTaskId + " intervalMs=" + heartbeatInterval);
+}
+
+function stopHeartbeatTask() {
+    if (!heartbeatTaskId) {
+        return;
+    }
+    logToPanel("Stopping heartbeat task. taskId=" + heartbeatTaskId);
+    try {
+        app.cancelTask(heartbeatTaskId);
+    } catch (_e) {}
+    heartbeatTaskId = 0;
+}
+
 applyDebugLogConfig(readDebugLogConfig());
 resetDebugLogFileForSession();
 
 try {
     $.global.checkForCommands = checkForCommands;
-    logToPanel("Registered checkForCommands on $.global for scheduleTask.");
+    $.global.aeMcpHeartbeatTick = heartbeatTick;
+    logToPanel("Registered scheduled bridge functions on $.global.");
 } catch (globalRegisterError) {
-    logToPanel("Failed to register checkForCommands on $.global: " + globalRegisterError.toString());
+    logToPanel("Failed to register scheduled bridge functions on $.global: " + globalRegisterError.toString());
 }
 
 // Add manual check button
@@ -3662,10 +3687,12 @@ try {
 refreshPermissionState(true);
 
 // Start the command checker
+startHeartbeatTask();
 startCommandChecker();
 
 panel.onClose = function () {
     stopCommandChecker();
+    stopHeartbeatTask();
     try {
         var heartbeatFile = new File(getHeartbeatFilePath());
         if (heartbeatFile.exists) {
