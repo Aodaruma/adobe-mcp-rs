@@ -30,7 +30,7 @@ if (-not $output) {
 Push-Location $repoRoot
 try {
     Write-Host "Building release binaries..."
-    cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp
+    cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp
 
     $exePath = Join-Path $repoRoot "target\release\ae-mcp.exe"
     if (!(Test-Path $exePath)) {
@@ -43,6 +43,10 @@ try {
     $psExePath = Join-Path $repoRoot "target\release\ps-mcp.exe"
     if (!(Test-Path $psExePath)) {
         throw "Release binary not found: $psExePath"
+    }
+    $aiExePath = Join-Path $repoRoot "target\release\ai-mcp.exe"
+    if (!(Test-Path $aiExePath)) {
+        throw "Release binary not found: $aiExePath"
     }
     $bridgePanelPath = Join-Path $repoRoot "src\scripts\mcp-bridge-auto.jsx"
     if (!(Test-Path $bridgePanelPath)) {
@@ -60,6 +64,10 @@ try {
     if (!(Test-Path $photoshopUxpPath)) {
         throw "Photoshop UXP bridge not found: $photoshopUxpPath"
     }
+    $illustratorCepPath = Join-Path $repoRoot "src\illustrator\cep\mcp-bridge-illustrator"
+    if (!(Test-Path $illustratorCepPath)) {
+        throw "Illustrator CEP bridge not found: $illustratorCepPath"
+    }
     $installerBridgeScriptPath = Join-Path $repoRoot "scripts\install-bridge-installer.ps1"
     if (!(Test-Path $installerBridgeScriptPath)) {
         throw "Installer bridge deployment script not found: $installerBridgeScriptPath"
@@ -73,6 +81,7 @@ try {
     Copy-Item $exePath (Join-Path $stageDir "ae-mcp.exe") -Force
     Copy-Item $prExePath (Join-Path $stageDir "pr-mcp.exe") -Force
     Copy-Item $psExePath (Join-Path $stageDir "ps-mcp.exe") -Force
+    Copy-Item $aiExePath (Join-Path $stageDir "ai-mcp.exe") -Force
     Copy-Item $bridgePanelPath (Join-Path $stageDir "mcp-bridge-auto.jsx") -Force
     $premiereStageDir = Join-Path $stageDir "premiere-cep"
     Ensure-Directory $premiereStageDir
@@ -83,6 +92,9 @@ try {
     $photoshopUxpStageDir = Join-Path $stageDir "photoshop-uxp"
     Ensure-Directory $photoshopUxpStageDir
     Copy-Item $photoshopUxpPath (Join-Path $photoshopUxpStageDir "mcp-bridge-photoshop") -Recurse -Force
+    $illustratorCepStageDir = Join-Path $stageDir "illustrator-cep"
+    Ensure-Directory $illustratorCepStageDir
+    Copy-Item $illustratorCepPath (Join-Path $illustratorCepStageDir "mcp-bridge-illustrator") -Recurse -Force
     Copy-Item $installerBridgeScriptPath (Join-Path $stageDir "install-bridge-installer.ps1") -Force
 
     $zipPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.zip"
@@ -105,6 +117,7 @@ try {
     $escapedExe = (Join-Path $stageDir "ae-mcp.exe").Replace("\", "\\")
     $escapedPrExe = (Join-Path $stageDir "pr-mcp.exe").Replace("\", "\\")
     $escapedPsExe = (Join-Path $stageDir "ps-mcp.exe").Replace("\", "\\")
+    $escapedAiExe = (Join-Path $stageDir "ai-mcp.exe").Replace("\", "\\")
     $escapedBridgePanel = (Join-Path $stageDir "mcp-bridge-auto.jsx").Replace("\", "\\")
     $escapedBridgeInstallerPs1 = (Join-Path $stageDir "install-bridge-installer.ps1").Replace("\", "\\")
     $premiereRoot = Join-Path $stageDir "premiere-cep\mcp-bridge-premiere"
@@ -125,6 +138,12 @@ try {
     $escapedPhotoshopUxpReadme = (Join-Path $photoshopUxpRoot "README.md").Replace("\", "\\")
     $escapedPhotoshopUxpCss = (Join-Path $photoshopUxpRoot "css\styles.css").Replace("\", "\\")
     $escapedPhotoshopUxpJs = (Join-Path $photoshopUxpRoot "js\main.js").Replace("\", "\\")
+    $illustratorCepRoot = Join-Path $stageDir "illustrator-cep\mcp-bridge-illustrator"
+    $escapedIllustratorManifest = (Join-Path $illustratorCepRoot "CSXS\manifest.xml").Replace("\", "\\")
+    $escapedIllustratorIndex = (Join-Path $illustratorCepRoot "index.html").Replace("\", "\\")
+    $escapedIllustratorCss = (Join-Path $illustratorCepRoot "css\styles.css").Replace("\", "\\")
+    $escapedIllustratorJs = (Join-Path $illustratorCepRoot "js\main.js").Replace("\", "\\")
+    $escapedIllustratorJsx = (Join-Path $illustratorCepRoot "jsx\bridge.jsx").Replace("\", "\\")
 
     @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -145,6 +164,9 @@ try {
         </Component>
         <Component Id="PsMcpExeComponent" Guid="6B0F686E-D199-4F9B-9B0E-643FA63F1C30">
           <File Id="PsMcpExeFile" Source="$escapedPsExe" KeyPath="yes" />
+        </Component>
+        <Component Id="AiMcpExeComponent" Guid="B9E58B92-1F55-4C5F-9699-4AF70DE7012A">
+          <File Id="AiMcpExeFile" Source="$escapedAiExe" KeyPath="yes" />
         </Component>
         <Component Id="BridgeAssetsComponent" Guid="6EFCE0CF-7EFD-4A28-9DF9-9A4B1A16F9D4">
           <File Id="BridgePanelFile" Source="$escapedBridgePanel" KeyPath="yes" />
@@ -223,17 +245,44 @@ try {
             </Component>
           </Directory>
         </Directory>
+        <Directory Id="IllustratorCepRoot" Name="illustrator-cep">
+          <Directory Id="IllustratorCepExtension" Name="mcp-bridge-illustrator">
+            <Directory Id="IllustratorCepCsxs" Name="CSXS">
+              <Component Id="IllustratorBridgeManifestComponent" Guid="DAAE6E00-1A8C-4EC2-94D7-1CD32B636D90">
+                <File Id="IllustratorBridgeManifestFile" Source="$escapedIllustratorManifest" KeyPath="yes" />
+              </Component>
+            </Directory>
+            <Directory Id="IllustratorCepCss" Name="css">
+              <Component Id="IllustratorBridgeCssComponent" Guid="6317D1C4-E175-497F-989E-F773E1D8B0E4">
+                <File Id="IllustratorBridgeCssFile" Source="$escapedIllustratorCss" KeyPath="yes" />
+              </Component>
+            </Directory>
+            <Directory Id="IllustratorCepJs" Name="js">
+              <Component Id="IllustratorBridgeJsComponent" Guid="30C54BA9-05D4-4D12-95E0-9A60418B4654">
+                <File Id="IllustratorBridgeJsFile" Source="$escapedIllustratorJs" KeyPath="yes" />
+              </Component>
+            </Directory>
+            <Directory Id="IllustratorCepJsx" Name="jsx">
+              <Component Id="IllustratorBridgeJsxComponent" Guid="E181F4A2-0D49-4CE0-9A7A-A21D90318EA1">
+                <File Id="IllustratorBridgeJsxFile" Source="$escapedIllustratorJsx" KeyPath="yes" />
+              </Component>
+            </Directory>
+            <Component Id="IllustratorBridgeIndexComponent" Guid="922356A2-96F0-469D-B605-B584F1E0B8DE">
+              <File Id="IllustratorBridgeIndexFile" Source="$escapedIllustratorIndex" KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
       </Directory>
     </StandardDirectory>
     <CustomAction Id="InstallAeBridgePanels"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -SkipUserInstall"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -SkipUserInstall"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
     <CustomAction Id="InstallUserPremiereUxpAndCodexConfig"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -SkipHostBridgeInstall"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -SkipHostBridgeInstall"
                   Execute="deferred"
                   Impersonate="yes"
                   Return="ignore" />
@@ -245,6 +294,7 @@ try {
       <ComponentRef Id="AeMcpExeComponent" />
       <ComponentRef Id="PrMcpExeComponent" />
       <ComponentRef Id="PsMcpExeComponent" />
+      <ComponentRef Id="AiMcpExeComponent" />
       <ComponentRef Id="BridgeAssetsComponent" />
       <ComponentRef Id="PremiereBridgeManifestComponent" />
       <ComponentRef Id="PremiereBridgeCssComponent" />
@@ -261,6 +311,11 @@ try {
       <ComponentRef Id="PhotoshopUxpReadmeComponent" />
       <ComponentRef Id="PhotoshopUxpCssComponent" />
       <ComponentRef Id="PhotoshopUxpJsComponent" />
+      <ComponentRef Id="IllustratorBridgeManifestComponent" />
+      <ComponentRef Id="IllustratorBridgeCssComponent" />
+      <ComponentRef Id="IllustratorBridgeJsComponent" />
+      <ComponentRef Id="IllustratorBridgeJsxComponent" />
+      <ComponentRef Id="IllustratorBridgeIndexComponent" />
     </Feature>
   </Package>
 </Wix>

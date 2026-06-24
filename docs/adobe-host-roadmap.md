@@ -9,7 +9,7 @@
 | After Effects | `ae-mcp`、ScriptUI JSX bridge、daemon broker、instance registry が実装済み | 既存機能の整理と broker の安定化を継続 |
 | Premiere Pro | `pr-mcp`、UXP bridge、CEP fallback、allowlist script が実装済み | 実験的。daemon は AE と同等ではないため hardening が必要 |
 | Photoshop | `ps-mcp` と UXP bridge の初期実装あり | UXP plugin を第一候補にする。Photoshop DOM と `batchPlay` で実装可能範囲を広げる |
-| Illustrator | repository 内には未実装 | まず公開 API / plugin 技術の確認 spike が必要。ExtendScript/CEP または native plugin bridge を baseline にする |
+| Illustrator | `ai-mcp` と CEP / ExtendScript bridge の初期実装あり | CEP bridge を baseline にし、installer 対応と実機検証を進める。UXP は公開 host support が明確になるまで optional |
 
 参考:
 
@@ -94,7 +94,7 @@ Phase 2:
 
 ## Illustrator plan
 
-Illustrator は Photoshop と同じ前提で UXP bridge を作り始めない方が安全です。公式 overview は HTML panel、C++ plugin、JavaScript scripting を案内している一方で、third-party UXP の公開範囲は事前確認が必要です。
+Illustrator は Photoshop と同じ前提で UXP bridge を作り始めない方が安全です。公式 overview は HTML panel、C++ plugin、JavaScript scripting を案内している一方で、third-party UXP の公開範囲は事前確認が必要です。初期実装は CEP / ExtendScript bridge として追加済みです。
 
 Spike:
 
@@ -104,12 +104,21 @@ Spike:
 - CEP fallback のサポート状況を確認
 - 必要なら native C++ plugin + localhost bridge の実現性を検討
 
-Phase 1 の候補:
+Phase 1:
 
-- `crates/ai-core` と `crates/ai-mcp`
-- `list-illustrator-instances`
-- `run-script` allowlist: `ping`, `getAppInfo`, `listDocuments`, `getActiveDocument`, `listArtboards`, `listLayers`, `exportDocument`
+- `crates/ai-core` と `crates/ai-mcp` を追加済み
+- `src/illustrator/cep/mcp-bridge-illustrator` を追加済み
+- `list-illustrator-instances` を追加済み
+- `run-jsx` / `run-jsx-file` を追加済み
+- `run-script` allowlist: `ping`, `getAppInfo`, `listDocuments`, `getActiveDocument`, `listArtboards`, `listLayers`, `exportDocument` を追加済み
 - artboard / layer / selection / export の読み取り系を優先
+
+Phase 2:
+
+- Illustrator CEP bridge の実機検証
+- installer / Codex config 自動登録への統合
+- `exportDocument` の format/options 拡充
+- UXP host support の再確認
 
 ## Premiere hardening
 

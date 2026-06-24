@@ -2,6 +2,8 @@ param(
     [string]$BridgeScriptPath,
     [string]$AeMcpPath,
     [string]$PrMcpPath,
+    [string]$PsMcpPath,
+    [string]$AiMcpPath,
     [switch]$SkipHostBridgeInstall,
     [switch]$SkipUserInstall
 )
@@ -44,6 +46,18 @@ function Get-PremiereInstallPaths {
     return @(Get-ChildItem -LiteralPath $adobeRoot -Directory |
         Where-Object { $_.Name -match '^Adobe Premiere Pro (\d{4})$' } |
         Sort-Object { [int]($_.Name -replace '^Adobe Premiere Pro ', '') } -Descending |
+        ForEach-Object { $_.FullName })
+}
+
+function Get-IllustratorInstallPaths {
+    $adobeRoot = "C:\Program Files\Adobe"
+    if (-not (Test-Path -LiteralPath $adobeRoot)) {
+        return @()
+    }
+
+    return @(Get-ChildItem -LiteralPath $adobeRoot -Directory |
+        Where-Object { $_.Name -match '^Adobe Illustrator (\d{4})$' } |
+        Sort-Object { [int]($_.Name -replace '^Adobe Illustrator ', '') } -Descending |
         ForEach-Object { $_.FullName })
 }
 
@@ -96,6 +110,14 @@ function Resolve-PremiereExtensionSource {
 function Resolve-PremiereUxpSource {
     $candidate = Join-Path $PSScriptRoot "premiere-uxp\mcp-bridge-premiere"
     if (Test-Path -LiteralPath (Join-Path $candidate "manifest.json")) {
+        return (Resolve-Path -LiteralPath $candidate).Path
+    }
+    return $null
+}
+
+function Resolve-IllustratorCepSource {
+    $candidate = Join-Path $PSScriptRoot "illustrator-cep\mcp-bridge-illustrator"
+    if (Test-Path -LiteralPath $candidate) {
         return (Resolve-Path -LiteralPath $candidate).Path
     }
     return $null
@@ -172,6 +194,35 @@ function Install-PremiereUxpBridge {
         if (Test-Path -LiteralPath $tempRoot) {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+function Install-IllustratorCepBridge {
+    $illustratorTargets = Get-IllustratorInstallPaths
+    $source = Resolve-IllustratorCepSource
+    if (-not $source) {
+        Write-Host "Illustrator CEP extension not found. Skipped Illustrator CEP deployment."
+        return
+    }
+    if ($illustratorTargets.Count -eq 0) {
+        Write-Host "No Adobe Illustrator installation was detected. Skipped Illustrator CEP deployment."
+        return
+    }
+
+    $cepRoot = "C:\Program Files (x86)\Common Files\Adobe\CEP\extensions"
+    $illustratorDest = Join-Path $cepRoot "mcp-bridge-illustrator"
+
+    try {
+        if (-not (Test-Path -LiteralPath $cepRoot)) {
+            New-Item -ItemType Directory -Path $cepRoot -Force | Out-Null
+        }
+        if (Test-Path -LiteralPath $illustratorDest) {
+            Remove-Item -LiteralPath $illustratorDest -Recurse -Force
+        }
+        Copy-Item -LiteralPath $source -Destination $illustratorDest -Recurse -Force
+        Write-Host "Illustrator CEP bridge installed: $illustratorDest"
+    } catch {
+        Write-Warning "Failed to install Illustrator CEP bridge: $($_.Exception.Message)"
     }
 }
 
@@ -279,7 +330,9 @@ function Set-TomlScalar {
 function Update-CodexMcpConfig {
     $aePath = Resolve-McpBinaryPath -ProvidedPath $AeMcpPath -FileName "ae-mcp.exe"
     $prPath = Resolve-McpBinaryPath -ProvidedPath $PrMcpPath -FileName "pr-mcp.exe"
-    if (-not $aePath -or -not $prPath) {
+    $psPath = Resolve-McpBinaryPath -ProvidedPath $PsMcpPath -FileName "ps-mcp.exe"
+    $aiPath = Resolve-McpBinaryPath -ProvidedPath $AiMcpPath -FileName "ai-mcp.exe"
+    if (-not $aePath -and -not $prPath -and -not $psPath -and -not $aiPath) {
         Write-Warning "MCP binaries were not found. Skipped Codex config update."
         return
     }
@@ -295,15 +348,33 @@ function Update-CodexMcpConfig {
             $raw = Get-Content -Raw -LiteralPath $config
             $lines = Remove-TrailingEmptyLines -Lines @($raw -split "`r?`n", -1)
 
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $aePath))
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "args" -ValueLine 'args = ["serve-stdio"]'
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            if ($aePath) {
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $aePath))
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "args" -ValueLine 'args = ["serve-stdio"]'
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            }
 
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $prPath))
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "args" -ValueLine 'args = ["serve-stdio"]'
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            if ($prPath) {
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $prPath))
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "args" -ValueLine 'args = ["serve-stdio"]'
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            }
+
+            if ($psPath) {
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.photoshop" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $psPath))
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.photoshop" -Key "args" -ValueLine 'args = ["serve-stdio"]'
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.photoshop" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.photoshop" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            }
+
+            if ($aiPath) {
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.illustrator" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $aiPath))
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.illustrator" -Key "args" -ValueLine 'args = ["serve-stdio"]'
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.illustrator" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.illustrator" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            }
 
             Set-Content -LiteralPath $config -Value ($lines -join "`r`n") -Encoding UTF8
             Write-Host "Codex MCP server config updated: $config"
@@ -366,6 +437,8 @@ if (-not $SkipHostBridgeInstall) {
             Write-Warning "Failed to install Premiere CEP bridge: $($_.Exception.Message)"
         }
     }
+
+    Install-IllustratorCepBridge
 }
 
 if (-not $SkipUserInstall) {
