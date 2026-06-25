@@ -8,13 +8,14 @@ param(
     [switch]$FinalizeInstall,
     [switch]$InteractiveInstall,
     [switch]$LaunchInteractiveInstall,
+    [string]$CleanupLaunchTaskName,
     [switch]$NonInteractive,
     [switch]$SkipHostBridgeInstall,
     [switch]$SkipUserInstall
 )
 
 $ErrorActionPreference = "Stop"
-$PackageVersion = "0.4.3"
+$PackageVersion = "0.4.4"
 $InstallerStateRoot = Join-Path $env:ProgramData "AfterEffectsMcp"
 $InstallSelectionPath = Join-Path $InstallerStateRoot "install-selection.json"
 $InstallReportPath = Join-Path $InstallerStateRoot "install-report.json"
@@ -82,7 +83,7 @@ function Add-PathArgument {
     }
 }
 
-function Start-InteractiveInstallerProcess {
+function Get-InstallerScriptPath {
     $scriptPath = $PSCommandPath
     if ([string]::IsNullOrWhiteSpace($scriptPath)) {
         $scriptPath = $MyInvocation.MyCommand.Path
@@ -90,10 +91,44 @@ function Start-InteractiveInstallerProcess {
     if ([string]::IsNullOrWhiteSpace($scriptPath)) {
         throw "Could not resolve installer script path."
     }
+    return $scriptPath
+}
+
+function Get-InteractiveUserAccount {
+    try {
+        $explorers = @(Get-CimInstance Win32_Process -Filter "name = 'explorer.exe'" -ErrorAction Stop |
+            Sort-Object CreationDate -Descending)
+        foreach ($explorer in $explorers) {
+            $owner = Invoke-CimMethod -InputObject $explorer -MethodName GetOwner -ErrorAction SilentlyContinue
+            if ($owner -and $owner.User) {
+                if ($owner.Domain) {
+                    return ("{0}\{1}" -f $owner.Domain, $owner.User)
+                }
+                return $owner.User
+            }
+        }
+    } catch {
+        Write-InstallerLog -Message ("Failed to detect explorer.exe owner: {0}" -f $_.Exception.Message)
+    }
+
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        if ($identity -and -not [string]::IsNullOrWhiteSpace($identity.Name)) {
+            return $identity.Name
+        }
+    } catch {}
+
+    return $null
+}
+
+function New-InteractiveInstallerArguments {
+    param([string]$ScriptPath)
 
     $args = [System.Collections.Generic.List[string]]::new()
     $args.Add("-NoProfile") | Out-Null
     $args.Add("-Sta") | Out-Null
+    $args.Add("-WindowStyle") | Out-Null
+    $args.Add("Normal") | Out-Null
     $args.Add("-ExecutionPolicy") | Out-Null
     $args.Add("Bypass") | Out-Null
     $args.Add("-File") | Out-Null
@@ -104,10 +139,67 @@ function Start-InteractiveInstallerProcess {
     Add-PathArgument -Arguments $args -Name "-PsMcpPath" -Value $PsMcpPath
     Add-PathArgument -Arguments $args -Name "-AiMcpPath" -Value $AiMcpPath
     $args.Add("-InteractiveInstall") | Out-Null
+    return $args
+}
 
-    Write-InstallerLog -Message ("Launching interactive installer: powershell.exe {0}" -f ($args.ToArray() -join " "))
+function Start-InteractiveInstallerScheduledTask {
+    param(
+        [string]$ScriptPath,
+        [System.Collections.Generic.List[string]]$Arguments
+    )
+
+    $taskName = "AdobeMcpHostIntegration-{0}" -f ([guid]::NewGuid().ToString("N"))
+    $account = Get-InteractiveUserAccount
+    if ([string]::IsNullOrWhiteSpace($account)) {
+        throw "Could not detect an interactive Windows user."
+    }
+
+    $taskArgs = [System.Collections.Generic.List[string]]::new()
+    foreach ($arg in $Arguments) {
+        $taskArgs.Add($arg) | Out-Null
+    }
+    $taskArgs.Add("-CleanupLaunchTaskName") | Out-Null
+    $taskArgs.Add((ConvertTo-QuotedProcessArgument -Value $taskName)) | Out-Null
+    $argumentLine = $taskArgs.ToArray() -join " "
+
+    Write-InstallerLog -Message ("Registering interactive scheduled task '$taskName' for '$account': powershell.exe {0}" -f $argumentLine)
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argumentLine
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5)
+    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+    Start-ScheduledTask -TaskName $taskName
+    Write-InstallerLog -Message ("Interactive scheduled task started: {0}" -f $taskName)
+}
+
+function Remove-LaunchScheduledTask {
+    param([string]$TaskName)
+
+    if ([string]::IsNullOrWhiteSpace($TaskName)) {
+        return
+    }
+
+    try {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
+        Write-InstallerLog -Message ("Removed launch scheduled task: {0}" -f $TaskName)
+    } catch {
+        Write-InstallerLog -Message ("Failed to remove launch scheduled task '{0}': {1}" -f $TaskName, $_.Exception.Message)
+    }
+}
+
+function Start-InteractiveInstallerProcess {
+    $scriptPath = Get-InstallerScriptPath
+    $args = New-InteractiveInstallerArguments -ScriptPath $scriptPath
+
+    try {
+        Start-InteractiveInstallerScheduledTask -ScriptPath $scriptPath -Arguments $args
+        return
+    } catch {
+        Write-InstallerLog -Message ("Interactive scheduled task launch failed: {0}" -f $_.Exception.Message)
+    }
+
+    Write-InstallerLog -Message ("Falling back to ShellExecute runas: powershell.exe {0}" -f ($args.ToArray() -join " "))
     Start-Process -FilePath "powershell.exe" -ArgumentList $args.ToArray() -Verb RunAs -WindowStyle Normal | Out-Null
-    Write-InstallerLog -Message "Interactive installer process launched."
+    Write-InstallerLog -Message "Interactive installer process launched via ShellExecute runas."
 }
 
 function Get-DisplayVersion {
@@ -462,6 +554,7 @@ function Write-DefaultInstallSelection {
 function Show-InstallPlanDialog {
     $items = @(Get-InstallPlan)
     if ($NonInteractive -or -not [Environment]::UserInteractive) {
+        Write-InstallerLog -Message ("Install plan dialog skipped. NonInteractive={0}, UserInteractive={1}" -f $NonInteractive, [Environment]::UserInteractive)
         return Write-DefaultInstallSelection
     }
 
@@ -469,6 +562,7 @@ function Show-InstallPlanDialog {
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
     } catch {
+        Write-InstallerLog -Message ("Windows Forms unavailable for install plan dialog: {0}" -f $_.Exception.Message)
         Write-Warning "Windows Forms is unavailable. Proceeding with default install selection."
         return Write-DefaultInstallSelection
     }
@@ -478,7 +572,9 @@ function Show-InstallPlanDialog {
     $form.StartPosition = "CenterScreen"
     $form.Size = New-Object System.Drawing.Size(820, 460)
     $form.MinimumSize = New-Object System.Drawing.Size(760, 420)
+    $form.ShowInTaskbar = $true
     $form.TopMost = $true
+    $form.Add_Shown({ $this.Activate(); $this.BringToFront() })
 
     $title = New-Object System.Windows.Forms.Label
     $title.Text = "Select host integrations to install"
@@ -540,7 +636,9 @@ function Show-InstallPlanDialog {
     $form.Controls.Add($cancelButton)
     $form.CancelButton = $cancelButton
 
+    Write-InstallerLog -Message "Displaying install plan dialog."
     $dialogResult = $form.ShowDialog()
+    Write-InstallerLog -Message ("Install plan dialog result: {0}" -f $dialogResult)
     if ($dialogResult -eq [System.Windows.Forms.DialogResult]::Cancel) {
         foreach ($item in $items) {
             $item.selected = $false
@@ -670,6 +768,7 @@ function Get-InstallSummaryRows {
 function Show-InstallSummaryDialog {
     $rows = @(Get-InstallSummaryRows)
     if ($NonInteractive -or -not [Environment]::UserInteractive) {
+        Write-InstallerLog -Message ("Install summary dialog skipped. NonInteractive={0}, UserInteractive={1}" -f $NonInteractive, [Environment]::UserInteractive)
         Write-Host "Adobe MCP $PackageVersion install summary:"
         foreach ($row in $rows) {
             Write-Host ("- {0}: {1} ({2} -> {3}) {4}" -f $row.Component, $row.Status, $row.Current, $row.New, $row.Message)
@@ -681,6 +780,7 @@ function Show-InstallSummaryDialog {
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
     } catch {
+        Write-InstallerLog -Message ("Windows Forms unavailable for install summary dialog: {0}" -f $_.Exception.Message)
         foreach ($row in $rows) {
             Write-Host ("- {0}: {1} ({2} -> {3}) {4}" -f $row.Component, $row.Status, $row.Current, $row.New, $row.Message)
         }
@@ -692,7 +792,9 @@ function Show-InstallSummaryDialog {
     $form.StartPosition = "CenterScreen"
     $form.Size = New-Object System.Drawing.Size(900, 460)
     $form.MinimumSize = New-Object System.Drawing.Size(820, 420)
+    $form.ShowInTaskbar = $true
     $form.TopMost = $true
+    $form.Add_Shown({ $this.Activate(); $this.BringToFront() })
 
     $title = New-Object System.Windows.Forms.Label
     $title.Text = "Installation complete"
@@ -749,7 +851,9 @@ function Show-InstallSummaryDialog {
     $form.Controls.Add($okButton)
     $form.AcceptButton = $okButton
 
+    Write-InstallerLog -Message "Displaying install summary dialog."
     $form.ShowDialog() | Out-Null
+    Write-InstallerLog -Message "Install summary dialog closed."
 }
 
 function Find-UpiaCommand {
@@ -1119,10 +1223,13 @@ if ($LaunchInteractiveInstall) {
 
 if ($InteractiveInstall) {
     Write-InstallerLog -Message "Interactive installer started."
+    Remove-LaunchScheduledTask -TaskName $CleanupLaunchTaskName
 }
 
 if ($PlanInstall -or $InteractiveInstall) {
+    Write-InstallerLog -Message "Showing install plan dialog."
     Show-InstallPlanDialog | Out-Null
+    Write-InstallerLog -Message "Install plan dialog completed."
     if ($PlanInstall -and -not $InteractiveInstall) {
         exit 0
     }
@@ -1208,5 +1315,7 @@ if (-not $SkipUserInstall) {
 }
 
 if ($FinalizeInstall -or $InteractiveInstall) {
+    Write-InstallerLog -Message "Showing install summary dialog."
     Show-InstallSummaryDialog
+    Write-InstallerLog -Message "Install summary dialog completed."
 }

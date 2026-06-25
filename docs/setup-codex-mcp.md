@@ -207,7 +207,7 @@ enabled = true
 
 ### 6.1 Premiere Pro / Photoshop の UXP bridge と Illustrator CEP bridge
 
-Windows installer を使う場合は、MSI 本体のファイル配置後に host integration 用の PowerShell が起動します。UAC 確認が出た場合は許可すると、After Effects / Premiere Pro / Photoshop / Illustrator / Codex config の配置対象を選択できる事前確認ウィンドウが表示されます。各項目には現在の登録バージョンと新しいバージョンが表示され、完了時にも結果一覧が表示されます。
+Windows installer を使う場合は、MSI 本体のファイル配置後に host integration 用の PowerShell がログオン中ユーザーのセッションで起動します。UAC 確認が出た場合は許可すると、After Effects / Premiere Pro / Photoshop / Illustrator / Codex config の配置対象を選択できる事前確認ウィンドウが表示されます。各項目には現在の登録バージョンと新しいバージョンが表示され、完了時にも結果一覧が表示されます。
 
 確認ウィンドウが表示されない場合は、`C:\ProgramData\AfterEffectsMcp\install-bridge-installer.log` を確認してください。MSI から host integration 起動処理まで到達しているかを確認できます。
 

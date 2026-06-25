@@ -164,11 +164,11 @@ try {
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Adobe MCP (Rust)"
            Manufacturer="adobe-mcp-rs contributors"
-           Version="0.4.3.0"
+           Version="0.4.4.0"
            UpgradeCode="D7C1D860-4DA9-4E1E-B64A-8F64B7D9CC6E"
            Compressed="yes">
     <MediaTemplate EmbedCab="yes" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="AfterEffectsMcp">
         <Component Id="AeMcpExeComponent" Guid="F94E8CF7-36DE-4E55-8FE5-C86069A6A4F9">
