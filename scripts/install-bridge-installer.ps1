@@ -15,11 +15,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$PackageVersion = "0.4.5"
+$PackageVersion = "0.4.2"
 $InstallerStateRoot = Join-Path $env:ProgramData "AfterEffectsMcp"
 $InstallSelectionPath = Join-Path $InstallerStateRoot "install-selection.json"
 $InstallReportPath = Join-Path $InstallerStateRoot "install-report.json"
 $InstallLogPath = Join-Path $InstallerStateRoot "install-bridge-installer.log"
+$script:DefaultInstallSelectionWritten = $false
 
 function Ensure-InstallerStateRoot {
     if (-not (Test-Path -LiteralPath $InstallerStateRoot)) {
@@ -458,6 +459,10 @@ function Get-PhotoshopInstallPaths {
 function Get-PremiereProductVersion {
     param([string]$PremierePath)
 
+    if ([string]::IsNullOrWhiteSpace($PremierePath)) {
+        return $null
+    }
+
     $exePath = Join-Path $PremierePath "Adobe Premiere Pro.exe"
     if (-not (Test-Path -LiteralPath $exePath)) {
         return $null
@@ -483,6 +488,10 @@ function Get-PremiereProductVersion {
 function Test-PremiereSupportsUxp {
     param([string]$PremierePath)
 
+    if ([string]::IsNullOrWhiteSpace($PremierePath)) {
+        return $false
+    }
+
     $version = Get-PremiereProductVersion -PremierePath $PremierePath
     return ($version -ne $null -and $version -ge [version]"25.6.0")
 }
@@ -490,7 +499,7 @@ function Test-PremiereSupportsUxp {
 function Get-UxpCapablePremierePaths {
     param([string[]]$PremierePaths)
 
-    return @($PremierePaths | Where-Object { Test-PremiereSupportsUxp -PremierePath $_ })
+    return @($PremierePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Where-Object { Test-PremiereSupportsUxp -PremierePath $_ })
 }
 
 function Resolve-PremiereExtensionSource {
@@ -544,32 +553,47 @@ function Get-InstalledAePanelVersion {
 }
 
 function Get-InstallPlan {
+    Write-InstallerLog -Message ("Get-InstallPlan started. PSScriptRoot='{0}', UserInteractive={1}, Identity='{2}'" -f $PSScriptRoot, [Environment]::UserInteractive, [Security.Principal.WindowsIdentity]::GetCurrent().Name)
+
     $bridgeScript = $null
     try {
         $bridgeScript = Resolve-BridgeScriptPath -InputPath $BridgeScriptPath
-    } catch {}
+    } catch {
+        Write-InstallerLog -Message ("Get-InstallPlan: bridge script resolution failed: {0}" -f $_.Exception.Message)
+    }
+    Write-InstallerLog -Message ("Get-InstallPlan: bridgeScript='{0}'" -f (Get-DisplayVersion $bridgeScript))
 
+    Write-InstallerLog -Message "Get-InstallPlan: detecting installed Adobe hosts."
+    $aeTargets = Get-AeInstallPaths
     $premiereTargets = Get-PremiereInstallPaths
     $premiereUxpTargets = Get-UxpCapablePremierePaths -PremierePaths $premiereTargets
     $photoshopTargets = Get-PhotoshopInstallPaths
     $illustratorTargets = Get-IllustratorInstallPaths
-    $upia = Find-UpiaCommand
+    Write-InstallerLog -Message ("Get-InstallPlan: detected AE={0}, Premiere={1}, PremiereUXP={2}, Photoshop={3}, Illustrator={4}" -f $aeTargets.Count, $premiereTargets.Count, $premiereUxpTargets.Count, $photoshopTargets.Count, $illustratorTargets.Count)
 
+    Write-InstallerLog -Message "Get-InstallPlan: resolving UnifiedPluginInstallerAgent."
+    $upia = Find-UpiaCommand
+    Write-InstallerLog -Message ("Get-InstallPlan: UPIA='{0}'" -f (Get-DisplayVersion $upia))
+
+    Write-InstallerLog -Message "Get-InstallPlan: resolving bundled bridge sources."
     $premiereUxpSource = Resolve-PremiereUxpSource
     $photoshopUxpSource = Resolve-PhotoshopUxpSource
     $premiereCepSource = Resolve-PremiereExtensionSource
     $illustratorCepSource = Resolve-IllustratorCepSource
+    Write-InstallerLog -Message ("Get-InstallPlan: sources PremiereUXP='{0}', PhotoshopUXP='{1}', PremiereCEP='{2}', IllustratorCEP='{3}'" -f (Get-DisplayVersion $premiereUxpSource), (Get-DisplayVersion $photoshopUxpSource), (Get-DisplayVersion $premiereCepSource), (Get-DisplayVersion $illustratorCepSource))
 
     $items = @()
+    Write-InstallerLog -Message "Get-InstallPlan: building After Effects item."
     $items += New-InstallPlanItem `
         -Key "aftereffects-panel" `
         -Label "After Effects ScriptUI panel" `
-        -Available ([bool]$bridgeScript -and (Get-AeInstallPaths).Count -gt 0) `
+        -Available ([bool]$bridgeScript -and $aeTargets.Count -gt 0) `
         -Selected $true `
         -OldVersion (Get-InstalledAePanelVersion) `
         -NewVersion (Get-PanelScriptVersion -ScriptPath $bridgeScript) `
         -Note "Installs mcp-bridge-auto.jsx into detected After Effects versions."
 
+    Write-InstallerLog -Message "Get-InstallPlan: building Premiere UXP item."
     $items += New-InstallPlanItem `
         -Key "premiere-uxp" `
         -Label "Premiere Pro UXP bridge" `
@@ -579,6 +603,7 @@ function Get-InstallPlan {
         -NewVersion (Get-JsonManifestVersion -ManifestPath (Join-OptionalPath -Path $premiereUxpSource -ChildPath "manifest.json")) `
         -Note "Preferred for Premiere Pro 25.6 or newer."
 
+    Write-InstallerLog -Message "Get-InstallPlan: building Premiere CEP item."
     $items += New-InstallPlanItem `
         -Key "premiere-cep" `
         -Label "Premiere Pro CEP fallback" `
@@ -588,6 +613,7 @@ function Get-InstallPlan {
         -NewVersion (Get-CepManifestVersion -ManifestPath (Join-OptionalPath -Path $premiereCepSource -ChildPath "CSXS\manifest.xml")) `
         -Note "Only used when no UXP-capable Premiere Pro is detected."
 
+    Write-InstallerLog -Message "Get-InstallPlan: building Photoshop UXP item."
     $items += New-InstallPlanItem `
         -Key "photoshop-uxp" `
         -Label "Photoshop UXP bridge" `
@@ -597,6 +623,7 @@ function Get-InstallPlan {
         -NewVersion (Get-JsonManifestVersion -ManifestPath (Join-OptionalPath -Path $photoshopUxpSource -ChildPath "manifest.json")) `
         -Note "Installs the plugin so it appears under Photoshop > Plugins."
 
+    Write-InstallerLog -Message "Get-InstallPlan: building Illustrator CEP item."
     $items += New-InstallPlanItem `
         -Key "illustrator-cep" `
         -Label "Illustrator CEP bridge" `
@@ -606,15 +633,21 @@ function Get-InstallPlan {
         -NewVersion (Get-CepManifestVersion -ManifestPath (Join-OptionalPath -Path $illustratorCepSource -ChildPath "CSXS\manifest.xml")) `
         -Note "Installs the CEP panel under Window > Extensions."
 
+    Write-InstallerLog -Message "Get-InstallPlan: resolving Codex config paths."
+    $codexConfigPaths = @(Get-CodexConfigPaths)
+    Write-InstallerLog -Message ("Get-InstallPlan: Codex config count={0}" -f $codexConfigPaths.Count)
+
+    Write-InstallerLog -Message "Get-InstallPlan: building Codex config item."
     $items += New-InstallPlanItem `
         -Key "codex-config" `
         -Label "Codex MCP config" `
-        -Available ((Get-CodexConfigPaths).Count -gt 0) `
+        -Available ($codexConfigPaths.Count -gt 0) `
         -Selected $true `
         -OldVersion "configured / not configured" `
         -NewVersion $PackageVersion `
         -Note "Updates Codex config.toml entries for installed MCP binaries."
 
+    Write-InstallerLog -Message ("Get-InstallPlan completed. Item count={0}" -f $items.Count)
     return $items
 }
 
@@ -631,21 +664,26 @@ function Write-DefaultInstallSelection {
 }
 
 function Show-InstallPlanDialog {
+    Write-InstallerLog -Message "Show-InstallPlanDialog entered."
     $items = @(Get-InstallPlan)
+    Write-InstallerLog -Message ("Show-InstallPlanDialog: plan item count={0}" -f $items.Count)
     if ($NonInteractive -or -not [Environment]::UserInteractive) {
         Write-InstallerLog -Message ("Install plan dialog skipped. NonInteractive={0}, UserInteractive={1}" -f $NonInteractive, [Environment]::UserInteractive)
         return Write-DefaultInstallSelection
     }
 
     try {
+        Write-InstallerLog -Message "Show-InstallPlanDialog: loading Windows Forms assemblies."
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
+        Write-InstallerLog -Message "Show-InstallPlanDialog: Windows Forms assemblies loaded."
     } catch {
         Write-InstallerLog -Message ("Windows Forms unavailable for install plan dialog: {0}" -f $_.Exception.Message)
         Write-Warning "Windows Forms is unavailable. Proceeding with default install selection."
         return Write-DefaultInstallSelection
     }
 
+    Write-InstallerLog -Message "Show-InstallPlanDialog: creating form."
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Adobe MCP $PackageVersion - Install Options"
     $form.StartPosition = "CenterScreen"
@@ -685,6 +723,7 @@ function Show-InstallPlanDialog {
     $grid.Columns.Add("note", "Notes") | Out-Null
     $grid.Columns["note"].FillWeight = 44
 
+    Write-InstallerLog -Message "Show-InstallPlanDialog: populating grid rows."
     foreach ($item in $items) {
         $rowIndex = $grid.Rows.Add($item.selected, $item.label, $item.oldVersion, $item.newVersion, $item.note)
         $row = $grid.Rows[$rowIndex]
@@ -696,6 +735,7 @@ function Show-InstallPlanDialog {
         }
     }
     $form.Controls.Add($grid)
+    Write-InstallerLog -Message "Show-InstallPlanDialog: grid rows populated."
 
     $installButton = New-Object System.Windows.Forms.Button
     $installButton.Text = "Install Selected"
@@ -715,6 +755,7 @@ function Show-InstallPlanDialog {
     $form.Controls.Add($cancelButton)
     $form.CancelButton = $cancelButton
 
+    Write-InstallerLog -Message "Show-InstallPlanDialog: form constructed."
     Write-InstallerLog -Message "Displaying install plan dialog."
     $dialogResult = $form.ShowDialog()
     Write-InstallerLog -Message ("Install plan dialog result: {0}" -f $dialogResult)
@@ -752,8 +793,11 @@ function Show-InstallPlanDialog {
 
 function Get-InstallSelection {
     $selection = Read-JsonFile -Path $InstallSelectionPath
-    if (-not $selection) {
+    $shouldWriteDefault = (([bool]$NonInteractive -and -not $script:DefaultInstallSelectionWritten) -or -not $selection -or [string]$selection.packageVersion -ne $PackageVersion)
+    if ($shouldWriteDefault) {
+        Write-InstallerLog -Message ("Writing default install selection. NonInteractive={0}, ExistingVersion='{1}', PackageVersion='{2}'" -f $NonInteractive, $(if ($selection) { [string]$selection.packageVersion } else { "none" }), $PackageVersion)
         Write-DefaultInstallSelection | Out-Null
+        $script:DefaultInstallSelectionWritten = $true
         $selection = Read-JsonFile -Path $InstallSelectionPath
     }
     return $selection
@@ -936,26 +980,44 @@ function Show-InstallSummaryDialog {
 }
 
 function Find-UpiaCommand {
+    Write-InstallerLog -Message "Find-UpiaCommand started."
     $candidates = @(
         "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe",
         "C:\Program Files (x86)\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe"
     )
 
     foreach ($candidate in $candidates) {
+        Write-InstallerLog -Message ("Find-UpiaCommand: checking '{0}'" -f $candidate)
         if (Test-Path -LiteralPath $candidate) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+            $resolved = (Resolve-Path -LiteralPath $candidate).Path
+            Write-InstallerLog -Message ("Find-UpiaCommand: found known path '{0}'" -f $resolved)
+            return $resolved
         }
     }
 
-    $programFiles = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
-    foreach ($root in $programFiles) {
-        $found = Get-ChildItem -LiteralPath $root -Recurse -Filter "UnifiedPluginInstallerAgent.exe" -ErrorAction SilentlyContinue |
+    $searchRoots = @(
+        "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents",
+        "C:\Program Files (x86)\Common Files\Adobe\Adobe Desktop Common\RemoteComponents"
+    )
+    foreach ($root in $searchRoots) {
+        if (-not (Test-Path -LiteralPath $root)) {
+            Write-InstallerLog -Message ("Find-UpiaCommand: skipped missing root '{0}'" -f $root)
+            continue
+        }
+
+        Write-InstallerLog -Message ("Find-UpiaCommand: searching Adobe root '{0}'" -f $root)
+        $found = Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Get-ChildItem -LiteralPath $_.FullName -Recurse -Filter "UnifiedPluginInstallerAgent.exe" -ErrorAction SilentlyContinue
+            } |
             Select-Object -First 1
         if ($found) {
+            Write-InstallerLog -Message ("Find-UpiaCommand: found searched path '{0}'" -f $found.FullName)
             return $found.FullName
         }
     }
 
+    Write-InstallerLog -Message "Find-UpiaCommand completed without a result."
     return $null
 }
 
@@ -1307,7 +1369,13 @@ if ($InteractiveInstall) {
 
 if ($PlanInstall -or $InteractiveInstall) {
     Write-InstallerLog -Message "Showing install plan dialog."
-    Show-InstallPlanDialog | Out-Null
+    try {
+        Show-InstallPlanDialog | Out-Null
+    } catch {
+        Write-InstallerLog -Message ("Show-InstallPlanDialog failed: {0}" -f $_.Exception.Message)
+        Write-InstallerLog -Message ("Show-InstallPlanDialog stack: {0}" -f $_.ScriptStackTrace)
+        throw
+    }
     Write-InstallerLog -Message "Install plan dialog completed."
     if ($PlanInstall -and -not $InteractiveInstall) {
         exit 0
@@ -1324,7 +1392,6 @@ if ($InteractiveInstall -and -not (Test-IsAdministrator)) {
 }
 
 if (-not $SkipHostBridgeInstall) {
-    $source = Resolve-BridgeScriptPath -InputPath $BridgeScriptPath
     $targets = Get-AeInstallPaths
 
     if (-not (Test-InstallComponentSelected -Key "aftereffects-panel")) {
@@ -1334,25 +1401,35 @@ if (-not $SkipHostBridgeInstall) {
         Write-Host "No After Effects installation was detected under C:\Program Files\Adobe. Skipped AE bridge deployment."
         Add-InstallReport -Key "aftereffects-panel" -Status "skipped" -Message "No After Effects installation was detected."
     } else {
-        $installed = 0
-        foreach ($aePath in $targets) {
-            $destDir = Join-Path $aePath "Support Files\Scripts\ScriptUI Panels"
-            $destFile = Join-Path $destDir "mcp-bridge-auto.jsx"
-
-            try {
-                if (-not (Test-Path -LiteralPath $destDir)) {
-                    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-                }
-                Copy-Item -LiteralPath $source -Destination $destFile -Force
-                Write-Host "Installed: $destFile"
-                $installed++
-            } catch {
-                Write-Warning "Failed to install bridge panel to '$destFile': $($_.Exception.Message)"
-            }
+        $source = $null
+        try {
+            $source = Resolve-BridgeScriptPath -InputPath $BridgeScriptPath
+        } catch {
+            Write-Warning "After Effects bridge panel source was not found. Skipped AE bridge deployment."
+            Add-InstallReport -Key "aftereffects-panel" -Status "skipped" -Message "After Effects bridge panel source was not found."
         }
 
-        Write-Host "Bridge deployment completed. Installed to $installed location(s)."
-        Add-InstallReport -Key "aftereffects-panel" -Status "installed" -Message "Installed to $installed After Effects location(s)."
+        $installed = 0
+        if ($source) {
+            foreach ($aePath in $targets) {
+                $destDir = Join-Path $aePath "Support Files\Scripts\ScriptUI Panels"
+                $destFile = Join-Path $destDir "mcp-bridge-auto.jsx"
+
+                try {
+                    if (-not (Test-Path -LiteralPath $destDir)) {
+                        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                    }
+                    Copy-Item -LiteralPath $source -Destination $destFile -Force
+                    Write-Host "Installed: $destFile"
+                    $installed++
+                } catch {
+                    Write-Warning "Failed to install bridge panel to '$destFile': $($_.Exception.Message)"
+                }
+            }
+
+            Write-Host "Bridge deployment completed. Installed to $installed location(s)."
+            Add-InstallReport -Key "aftereffects-panel" -Status "installed" -Message "Installed to $installed After Effects location(s)."
+        }
     }
 
     $premiereTargets = Get-PremiereInstallPaths

@@ -1,6 +1,6 @@
 # インストーラ E2E 手順（Stage 5）
 
-- 最終更新: 2026-03-23
+- 最終更新: 2026-06-26
 - 対象: Rust版 `ae-mcp` の Windows/macOS インストーラ検証
 
 ## 1. 目的
@@ -38,9 +38,9 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 ## 3.1 インストール
 
 1. インストーラ実行（MSI/pkg）
-2. Windows MSI の場合、ファイル配置後に host integration 用の UAC 確認が表示される
-3. Windows MSI の場合、host integration の事前確認ウィンドウで配置対象とバージョンを確認できる
-4. Windows MSI の場合、host integration 完了ウィンドウで結果一覧を確認できる
+2. Windows MSI の場合、Custom Setup 画面で host bridge feature を選択できる
+3. Windows MSI の場合、インストール中に別の PowerShell ウィンドウが表示されない
+4. Windows MSI の場合、`C:\ProgramData\AfterEffectsMcp\install-report.json` で host integration の結果一覧を確認できる
 5. `ae-mcp` バイナリが所定の場所へ配置される
 6. `ae-mcp --help` が実行できる
 
@@ -75,9 +75,9 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
    - `pkgbuild --version` を確認
 3. AE結果が返らない:
    - `~/Documents/ae-mcp-bridge/ae_command.json` の `status` を確認
-4. Windows MSI で host integration の確認/完了ウィンドウが出ない:
+4. Windows MSI で host integration の実行結果が確認できない:
    - `C:\ProgramData\AfterEffectsMcp\install-bridge-installer.log` を確認
-   - MSI 実行後に UAC 確認が出ていないか確認
+   - `C:\ProgramData\AfterEffectsMcp\install-report.json` を確認
 
 ## 5. CI
 

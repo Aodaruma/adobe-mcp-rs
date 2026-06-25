@@ -16,7 +16,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.4.5"
+version = "0.4.2"
 authors = ["adobe-mcp-rs contributors"]
 
 [workspace.dependencies]

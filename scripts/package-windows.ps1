@@ -34,6 +34,14 @@ function Find-WixCommand {
     return $null
 }
 
+function ConvertTo-RtfEscapedText {
+    param([string]$Text)
+
+    $escaped = $Text -replace '\\', '\\' -replace '\{', '\{' -replace '\}', '\}'
+    $escaped = $escaped -replace "`r`n", '\par ' -replace "`n", '\par ' -replace "`r", '\par '
+    return "{\rtf1\ansi\deff0 $escaped}"
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $output = Resolve-Path -Path $OutputDir -ErrorAction SilentlyContinue
 if (-not $output) {
@@ -128,12 +136,17 @@ try {
 
     $wxsPath = Join-Path $output "ae-mcp.wxs"
     $msiPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.msi"
+    $licenseRtfPath = Join-Path $output "license.rtf"
+    $licenseText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "LICENSE")
+    ConvertTo-RtfEscapedText -Text $licenseText | Set-Content -LiteralPath $licenseRtfPath -Encoding ASCII
+
     $escapedExe = (Join-Path $stageDir "ae-mcp.exe").Replace("\", "\\")
     $escapedPrExe = (Join-Path $stageDir "pr-mcp.exe").Replace("\", "\\")
     $escapedPsExe = (Join-Path $stageDir "ps-mcp.exe").Replace("\", "\\")
     $escapedAiExe = (Join-Path $stageDir "ai-mcp.exe").Replace("\", "\\")
     $escapedBridgePanel = (Join-Path $stageDir "mcp-bridge-auto.jsx").Replace("\", "\\")
     $escapedBridgeInstallerPs1 = (Join-Path $stageDir "install-bridge-installer.ps1").Replace("\", "\\")
+    $escapedLicenseRtf = $licenseRtfPath.Replace("\", "\\")
     $premiereRoot = Join-Path $stageDir "premiere-cep\mcp-bridge-premiere"
     $escapedPremiereManifest = (Join-Path $premiereRoot "CSXS\manifest.xml").Replace("\", "\\")
     $escapedPremiereIndex = (Join-Path $premiereRoot "index.html").Replace("\", "\\")
@@ -161,14 +174,16 @@ try {
 
     @"
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Adobe MCP (Rust)"
            Manufacturer="adobe-mcp-rs contributors"
-           Version="0.4.5.0"
+           Version="0.4.2.0"
            UpgradeCode="D7C1D860-4DA9-4E1E-B64A-8F64B7D9CC6E"
            Compressed="yes">
     <MediaTemplate EmbedCab="yes" />
     <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <WixVariable Id="WixUILicenseRtf" Value="$escapedLicenseRtf" />
+    <ui:WixUI Id="WixUI_FeatureTree" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="AfterEffectsMcp">
         <Component Id="AeMcpExeComponent" Guid="F94E8CF7-36DE-4E55-8FE5-C86069A6A4F9">
@@ -183,9 +198,11 @@ try {
         <Component Id="AiMcpExeComponent" Guid="B9E58B92-1F55-4C5F-9699-4AF70DE7012A">
           <File Id="AiMcpExeFile" Source="$escapedAiExe" KeyPath="yes" />
         </Component>
-        <Component Id="BridgeAssetsComponent" Guid="6EFCE0CF-7EFD-4A28-9DF9-9A4B1A16F9D4">
+        <Component Id="BridgePanelComponent" Guid="6EFCE0CF-7EFD-4A28-9DF9-9A4B1A16F9D4">
           <File Id="BridgePanelFile" Source="$escapedBridgePanel" KeyPath="yes" />
-          <File Id="BridgeInstallerScriptFile" Source="$escapedBridgeInstallerPs1" />
+        </Component>
+        <Component Id="BridgeInstallerScriptComponent" Guid="6D25E6A8-A7F3-4C42-AEF9-A1756BC85701">
+          <File Id="BridgeInstallerScriptFile" Source="$escapedBridgeInstallerPs1" KeyPath="yes" />
         </Component>
         <Directory Id="PremiereCepRoot" Name="premiere-cep">
           <Directory Id="PremiereCepExtension" Name="mcp-bridge-premiere">
@@ -289,49 +306,87 @@ try {
         </Directory>
       </Directory>
     </StandardDirectory>
-    <CustomAction Id="LaunchAdobeMcpHostIntegration"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -Sta -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -LaunchInteractiveInstall"
+    <SetProperty Id="InstallMachineHostIntegration"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -NonInteractive -SkipUserInstall"
+                 Before="InstallMachineHostIntegration"
+                 Sequence="execute" />
+    <CustomAction Id="InstallMachineHostIntegration"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <SetProperty Id="WixQuietExecCmdLine"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -NonInteractive -SkipHostBridgeInstall"
+                 Before="InstallUserHostIntegration"
+                 Sequence="execute" />
+    <CustomAction Id="InstallUserHostIntegration"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="immediate"
                   Return="ignore" />
     <InstallExecuteSequence>
-      <Custom Action="LaunchAdobeMcpHostIntegration" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="InstallMachineHostIntegration" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="InstallUserHostIntegration" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
     </InstallExecuteSequence>
-    <Feature Id="MainFeature" Title="Adobe MCP" Level="1">
+    <Feature Id="MainFeature" Title="Adobe MCP Core" Description="Installs the MCP command-line binaries and installer helper." Level="1" Display="expand">
       <ComponentRef Id="AeMcpExeComponent" />
       <ComponentRef Id="PrMcpExeComponent" />
       <ComponentRef Id="PsMcpExeComponent" />
       <ComponentRef Id="AiMcpExeComponent" />
-      <ComponentRef Id="BridgeAssetsComponent" />
-      <ComponentRef Id="PremiereBridgeManifestComponent" />
-      <ComponentRef Id="PremiereBridgeCssComponent" />
-      <ComponentRef Id="PremiereBridgeJsComponent" />
-      <ComponentRef Id="PremiereBridgeJsxComponent" />
-      <ComponentRef Id="PremiereBridgeIndexComponent" />
-      <ComponentRef Id="PremiereUxpManifestComponent" />
-      <ComponentRef Id="PremiereUxpIndexComponent" />
-      <ComponentRef Id="PremiereUxpReadmeComponent" />
-      <ComponentRef Id="PremiereUxpCssComponent" />
-      <ComponentRef Id="PremiereUxpJsComponent" />
-      <ComponentRef Id="PhotoshopUxpManifestComponent" />
-      <ComponentRef Id="PhotoshopUxpIndexComponent" />
-      <ComponentRef Id="PhotoshopUxpReadmeComponent" />
-      <ComponentRef Id="PhotoshopUxpCssComponent" />
-      <ComponentRef Id="PhotoshopUxpJsComponent" />
-      <ComponentRef Id="IllustratorBridgeManifestComponent" />
-      <ComponentRef Id="IllustratorBridgeCssComponent" />
-      <ComponentRef Id="IllustratorBridgeJsComponent" />
-      <ComponentRef Id="IllustratorBridgeJsxComponent" />
-      <ComponentRef Id="IllustratorBridgeIndexComponent" />
+      <ComponentRef Id="BridgeInstallerScriptComponent" />
+      <Feature Id="AfterEffectsPanelFeature" Title="After Effects ScriptUI panel" Description="Deploys mcp-bridge-auto.jsx to detected After Effects ScriptUI Panels folders." Level="1">
+        <ComponentRef Id="BridgePanelComponent" />
+      </Feature>
+      <Feature Id="PremiereUxpFeature" Title="Premiere Pro UXP bridge" Description="Installs the Premiere Pro UXP bridge package when supported." Level="1">
+        <ComponentRef Id="PremiereUxpManifestComponent" />
+        <ComponentRef Id="PremiereUxpIndexComponent" />
+        <ComponentRef Id="PremiereUxpReadmeComponent" />
+        <ComponentRef Id="PremiereUxpCssComponent" />
+        <ComponentRef Id="PremiereUxpJsComponent" />
+      </Feature>
+      <Feature Id="PremiereCepFeature" Title="Premiere Pro CEP fallback" Description="Installs the Premiere Pro CEP fallback panel for older Premiere Pro versions." Level="1">
+        <ComponentRef Id="PremiereBridgeManifestComponent" />
+        <ComponentRef Id="PremiereBridgeCssComponent" />
+        <ComponentRef Id="PremiereBridgeJsComponent" />
+        <ComponentRef Id="PremiereBridgeJsxComponent" />
+        <ComponentRef Id="PremiereBridgeIndexComponent" />
+      </Feature>
+      <Feature Id="PhotoshopUxpFeature" Title="Photoshop UXP bridge" Description="Installs the Photoshop UXP bridge package." Level="1">
+        <ComponentRef Id="PhotoshopUxpManifestComponent" />
+        <ComponentRef Id="PhotoshopUxpIndexComponent" />
+        <ComponentRef Id="PhotoshopUxpReadmeComponent" />
+        <ComponentRef Id="PhotoshopUxpCssComponent" />
+        <ComponentRef Id="PhotoshopUxpJsComponent" />
+      </Feature>
+      <Feature Id="IllustratorCepFeature" Title="Illustrator CEP bridge" Description="Installs the Illustrator CEP panel." Level="1">
+        <ComponentRef Id="IllustratorBridgeManifestComponent" />
+        <ComponentRef Id="IllustratorBridgeCssComponent" />
+        <ComponentRef Id="IllustratorBridgeJsComponent" />
+        <ComponentRef Id="IllustratorBridgeJsxComponent" />
+        <ComponentRef Id="IllustratorBridgeIndexComponent" />
+      </Feature>
     </Feature>
   </Package>
 </Wix>
 "@ | Set-Content -Encoding UTF8 $wxsPath
 
-    & $wixCmd build $wxsPath -arch x64 -out $msiPath
+    & $wixCmd extension add WixToolset.UI.wixext/5.0.2 --global | Out-Null
+    & $wixCmd extension add WixToolset.Util.wixext/5.0.2 --global | Out-Null
+    & $wixCmd build $wxsPath -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -out $msiPath
     if (!(Test-Path $msiPath)) {
         throw "MSI generation failed. See WiX output above."
     }
     Write-Host "Created MSI: $msiPath"
+
+    $tmpDropDir = "D:\GoogleDrive\tmp"
+    if (Test-Path -LiteralPath $tmpDropDir) {
+        $tmpMsiPath = Join-Path $tmpDropDir "adobe-mcp-rs-windows-x86_64.msi"
+        Copy-Item -LiteralPath $msiPath -Destination $tmpMsiPath -Force
+        Write-Host "Copied MSI: $tmpMsiPath"
+    } else {
+        Write-Warning "MSI copy target not found: $tmpDropDir"
+    }
 }
 finally {
     Pop-Location
