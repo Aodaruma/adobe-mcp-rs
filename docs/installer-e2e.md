@@ -38,8 +38,11 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 ## 3.1 インストール
 
 1. インストーラ実行（MSI/pkg）
-2. `ae-mcp` バイナリが所定の場所へ配置される
-3. `ae-mcp --help` が実行できる
+2. Windows MSI の場合、ファイル配置後に host integration 用の UAC 確認が表示される
+3. Windows MSI の場合、host integration の事前確認ウィンドウで配置対象とバージョンを確認できる
+4. Windows MSI の場合、host integration 完了ウィンドウで結果一覧を確認できる
+5. `ae-mcp` バイナリが所定の場所へ配置される
+6. `ae-mcp --help` が実行できる
 
 ## 3.2 Windows autostart / macOS service
 
@@ -72,6 +75,9 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
    - `pkgbuild --version` を確認
 3. AE結果が返らない:
    - `~/Documents/ae-mcp-bridge/ae_command.json` の `status` を確認
+4. Windows MSI で host integration の確認/完了ウィンドウが出ない:
+   - `C:\ProgramData\AfterEffectsMcp\install-bridge-installer.log` を確認
+   - MSI 実行後に UAC 確認が出ていないか確認
 
 ## 5. CI
 

@@ -164,10 +164,11 @@ try {
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Adobe MCP (Rust)"
            Manufacturer="adobe-mcp-rs contributors"
-           Version="0.4.2.0"
+           Version="0.4.3.0"
            UpgradeCode="D7C1D860-4DA9-4E1E-B64A-8F64B7D9CC6E"
            Compressed="yes">
     <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="AfterEffectsMcp">
         <Component Id="AeMcpExeComponent" Guid="F94E8CF7-36DE-4E55-8FE5-C86069A6A4F9">
@@ -288,24 +289,12 @@ try {
         </Directory>
       </Directory>
     </StandardDirectory>
-    <CustomAction Id="PlanAdobeMcpHostIntegration"
+    <CustomAction Id="LaunchAdobeMcpHostIntegration"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -PlanInstall"
-                  Return="ignore" />
-    <CustomAction Id="InstallAeBridgePanels"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -SkipUserInstall"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-    <CustomAction Id="InstallUserPremiereUxpAndCodexConfig"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -SkipHostBridgeInstall -FinalizeInstall"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -Sta -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -LaunchInteractiveInstall"
                   Return="ignore" />
     <InstallExecuteSequence>
-      <Custom Action="PlanAdobeMcpHostIntegration" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
-      <Custom Action="InstallAeBridgePanels" After="PlanAdobeMcpHostIntegration" Condition="NOT Installed AND NOT REMOVE" />
-      <Custom Action="InstallUserPremiereUxpAndCodexConfig" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="LaunchAdobeMcpHostIntegration" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
     </InstallExecuteSequence>
     <Feature Id="MainFeature" Title="Adobe MCP" Level="1">
       <ComponentRef Id="AeMcpExeComponent" />

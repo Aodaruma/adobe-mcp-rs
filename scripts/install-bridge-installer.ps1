@@ -7,16 +7,18 @@ param(
     [switch]$PlanInstall,
     [switch]$FinalizeInstall,
     [switch]$InteractiveInstall,
+    [switch]$LaunchInteractiveInstall,
     [switch]$NonInteractive,
     [switch]$SkipHostBridgeInstall,
     [switch]$SkipUserInstall
 )
 
 $ErrorActionPreference = "Stop"
-$PackageVersion = "0.4.2"
+$PackageVersion = "0.4.3"
 $InstallerStateRoot = Join-Path $env:ProgramData "AfterEffectsMcp"
 $InstallSelectionPath = Join-Path $InstallerStateRoot "install-selection.json"
 $InstallReportPath = Join-Path $InstallerStateRoot "install-report.json"
+$InstallLogPath = Join-Path $InstallerStateRoot "install-bridge-installer.log"
 
 function Ensure-InstallerStateRoot {
     if (-not (Test-Path -LiteralPath $InstallerStateRoot)) {
@@ -45,6 +47,67 @@ function Write-JsonFile {
 
     Ensure-InstallerStateRoot
     $Value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Write-InstallerLog {
+    param([string]$Message)
+
+    try {
+        Ensure-InstallerStateRoot
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Add-Content -LiteralPath $InstallLogPath -Value "[$timestamp] $Message" -Encoding UTF8
+    } catch {}
+}
+
+function ConvertTo-QuotedProcessArgument {
+    param([string]$Value)
+
+    if ($null -eq $Value) {
+        return '""'
+    }
+
+    return '"' + ($Value -replace '"', '\"') + '"'
+}
+
+function Add-PathArgument {
+    param(
+        [System.Collections.Generic.List[string]]$Arguments,
+        [string]$Name,
+        [string]$Value
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Value)) {
+        $Arguments.Add($Name) | Out-Null
+        $Arguments.Add((ConvertTo-QuotedProcessArgument -Value $Value)) | Out-Null
+    }
+}
+
+function Start-InteractiveInstallerProcess {
+    $scriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        $scriptPath = $MyInvocation.MyCommand.Path
+    }
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        throw "Could not resolve installer script path."
+    }
+
+    $args = [System.Collections.Generic.List[string]]::new()
+    $args.Add("-NoProfile") | Out-Null
+    $args.Add("-Sta") | Out-Null
+    $args.Add("-ExecutionPolicy") | Out-Null
+    $args.Add("Bypass") | Out-Null
+    $args.Add("-File") | Out-Null
+    $args.Add((ConvertTo-QuotedProcessArgument -Value $scriptPath)) | Out-Null
+    Add-PathArgument -Arguments $args -Name "-BridgeScriptPath" -Value $BridgeScriptPath
+    Add-PathArgument -Arguments $args -Name "-AeMcpPath" -Value $AeMcpPath
+    Add-PathArgument -Arguments $args -Name "-PrMcpPath" -Value $PrMcpPath
+    Add-PathArgument -Arguments $args -Name "-PsMcpPath" -Value $PsMcpPath
+    Add-PathArgument -Arguments $args -Name "-AiMcpPath" -Value $AiMcpPath
+    $args.Add("-InteractiveInstall") | Out-Null
+
+    Write-InstallerLog -Message ("Launching interactive installer: powershell.exe {0}" -f ($args.ToArray() -join " "))
+    Start-Process -FilePath "powershell.exe" -ArgumentList $args.ToArray() -Verb RunAs -WindowStyle Normal | Out-Null
+    Write-InstallerLog -Message "Interactive installer process launched."
 }
 
 function Get-DisplayVersion {
@@ -1042,6 +1105,20 @@ function Update-CodexMcpConfig {
         }
     }
     Add-InstallReport -Key "codex-config" -Status "installed" -Message "Updated $updated Codex config file(s)."
+}
+
+if ($LaunchInteractiveInstall) {
+    try {
+        Start-InteractiveInstallerProcess
+    } catch {
+        Write-InstallerLog -Message ("Failed to launch interactive installer: {0}" -f $_.Exception.Message)
+        throw
+    }
+    exit 0
+}
+
+if ($InteractiveInstall) {
+    Write-InstallerLog -Message "Interactive installer started."
 }
 
 if ($PlanInstall -or $InteractiveInstall) {
