@@ -6,13 +6,14 @@ param(
     [string]$AiMcpPath,
     [switch]$PlanInstall,
     [switch]$FinalizeInstall,
+    [switch]$InteractiveInstall,
     [switch]$NonInteractive,
     [switch]$SkipHostBridgeInstall,
     [switch]$SkipUserInstall
 )
 
 $ErrorActionPreference = "Stop"
-$PackageVersion = "0.4.1"
+$PackageVersion = "0.4.2"
 $InstallerStateRoot = Join-Path $env:ProgramData "AfterEffectsMcp"
 $InstallSelectionPath = Join-Path $InstallerStateRoot "install-selection.json"
 $InstallReportPath = Join-Path $InstallerStateRoot "install-report.json"
@@ -1043,9 +1044,11 @@ function Update-CodexMcpConfig {
     Add-InstallReport -Key "codex-config" -Status "installed" -Message "Updated $updated Codex config file(s)."
 }
 
-if ($PlanInstall) {
+if ($PlanInstall -or $InteractiveInstall) {
     Show-InstallPlanDialog | Out-Null
-    exit 0
+    if ($PlanInstall -and -not $InteractiveInstall) {
+        exit 0
+    }
 }
 
 if (-not $SkipHostBridgeInstall) {
@@ -1127,6 +1130,6 @@ if (-not $SkipUserInstall) {
     Update-CodexMcpConfig
 }
 
-if ($FinalizeInstall) {
+if ($FinalizeInstall -or $InteractiveInstall) {
     Show-InstallSummaryDialog
 }

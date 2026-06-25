@@ -2,9 +2,9 @@
 <ExtensionManifest Version="7.0"
                   ExtensionBundleId="io.github.aodaruma.ai-mcp-bridge"
                   ExtensionBundleName="Illustrator MCP Bridge"
-                  ExtensionBundleVersion="0.4.1">
+                  ExtensionBundleVersion="0.4.2">
   <ExtensionList>
-    <Extension Id="io.github.aodaruma.ai-mcp-bridge.panel" Version="0.4.1" />
+    <Extension Id="io.github.aodaruma.ai-mcp-bridge.panel" Version="0.4.2" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
