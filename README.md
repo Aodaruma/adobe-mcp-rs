@@ -43,7 +43,7 @@ Premiere Pro currently reuses the same file-bridge pattern under `~/Documents/pr
 
 Photoshop currently reuses the same file-bridge pattern under `~/Documents/ps-mcp-bridge`. The UXP bridge exposes a small tool surface for arbitrary UXP code plus allowlisted read-only document/layer inspection scripts. `ps-mcp serve-daemon` is a heartbeat daemon only, matching the current Premiere shape rather than the After Effects broker.
 
-Illustrator currently uses a CEP panel backed by ExtendScript under `~/Documents/ai-mcp-bridge`. It shares the same `instances/` heartbeat and `registry/` retained-result pattern as Premiere and Photoshop. The Windows installer can deploy the Illustrator CEP panel, Premiere/Photoshop UXP panels, After Effects ScriptUI panel, and Codex MCP config from a selectable host-integration screen.
+Illustrator currently uses a CEP panel backed by ExtendScript under `~/Documents/ai-mcp-bridge`. It shares the same `instances/` heartbeat and `registry/` retained-result pattern as Premiere and Photoshop. The Windows MSI exposes host bridges as selectable features in the standard Custom Setup screen, then deploys the selected After Effects, Premiere, Photoshop, Illustrator, and Codex config integration steps without opening a separate PowerShell window.
 
 ## Setup
 

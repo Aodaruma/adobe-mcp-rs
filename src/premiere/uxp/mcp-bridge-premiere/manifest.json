@@ -2,7 +2,7 @@
   "id": "io.github.aodaruma.premiere-mcp-bridge",
   "name": "Premiere MCP Bridge",
   "shortname": "Premiere MCP",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "main": "index.html",
   "host": {
     "app": "premierepro",
