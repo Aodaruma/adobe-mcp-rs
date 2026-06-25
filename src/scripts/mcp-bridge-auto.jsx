@@ -12,6 +12,7 @@
 */
 
 // --- Function Definitions ---
+var AE_MCP_BRIDGE_VERSION = "0.4.1";
 var fxDialogsSuppressed = false;
 
 // --- createComposition (from createComposition.jsx) --- 
@@ -2521,10 +2522,10 @@ if (typeof JSON.stringify !== "function") {
 // Fallback to a floating palette when launched as a normal script.
 var panel = (this instanceof Panel)
     ? this
-    : new Window("palette", "MCP Bridge Auto", undefined, { resizeable: true });
+    : new Window("palette", "MCP Bridge Auto " + AE_MCP_BRIDGE_VERSION, undefined, { resizeable: true });
 var isDockablePanel = panel instanceof Panel;
 if (isDockablePanel) {
-    panel.text = "MCP Bridge Auto";
+    panel.text = "MCP Bridge Auto " + AE_MCP_BRIDGE_VERSION;
 }
 panel.orientation = "column";
 panel.alignChildren = ["fill", "top"];
@@ -2532,7 +2533,7 @@ panel.spacing = 10;
 panel.margins = 16;
 
 // Status display
-var statusText = panel.add("statictext", undefined, "Waiting for commands...");
+var statusText = panel.add("statictext", undefined, "Waiting for commands... (v" + AE_MCP_BRIDGE_VERSION + ")");
 statusText.alignment = ["fill", "top"];
 
 // Add log area
@@ -2827,6 +2828,9 @@ function getAeInstanceMetadata() {
         appName: "After Effects",
         appVersion: (app && app.version) ? String(app.version) : "",
         displayName: "Adobe After Effects " + ((app && app.version) ? String(app.version) : ""),
+        bridgeVersion: AE_MCP_BRIDGE_VERSION,
+        bridgeRuntime: "extendscript-scriptui",
+        hostId: "aftereffects",
         projectPath: getProjectPathForHeartbeat(),
         status: getBridgeInstanceStatus(),
         currentRequestId: currentRequestId || null,

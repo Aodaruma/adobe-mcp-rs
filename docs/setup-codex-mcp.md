@@ -207,6 +207,8 @@ enabled = true
 
 ### 6.1 Premiere Pro / Photoshop の UXP bridge と Illustrator CEP bridge
 
+Windows installer を使う場合は、MSI 本体のファイル配置後、host integration の事前確認ウィンドウで After Effects / Premiere Pro / Photoshop / Illustrator / Codex config の配置対象を選択できます。各項目には現在の登録バージョンと新しいバージョンが表示され、完了時にも結果一覧が表示されます。
+
 Premiere Pro:
 
 1. Adobe UXP Developer Tool で `src/premiere/uxp/mcp-bridge-premiere/manifest.json` を読み込む

@@ -1,4 +1,5 @@
 (function () {
+  var BRIDGE_VERSION = "0.4.1";
   var fs = safeRequire("fs");
   var os = safeRequire("os");
   var uxp = safeRequire("uxp");
@@ -212,11 +213,15 @@
     var appVersion = host.version || "";
     var projectPath = await getProjectPath();
     var payload = {
+      protocolVersion: 1,
       instanceId: instanceId,
+      hostId: "premiere",
       appName: host.name || "Premiere Pro",
       appVersion: appVersion,
       displayName: appVersion ? "Premiere Pro " + appVersion : "Premiere Pro UXP",
       projectPath: projectPath,
+      bridgeRuntime: "uxp",
+      bridgeVersion: BRIDGE_VERSION,
       status: status || state.lastStatus || "idle",
       currentRequestId: currentRequestId,
       bridgeRoot: paths.root,

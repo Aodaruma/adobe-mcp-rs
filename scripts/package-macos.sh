@@ -220,7 +220,7 @@ pkgbuild \
   --root "$PKG_ROOT" \
   --scripts "$PKG_SCRIPTS_DIR" \
   --identifier "io.github.aodaruma.adobe-mcp-rs" \
-  --version "0.2.0" \
+  --version "0.4.1" \
   --install-location "/" \
   "$PKG_PATH"
 
