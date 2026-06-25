@@ -43,7 +43,7 @@ Premiere Pro currently reuses the same file-bridge pattern under `~/Documents/pr
 
 Photoshop currently reuses the same file-bridge pattern under `~/Documents/ps-mcp-bridge`. The UXP bridge exposes a small tool surface for arbitrary UXP code plus allowlisted read-only document/layer inspection scripts. `ps-mcp serve-daemon` is a heartbeat daemon only, matching the current Premiere shape rather than the After Effects broker.
 
-Illustrator currently uses a CEP panel backed by ExtendScript under `~/Documents/ai-mcp-bridge`. It shares the same `instances/` heartbeat and `registry/` retained-result pattern as Premiere and Photoshop, but installer automation is not yet wired.
+Illustrator currently uses a CEP panel backed by ExtendScript under `~/Documents/ai-mcp-bridge`. It shares the same `instances/` heartbeat and `registry/` retained-result pattern as Premiere and Photoshop. The Windows installer can deploy the Illustrator CEP panel, Premiere/Photoshop UXP panels, After Effects ScriptUI panel, and Codex MCP config from a selectable host-integration screen.
 
 ## Setup
 
@@ -240,7 +240,7 @@ The next step is to make host support a first-class concept instead of cloning t
 2. Normalize the bridge protocol across hosts: `heartbeat.json`, command files, result files, instance metadata, capabilities, and retained request records.
 3. Harden Premiere Pro to match the After Effects broker model or explicitly document it as direct file-bridge only.
 4. Harden the initial Photoshop UXP bridge with write operations, modal execution policies, and installer support.
-5. Harden the initial Illustrator CEP bridge with installer support, export coverage, and current-version runtime validation. Keep UXP optional until public host support is clear enough for third-party automation.
+5. Harden the initial Illustrator CEP bridge with export coverage and current-version runtime validation. Keep UXP optional until public host support is clear enough for third-party automation.
 
 Detailed notes are in [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md).
 

@@ -1,5 +1,7 @@
 /* Illustrator MCP Bridge (CEP) ExtendScript */
 
+var AI_MCP_BRIDGE_VERSION = "0.4.1";
+
 if (typeof JSON === "undefined") {
     JSON = {};
 }
@@ -241,6 +243,7 @@ function aiGetInstanceMetadata() {
         lastHeartbeatAt: aiIsoDate(new Date()),
         hostId: "illustrator",
         bridgeRuntime: "cep-extendscript",
+        bridgeVersion: AI_MCP_BRIDGE_VERSION,
         capabilities: [
             "run-jsx",
             "documents.list",

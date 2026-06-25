@@ -1,4 +1,5 @@
 (function () {
+  var BRIDGE_VERSION = "0.4.1";
   var fs = safeRequire("fs");
   var os = safeRequire("os");
   var uxp = safeRequire("uxp");
@@ -351,6 +352,7 @@
       displayName: appVersion ? "Photoshop " + appVersion : "Photoshop UXP",
       projectPath: activeDocument ? safeGet(activeDocument, "path") : null,
       bridgeRuntime: "uxp",
+      bridgeVersion: BRIDGE_VERSION,
       capabilities: ["run-jsx", "documents.list", "layers.list", "batchPlay"],
       status: status || state.lastStatus || "idle",
       currentRequestId: currentRequestId,
