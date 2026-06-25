@@ -15,7 +15,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$PackageVersion = "0.4.4"
+$PackageVersion = "0.4.5"
 $InstallerStateRoot = Join-Path $env:ProgramData "AfterEffectsMcp"
 $InstallSelectionPath = Join-Path $InstallerStateRoot "install-selection.json"
 $InstallReportPath = Join-Path $InstallerStateRoot "install-report.json"
@@ -25,6 +25,20 @@ function Ensure-InstallerStateRoot {
     if (-not (Test-Path -LiteralPath $InstallerStateRoot)) {
         New-Item -ItemType Directory -Path $InstallerStateRoot -Force | Out-Null
     }
+
+    try {
+        $acl = Get-Acl -LiteralPath $InstallerStateRoot
+        $usersSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-545")
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $usersSid,
+            [System.Security.AccessControl.FileSystemRights]::Modify,
+            [System.Security.AccessControl.InheritanceFlags]"ContainerInherit,ObjectInherit",
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )
+        $acl.SetAccessRule($rule)
+        Set-Acl -LiteralPath $InstallerStateRoot -AclObject $acl
+    } catch {}
 }
 
 function Read-JsonFile {
@@ -124,28 +138,73 @@ function Get-InteractiveUserAccount {
 function New-InteractiveInstallerArguments {
     param([string]$ScriptPath)
 
-    $args = [System.Collections.Generic.List[string]]::new()
-    $args.Add("-NoProfile") | Out-Null
-    $args.Add("-Sta") | Out-Null
-    $args.Add("-WindowStyle") | Out-Null
-    $args.Add("Normal") | Out-Null
-    $args.Add("-ExecutionPolicy") | Out-Null
-    $args.Add("Bypass") | Out-Null
-    $args.Add("-File") | Out-Null
-    $args.Add((ConvertTo-QuotedProcessArgument -Value $scriptPath)) | Out-Null
-    Add-PathArgument -Arguments $args -Name "-BridgeScriptPath" -Value $BridgeScriptPath
-    Add-PathArgument -Arguments $args -Name "-AeMcpPath" -Value $AeMcpPath
-    Add-PathArgument -Arguments $args -Name "-PrMcpPath" -Value $PrMcpPath
-    Add-PathArgument -Arguments $args -Name "-PsMcpPath" -Value $PsMcpPath
-    Add-PathArgument -Arguments $args -Name "-AiMcpPath" -Value $AiMcpPath
-    $args.Add("-InteractiveInstall") | Out-Null
-    return $args
+    $argumentList = [System.Collections.Generic.List[string]]::new()
+    $argumentList.Add("-NoProfile") | Out-Null
+    $argumentList.Add("-Sta") | Out-Null
+    $argumentList.Add("-WindowStyle") | Out-Null
+    $argumentList.Add("Normal") | Out-Null
+    $argumentList.Add("-ExecutionPolicy") | Out-Null
+    $argumentList.Add("Bypass") | Out-Null
+    $argumentList.Add("-File") | Out-Null
+    $argumentList.Add((ConvertTo-QuotedProcessArgument -Value $scriptPath)) | Out-Null
+    Add-PathArgument -Arguments $argumentList -Name "-BridgeScriptPath" -Value $BridgeScriptPath
+    Add-PathArgument -Arguments $argumentList -Name "-AeMcpPath" -Value $AeMcpPath
+    Add-PathArgument -Arguments $argumentList -Name "-PrMcpPath" -Value $PrMcpPath
+    Add-PathArgument -Arguments $argumentList -Name "-PsMcpPath" -Value $PsMcpPath
+    Add-PathArgument -Arguments $argumentList -Name "-AiMcpPath" -Value $AiMcpPath
+    $argumentList.Add("-InteractiveInstall") | Out-Null
+    return @($argumentList.ToArray())
+}
+
+function New-InstallWorkerArguments {
+    param([string]$ScriptPath)
+
+    $argumentList = [System.Collections.Generic.List[string]]::new()
+    $argumentList.Add("-NoProfile") | Out-Null
+    $argumentList.Add("-ExecutionPolicy") | Out-Null
+    $argumentList.Add("Bypass") | Out-Null
+    $argumentList.Add("-File") | Out-Null
+    $argumentList.Add((ConvertTo-QuotedProcessArgument -Value $scriptPath)) | Out-Null
+    Add-PathArgument -Arguments $argumentList -Name "-BridgeScriptPath" -Value $BridgeScriptPath
+    Add-PathArgument -Arguments $argumentList -Name "-AeMcpPath" -Value $AeMcpPath
+    Add-PathArgument -Arguments $argumentList -Name "-PrMcpPath" -Value $PrMcpPath
+    Add-PathArgument -Arguments $argumentList -Name "-PsMcpPath" -Value $PsMcpPath
+    Add-PathArgument -Arguments $argumentList -Name "-AiMcpPath" -Value $AiMcpPath
+    return @($argumentList.ToArray())
+}
+
+function Test-IsAdministrator {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+function Start-ElevatedInstallWorkerAndWait {
+    $scriptPath = Get-InstallerScriptPath
+    $workerArgs = @(New-InstallWorkerArguments -ScriptPath $scriptPath)
+
+    Write-InstallerLog -Message ("Launching elevated install worker: powershell.exe {0}" -f ($workerArgs -join " "))
+    try {
+        $process = Start-Process -FilePath "powershell.exe" -ArgumentList $workerArgs -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+        if ($process) {
+            Write-InstallerLog -Message ("Elevated install worker exited with code {0}." -f $process.ExitCode)
+        } else {
+            Write-InstallerLog -Message "Elevated install worker completed without process details."
+        }
+    } catch {
+        Write-InstallerLog -Message ("Elevated install worker failed: {0}" -f $_.Exception.Message)
+        Add-InstallReport -Key "host-integration" -Status "failed" -Message ("Elevation failed: {0}" -f $_.Exception.Message)
+    }
 }
 
 function Start-InteractiveInstallerScheduledTask {
     param(
         [string]$ScriptPath,
-        [System.Collections.Generic.List[string]]$Arguments
+        [string[]]$Arguments
     )
 
     $taskName = "AdobeMcpHostIntegration-{0}" -f ([guid]::NewGuid().ToString("N"))
@@ -165,7 +224,7 @@ function Start-InteractiveInstallerScheduledTask {
     Write-InstallerLog -Message ("Registering interactive scheduled task '$taskName' for '$account': powershell.exe {0}" -f $argumentLine)
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argumentLine
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5)
-    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
+    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
     Start-ScheduledTask -TaskName $taskName
     Write-InstallerLog -Message ("Interactive scheduled task started: {0}" -f $taskName)
@@ -188,17 +247,17 @@ function Remove-LaunchScheduledTask {
 
 function Start-InteractiveInstallerProcess {
     $scriptPath = Get-InstallerScriptPath
-    $args = New-InteractiveInstallerArguments -ScriptPath $scriptPath
+    $installerArgs = @(New-InteractiveInstallerArguments -ScriptPath $scriptPath)
 
     try {
-        Start-InteractiveInstallerScheduledTask -ScriptPath $scriptPath -Arguments $args
+        Start-InteractiveInstallerScheduledTask -ScriptPath $scriptPath -Arguments $installerArgs
         return
     } catch {
         Write-InstallerLog -Message ("Interactive scheduled task launch failed: {0}" -f $_.Exception.Message)
     }
 
-    Write-InstallerLog -Message ("Falling back to ShellExecute runas: powershell.exe {0}" -f ($args.ToArray() -join " "))
-    Start-Process -FilePath "powershell.exe" -ArgumentList $args.ToArray() -Verb RunAs -WindowStyle Normal | Out-Null
+    Write-InstallerLog -Message ("Falling back to ShellExecute runas: powershell.exe {0}" -f ($installerArgs -join " "))
+    Start-Process -FilePath "powershell.exe" -ArgumentList $installerArgs -Verb RunAs -WindowStyle Normal | Out-Null
     Write-InstallerLog -Message "Interactive installer process launched via ShellExecute runas."
 }
 
@@ -215,8 +274,24 @@ function Get-DisplayVersion {
     return $text
 }
 
+function Join-OptionalPath {
+    param(
+        [string]$Path,
+        [string]$ChildPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+    return (Join-Path $Path $ChildPath)
+}
+
 function Get-JsonManifestVersion {
     param([string]$ManifestPath)
+
+    if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
+        return $null
+    }
 
     try {
         $manifest = Read-JsonFile -Path $ManifestPath
@@ -229,6 +304,10 @@ function Get-JsonManifestVersion {
 
 function Get-CepManifestVersion {
     param([string]$ManifestPath)
+
+    if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
+        return $null
+    }
 
     try {
         if (-not (Test-Path -LiteralPath $ManifestPath)) {
@@ -497,7 +576,7 @@ function Get-InstallPlan {
         -Available ([bool]$premiereUxpSource -and $premiereUxpTargets.Count -gt 0 -and [bool]$upia) `
         -Selected $true `
         -OldVersion (Get-UxpInstalledVersion -PluginId "io.github.aodaruma.premiere-mcp-bridge" -InfoFileName "premierepro.json") `
-        -NewVersion (Get-JsonManifestVersion -ManifestPath (Join-Path $premiereUxpSource "manifest.json")) `
+        -NewVersion (Get-JsonManifestVersion -ManifestPath (Join-OptionalPath -Path $premiereUxpSource -ChildPath "manifest.json")) `
         -Note "Preferred for Premiere Pro 25.6 or newer."
 
     $items += New-InstallPlanItem `
@@ -506,7 +585,7 @@ function Get-InstallPlan {
         -Available ([bool]$premiereCepSource -and $premiereTargets.Count -gt 0 -and $premiereUxpTargets.Count -eq 0) `
         -Selected $true `
         -OldVersion (Get-CepManifestVersion -ManifestPath "C:\Program Files (x86)\Common Files\Adobe\CEP\extensions\mcp-bridge-premiere\CSXS\manifest.xml") `
-        -NewVersion (Get-CepManifestVersion -ManifestPath (Join-Path $premiereCepSource "CSXS\manifest.xml")) `
+        -NewVersion (Get-CepManifestVersion -ManifestPath (Join-OptionalPath -Path $premiereCepSource -ChildPath "CSXS\manifest.xml")) `
         -Note "Only used when no UXP-capable Premiere Pro is detected."
 
     $items += New-InstallPlanItem `
@@ -515,7 +594,7 @@ function Get-InstallPlan {
         -Available ([bool]$photoshopUxpSource -and $photoshopTargets.Count -gt 0 -and [bool]$upia) `
         -Selected $true `
         -OldVersion (Get-UxpInstalledVersion -PluginId "io.github.aodaruma.photoshop-mcp-bridge" -InfoFileName "PS.json") `
-        -NewVersion (Get-JsonManifestVersion -ManifestPath (Join-Path $photoshopUxpSource "manifest.json")) `
+        -NewVersion (Get-JsonManifestVersion -ManifestPath (Join-OptionalPath -Path $photoshopUxpSource -ChildPath "manifest.json")) `
         -Note "Installs the plugin so it appears under Photoshop > Plugins."
 
     $items += New-InstallPlanItem `
@@ -524,7 +603,7 @@ function Get-InstallPlan {
         -Available ([bool]$illustratorCepSource -and $illustratorTargets.Count -gt 0) `
         -Selected $true `
         -OldVersion (Get-CepManifestVersion -ManifestPath "C:\Program Files (x86)\Common Files\Adobe\CEP\extensions\mcp-bridge-illustrator\CSXS\manifest.xml") `
-        -NewVersion (Get-CepManifestVersion -ManifestPath (Join-Path $illustratorCepSource "CSXS\manifest.xml")) `
+        -NewVersion (Get-CepManifestVersion -ManifestPath (Join-OptionalPath -Path $illustratorCepSource -ChildPath "CSXS\manifest.xml")) `
         -Note "Installs the CEP panel under Window > Extensions."
 
     $items += New-InstallPlanItem `
@@ -1233,6 +1312,15 @@ if ($PlanInstall -or $InteractiveInstall) {
     if ($PlanInstall -and -not $InteractiveInstall) {
         exit 0
     }
+}
+
+if ($InteractiveInstall -and -not (Test-IsAdministrator)) {
+    Write-InstallerLog -Message "Interactive installer is running without administrator rights; delegating install work to elevated worker."
+    Start-ElevatedInstallWorkerAndWait
+    Write-InstallerLog -Message "Showing install summary dialog after elevated worker."
+    Show-InstallSummaryDialog
+    Write-InstallerLog -Message "Install summary dialog completed after elevated worker."
+    exit 0
 }
 
 if (-not $SkipHostBridgeInstall) {
