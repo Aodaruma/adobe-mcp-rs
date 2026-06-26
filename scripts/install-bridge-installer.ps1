@@ -15,7 +15,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$PackageVersion = "0.4.3"
+$PackageVersion = "0.4.4"
 $InstallerStateRoot = Join-Path $env:ProgramData "AfterEffectsMcp"
 $InstallSelectionPath = Join-Path $InstallerStateRoot "install-selection.json"
 $InstallReportPath = Join-Path $InstallerStateRoot "install-report.json"
@@ -371,6 +371,42 @@ function Get-UxpInstalledVersion {
     return $null
 }
 
+function Get-VersionValues {
+    param([string]$Text)
+
+    $versions = @()
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $versions
+    }
+
+    foreach ($match in [regex]::Matches($Text, '\d+(?:\.\d+){1,3}')) {
+        try {
+            $versions += [version]$match.Value
+        } catch {}
+    }
+    return $versions
+}
+
+function Test-VersionDowngrade {
+    param(
+        [string]$OldVersion,
+        [string]$NewVersion
+    )
+
+    $newVersions = @(Get-VersionValues -Text $NewVersion)
+    if ($newVersions.Count -eq 0) {
+        return $false
+    }
+    $newestNew = @($newVersions | Sort-Object -Descending | Select-Object -First 1)[0]
+
+    foreach ($old in @(Get-VersionValues -Text $OldVersion)) {
+        if ($old -gt $newestNew) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function New-InstallPlanItem {
     param(
         [string]$Key,
@@ -382,14 +418,26 @@ function New-InstallPlanItem {
         [string]$Note
     )
 
+    $oldDisplay = Get-DisplayVersion $OldVersion
+    $newDisplay = Get-DisplayVersion $NewVersion
+    $isDowngrade = Test-VersionDowngrade -OldVersion $oldDisplay -NewVersion $newDisplay
+    $displayNote = $Note
+    if ($isDowngrade) {
+        $displayNote = "Warning: installed version is newer; this will downgrade it."
+        if (-not [string]::IsNullOrWhiteSpace($Note)) {
+            $displayNote = "$displayNote $Note"
+        }
+    }
+
     [pscustomobject]@{
         key = $Key
         label = $Label
         available = $Available
         selected = ($Available -and $Selected)
-        oldVersion = (Get-DisplayVersion $OldVersion)
-        newVersion = (Get-DisplayVersion $NewVersion)
-        note = $Note
+        oldVersion = $oldDisplay
+        newVersion = $newDisplay
+        note = $displayNote
+        downgrade = $isDowngrade
     }
 }
 
@@ -733,9 +781,23 @@ function Show-InstallPlanDialog {
     $title.Location = New-Object System.Drawing.Point(12, 12)
     $form.Controls.Add($title)
 
+    $downgradeItems = @($items | Where-Object { [bool]$_.downgrade })
+    $gridTop = 42
+    $gridHeight = 315
+    if ($downgradeItems.Count -gt 0) {
+        $warning = New-Object System.Windows.Forms.Label
+        $warning.Text = "Warning: one or more components will install an older version than currently installed."
+        $warning.AutoSize = $true
+        $warning.ForeColor = [System.Drawing.Color]::DarkOrange
+        $warning.Location = New-Object System.Drawing.Point(12, 34)
+        $form.Controls.Add($warning)
+        $gridTop = 62
+        $gridHeight = 295
+    }
+
     $grid = New-Object System.Windows.Forms.DataGridView
-    $grid.Location = New-Object System.Drawing.Point(12, 42)
-    $grid.Size = New-Object System.Drawing.Size(780, 315)
+    $grid.Location = New-Object System.Drawing.Point(12, $gridTop)
+    $grid.Size = New-Object System.Drawing.Size(780, $gridHeight)
     $grid.Anchor = [System.Windows.Forms.AnchorStyles]"Top,Bottom,Left,Right"
     $grid.AllowUserToAddRows = $false
     $grid.AllowUserToDeleteRows = $false
@@ -765,6 +827,8 @@ function Show-InstallPlanDialog {
             $row.Cells[0].Value = $false
             $row.Cells[0].ReadOnly = $true
             $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gray
+        } elseif ([bool]$item.downgrade) {
+            $row.DefaultCellStyle.ForeColor = [System.Drawing.Color]::DarkOrange
         }
     }
     $form.Controls.Add($grid)

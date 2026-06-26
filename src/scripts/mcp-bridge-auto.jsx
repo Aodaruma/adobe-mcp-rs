@@ -12,7 +12,7 @@
 */
 
 // --- Function Definitions ---
-var AE_MCP_BRIDGE_VERSION = "0.4.3";
+var AE_MCP_BRIDGE_VERSION = "0.4.4";
 var fxDialogsSuppressed = false;
 
 // --- createComposition (from createComposition.jsx) --- 
