@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ae-mcp"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "bridge-core",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ai-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "mcp-core",
  "serde",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "ai-mcp"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "ai-core",
  "anyhow",
@@ -133,7 +133,7 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
 name = "bridge-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "serde",
@@ -462,14 +462,14 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "platform-service"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "pr-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "mcp-core",
  "serde",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "pr-mcp"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "bridge-core",
@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "ps-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "mcp-core",
  "serde",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "ps-mcp"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "bridge-core",

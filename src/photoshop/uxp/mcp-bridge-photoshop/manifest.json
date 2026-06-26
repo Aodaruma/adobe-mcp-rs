@@ -2,7 +2,7 @@
   "id": "io.github.aodaruma.photoshop-mcp-bridge",
   "name": "Photoshop MCP Bridge",
   "shortname": "Photoshop MCP",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "main": "index.html",
   "host": {
     "app": "PS",

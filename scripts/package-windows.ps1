@@ -177,7 +177,7 @@ try {
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Adobe MCP (Rust)"
            Manufacturer="adobe-mcp-rs contributors"
-           Version="0.4.2.0"
+           Version="0.4.3.0"
            UpgradeCode="D7C1D860-4DA9-4E1E-B64A-8F64B7D9CC6E"
            Compressed="yes">
     <MediaTemplate EmbedCab="yes" />
