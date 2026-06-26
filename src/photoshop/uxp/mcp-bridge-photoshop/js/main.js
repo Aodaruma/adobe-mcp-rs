@@ -1,5 +1,5 @@
 (function () {
-  var BRIDGE_VERSION = "0.4.2";
+  var BRIDGE_VERSION = "0.4.3";
   var fs = safeRequire("fs");
   var os = safeRequire("os");
   var uxp = safeRequire("uxp");
@@ -933,7 +933,7 @@
                 startBridge();
               },
               hide: function () {
-                stopBridge();
+                startBridge();
               },
               destroy: function () {
                 stopBridge();

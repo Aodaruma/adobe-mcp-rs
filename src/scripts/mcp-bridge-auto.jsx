@@ -12,7 +12,7 @@
 */
 
 // --- Function Definitions ---
-var AE_MCP_BRIDGE_VERSION = "0.4.2";
+var AE_MCP_BRIDGE_VERSION = "0.4.3";
 var fxDialogsSuppressed = false;
 
 // --- createComposition (from createComposition.jsx) --- 
@@ -2586,6 +2586,15 @@ function setStatus(message) {
     } catch (_e) {}
 }
 
+function isAutoRunEnabled() {
+    try {
+        if (isControlValid(autoRunCheckbox)) {
+            return autoRunCheckbox.value === true;
+        }
+    } catch (_e) {}
+    return true;
+}
+
 function safePanelUpdate() {
     try {
         panel.update();
@@ -3547,9 +3556,10 @@ function logToPanel(message) {
 // Check for new commands
 function checkForCommands() {
     if (!isControlValid(autoRunCheckbox) || !isControlValid(checkButton)) {
-        logCommandCheckerState("invalid-controls", "Command checker stopped: panel controls are invalid.");
-        stopCommandChecker();
-        return;
+        logCommandCheckerState(
+            "controls-unavailable",
+            "Command checker continuing without visible panel controls."
+        );
     }
     if (isChecking) {
         logCommandCheckerState("already-checking", "Command checker skipped: previous check is still running.");
@@ -3560,7 +3570,7 @@ function checkForCommands() {
         return;
     }
     writeInstanceHeartbeat();
-    if (!autoRunCheckbox.value) {
+    if (!isAutoRunEnabled()) {
         setStatus("Ready - Auto-run is OFF");
         logCommandCheckerState("auto-run-off", "Command checker paused: Auto-run commands is OFF.");
         return;
@@ -3613,7 +3623,7 @@ function checkForCommands() {
 // Set up timer to check for commands
 function startCommandChecker() {
     stopCommandChecker();
-    commandCheckerTaskId = app.scheduleTask("checkForCommands()", checkInterval, true);
+    commandCheckerTaskId = app.scheduleTask("$.global.checkForCommands()", checkInterval, true);
     logToPanel("Command checker scheduled. taskId=" + commandCheckerTaskId + " intervalMs=" + checkInterval);
 }
 
@@ -3631,7 +3641,7 @@ function stopCommandChecker() {
 function startHeartbeatTask() {
     stopHeartbeatTask();
     writeInstanceHeartbeat();
-    heartbeatTaskId = app.scheduleTask("aeMcpHeartbeatTick()", heartbeatInterval, true);
+    heartbeatTaskId = app.scheduleTask("$.global.aeMcpHeartbeatTick()", heartbeatInterval, true);
     logToPanel("Heartbeat task scheduled. taskId=" + heartbeatTaskId + " intervalMs=" + heartbeatInterval);
 }
 

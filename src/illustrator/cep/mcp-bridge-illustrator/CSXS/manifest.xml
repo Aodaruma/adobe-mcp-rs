@@ -2,9 +2,9 @@
 <ExtensionManifest Version="7.0"
                   ExtensionBundleId="io.github.aodaruma.ai-mcp-bridge"
                   ExtensionBundleName="Illustrator MCP Bridge"
-                  ExtensionBundleVersion="0.4.2">
+                  ExtensionBundleVersion="0.4.3">
   <ExtensionList>
-    <Extension Id="io.github.aodaruma.ai-mcp-bridge.panel" Version="0.4.2" />
+    <Extension Id="io.github.aodaruma.ai-mcp-bridge.panel" Version="0.4.3" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -32,7 +32,11 @@
           </CEFCommandLine>
         </Resources>
         <Lifecycle>
-          <AutoVisible>false</AutoVisible>
+          <AutoVisible>true</AutoVisible>
+          <StartOn>
+            <Event>com.adobe.csxs.events.AppOnline</Event>
+            <Event>applicationActivate</Event>
+          </StartOn>
         </Lifecycle>
         <UI>
           <Type>Panel</Type>

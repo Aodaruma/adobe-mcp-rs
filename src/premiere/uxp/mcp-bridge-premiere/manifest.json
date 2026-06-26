@@ -2,7 +2,7 @@
   "id": "io.github.aodaruma.premiere-mcp-bridge",
   "name": "Premiere MCP Bridge",
   "shortname": "Premiere MCP",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "main": "index.html",
   "host": {
     "app": "premierepro",
@@ -10,7 +10,8 @@
   },
   "manifestVersion": 5,
   "requiredPermissions": {
-    "localFileSystem": "fullAccess"
+    "localFileSystem": "fullAccess",
+    "allowCodeGenerationFromStrings": true
   },
   "entrypoints": [
     {

@@ -15,7 +15,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$PackageVersion = "0.4.2"
+$PackageVersion = "0.4.3"
 $InstallerStateRoot = Join-Path $env:ProgramData "AfterEffectsMcp"
 $InstallSelectionPath = Join-Path $InstallerStateRoot "install-selection.json"
 $InstallReportPath = Join-Path $InstallerStateRoot "install-report.json"
@@ -406,6 +406,39 @@ function Resolve-BridgeScriptPath {
     }
 
     throw "Bridge script not found. Provide -BridgeScriptPath or place mcp-bridge-auto.jsx beside this script."
+}
+
+function Get-AeBridgeStartupScriptContent {
+    return @'
+/* Adobe MCP Bridge startup loader. Installed by adobe-mcp-rs. */
+(function () {
+    var panelScriptName = "mcp-bridge-auto.jsx";
+    var markerName = "__adobeMcpBridgeStartupOpened";
+    var runnerName = "__adobeMcpBridgeStartupOpenPanel";
+
+    $.global[runnerName] = function () {
+        try {
+            if ($.global[markerName]) {
+                return;
+            }
+            var commandId = app.findMenuCommandId(panelScriptName);
+            if (commandId) {
+                app.executeCommand(commandId);
+                $.global[markerName] = true;
+            }
+        } catch (_err) {}
+    };
+
+    try {
+        app.scheduleTask("$.global.__adobeMcpBridgeStartupOpenPanel()", 3000, false);
+        app.scheduleTask("$.global.__adobeMcpBridgeStartupOpenPanel()", 8000, false);
+    } catch (_scheduleErr) {
+        try {
+            $.global[runnerName]();
+        } catch (_runErr) {}
+    }
+})();
+'@
 }
 
 function Get-AeInstallPaths {
@@ -1414,21 +1447,28 @@ if (-not $SkipHostBridgeInstall) {
             foreach ($aePath in $targets) {
                 $destDir = Join-Path $aePath "Support Files\Scripts\ScriptUI Panels"
                 $destFile = Join-Path $destDir "mcp-bridge-auto.jsx"
+                $startupDir = Join-Path $aePath "Support Files\Scripts\Startup"
+                $startupFile = Join-Path $startupDir "mcp-bridge-startup.jsx"
 
                 try {
                     if (-not (Test-Path -LiteralPath $destDir)) {
                         New-Item -ItemType Directory -Path $destDir -Force | Out-Null
                     }
+                    if (-not (Test-Path -LiteralPath $startupDir)) {
+                        New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
+                    }
                     Copy-Item -LiteralPath $source -Destination $destFile -Force
+                    Get-AeBridgeStartupScriptContent | Set-Content -LiteralPath $startupFile -Encoding ASCII
                     Write-Host "Installed: $destFile"
+                    Write-Host "Installed startup loader: $startupFile"
                     $installed++
                 } catch {
-                    Write-Warning "Failed to install bridge panel to '$destFile': $($_.Exception.Message)"
+                    Write-Warning "Failed to install bridge panel/startup loader to '$aePath': $($_.Exception.Message)"
                 }
             }
 
-            Write-Host "Bridge deployment completed. Installed to $installed location(s)."
-            Add-InstallReport -Key "aftereffects-panel" -Status "installed" -Message "Installed to $installed After Effects location(s)."
+            Write-Host "Bridge deployment completed. Installed panel and startup loader to $installed location(s)."
+            Add-InstallReport -Key "aftereffects-panel" -Status "installed" -Message "Installed panel and startup loader to $installed After Effects location(s)."
         }
     }
 

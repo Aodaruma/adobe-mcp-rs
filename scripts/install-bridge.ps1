@@ -21,6 +21,39 @@ function Normalize-PathText {
     return $PathText.Trim().Trim('"').Trim("'")
 }
 
+function Get-AeBridgeStartupScriptContent {
+    return @'
+/* Adobe MCP Bridge startup loader. Installed by adobe-mcp-rs. */
+(function () {
+    var panelScriptName = "mcp-bridge-auto.jsx";
+    var markerName = "__adobeMcpBridgeStartupOpened";
+    var runnerName = "__adobeMcpBridgeStartupOpenPanel";
+
+    $.global[runnerName] = function () {
+        try {
+            if ($.global[markerName]) {
+                return;
+            }
+            var commandId = app.findMenuCommandId(panelScriptName);
+            if (commandId) {
+                app.executeCommand(commandId);
+                $.global[markerName] = true;
+            }
+        } catch (_err) {}
+    };
+
+    try {
+        app.scheduleTask("$.global.__adobeMcpBridgeStartupOpenPanel()", 3000, false);
+        app.scheduleTask("$.global.__adobeMcpBridgeStartupOpenPanel()", 8000, false);
+    } catch (_scheduleErr) {
+        try {
+            $.global[runnerName]();
+        } catch (_runErr) {}
+    }
+})();
+'@
+}
+
 function Resolve-PreferredPathInput {
     param(
         [string]$ProvidedPath,
@@ -431,7 +464,9 @@ Write-Host "Source      : $sourceScript"
 Write-Host "Destinations:"
 foreach ($aePath in $installTargets) {
     $destinationScript = Join-Path (Join-Path $aePath "Support Files\Scripts\ScriptUI Panels") "mcp-bridge-auto.jsx"
+    $startupScript = Join-Path (Join-Path $aePath "Support Files\Scripts\Startup") "mcp-bridge-startup.jsx"
     Write-Host "  - $destinationScript"
+    Write-Host "  - $startupScript"
 }
 
 if ($DryRun) {
@@ -441,13 +476,20 @@ if ($DryRun) {
     foreach ($aePath in $installTargets) {
         $destinationFolder = Join-Path $aePath "Support Files\Scripts\ScriptUI Panels"
         $destinationScript = Join-Path $destinationFolder "mcp-bridge-auto.jsx"
+        $startupFolder = Join-Path $aePath "Support Files\Scripts\Startup"
+        $startupScript = Join-Path $startupFolder "mcp-bridge-startup.jsx"
 
         try {
             if (!(Test-Path $destinationFolder)) {
                 New-Item -ItemType Directory -Path $destinationFolder -Force | Out-Null
             }
+            if (!(Test-Path $startupFolder)) {
+                New-Item -ItemType Directory -Path $startupFolder -Force | Out-Null
+            }
             Copy-Item -Path $sourceScript -Destination $destinationScript -Force
+            Get-AeBridgeStartupScriptContent | Set-Content -LiteralPath $startupScript -Encoding ASCII
             $installedDestinations += $destinationScript
+            $installedDestinations += $startupScript
         } catch {
             if (-not (Test-IsAdministrator)) {
                 Write-Error @"
@@ -464,7 +506,7 @@ Original error: $($_.Exception.Message)
     }
 
     Write-Host ""
-    Write-Host ("Bridge script installed to {0} location(s)." -f $installedDestinations.Count)
+    Write-Host ("Bridge files installed to {0} path(s)." -f $installedDestinations.Count)
     foreach ($destination in $installedDestinations) {
         Write-Host "  - $destination"
     }
@@ -474,7 +516,7 @@ Write-Host "1. Open After Effects"
 Write-Host "2. Edit > Preferences > Scripting & Expressions"
 Write-Host "3. Enable Allow Scripts to Write Files and Access Network"
 Write-Host "4. Restart After Effects"
-Write-Host "5. Open Window > mcp-bridge-auto.jsx"
+Write-Host "5. The MCP bridge panel should open automatically. If not, open Window > mcp-bridge-auto.jsx"
 
 $premiereUxpSource = Join-Path $repoRoot "src\premiere\uxp\mcp-bridge-premiere"
 $premiereExtensionSource = Join-Path $repoRoot "src\premiere\cep\mcp-bridge-premiere"
