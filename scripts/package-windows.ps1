@@ -42,6 +42,18 @@ function ConvertTo-RtfEscapedText {
     return "{\rtf1\ansi\deff0 $escaped}"
 }
 
+function Invoke-NativeChecked {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($ArgumentList -join ' ')"
+    }
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $output = Resolve-Path -Path $OutputDir -ErrorAction SilentlyContinue
 if (-not $output) {
@@ -52,7 +64,7 @@ if (-not $output) {
 Push-Location $repoRoot
 try {
     Write-Host "Building release binaries..."
-    cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp
+    Invoke-NativeChecked -FilePath "cargo" -ArgumentList @("build", "--release", "-p", "ae-mcp", "-p", "pr-mcp", "-p", "ps-mcp", "-p", "ai-mcp")
 
     $exePath = Join-Path $repoRoot "target\release\ae-mcp.exe"
     if (!(Test-Path $exePath)) {
@@ -177,11 +189,11 @@ try {
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Adobe MCP (Rust)"
            Manufacturer="adobe-mcp-rs contributors"
-           Version="0.4.3.0"
+           Version="0.4.4.0"
            UpgradeCode="D7C1D860-4DA9-4E1E-B64A-8F64B7D9CC6E"
            Compressed="yes">
     <MediaTemplate EmbedCab="yes" />
-    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MajorUpgrade AllowDowngrades="yes" />
     <WixVariable Id="WixUILicenseRtf" Value="$escapedLicenseRtf" />
     <ui:WixUI Id="WixUI_FeatureTree" />
     <StandardDirectory Id="ProgramFiles64Folder">
@@ -371,9 +383,12 @@ try {
 </Wix>
 "@ | Set-Content -Encoding UTF8 $wxsPath
 
-    & $wixCmd extension add WixToolset.UI.wixext/5.0.2 --global | Out-Null
-    & $wixCmd extension add WixToolset.Util.wixext/5.0.2 --global | Out-Null
-    & $wixCmd build $wxsPath -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -out $msiPath
+    if (Test-Path -LiteralPath $msiPath) {
+        Remove-Item -LiteralPath $msiPath -Force
+    }
+    Invoke-NativeChecked -FilePath $wixCmd -ArgumentList @("extension", "add", "WixToolset.UI.wixext/5.0.2", "--global")
+    Invoke-NativeChecked -FilePath $wixCmd -ArgumentList @("extension", "add", "WixToolset.Util.wixext/5.0.2", "--global")
+    Invoke-NativeChecked -FilePath $wixCmd -ArgumentList @("build", $wxsPath, "-arch", "x64", "-ext", "WixToolset.UI.wixext", "-ext", "WixToolset.Util.wixext", "-out", $msiPath)
     if (!(Test-Path $msiPath)) {
         throw "MSI generation failed. See WiX output above."
     }
