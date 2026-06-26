@@ -10,7 +10,8 @@
   },
   "manifestVersion": 5,
   "requiredPermissions": {
-    "localFileSystem": "fullAccess"
+    "localFileSystem": "fullAccess",
+    "allowCodeGenerationFromStrings": true
   },
   "entrypoints": [
     {

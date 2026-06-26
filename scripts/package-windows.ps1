@@ -335,7 +335,7 @@ try {
       <ComponentRef Id="PsMcpExeComponent" />
       <ComponentRef Id="AiMcpExeComponent" />
       <ComponentRef Id="BridgeInstallerScriptComponent" />
-      <Feature Id="AfterEffectsPanelFeature" Title="After Effects ScriptUI panel" Description="Deploys mcp-bridge-auto.jsx to detected After Effects ScriptUI Panels folders." Level="1">
+      <Feature Id="AfterEffectsPanelFeature" Title="After Effects ScriptUI panel" Description="Deploys mcp-bridge-auto.jsx and startup loader to detected After Effects installations." Level="1">
         <ComponentRef Id="BridgePanelComponent" />
       </Feature>
       <Feature Id="PremiereUxpFeature" Title="Premiere Pro UXP bridge" Description="Installs the Premiere Pro UXP bridge package when supported." Level="1">

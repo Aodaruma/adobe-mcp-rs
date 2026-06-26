@@ -933,7 +933,7 @@
                 startBridge();
               },
               hide: function () {
-                stopBridge();
+                startBridge();
               },
               destroy: function () {
                 stopBridge();

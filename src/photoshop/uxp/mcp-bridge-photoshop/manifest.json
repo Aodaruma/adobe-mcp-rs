@@ -9,12 +9,13 @@
     "minVersion": "23.3.0",
     "data": {
       "apiVersion": 2,
-      "loadEvent": "use"
+      "loadEvent": "startup"
     }
   },
   "manifestVersion": 5,
   "requiredPermissions": {
-    "localFileSystem": "fullAccess"
+    "localFileSystem": "fullAccess",
+    "allowCodeGenerationFromStrings": true
   },
   "entrypoints": [
     {
