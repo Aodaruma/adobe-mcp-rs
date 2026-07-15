@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use mcp_core::AppConfig;
+use mcp_core::{AppConfig, AFTER_EFFECTS_HOST};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -104,7 +104,7 @@ fn init_tracing(level: &str) {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cli_config = cli.config.clone();
-    let cfg = AppConfig::load(cli.config.as_deref())?;
+    let cfg = AppConfig::load_for_host(cli.config.as_deref(), AFTER_EFFECTS_HOST)?;
     init_tracing(&cfg.log_level);
     bridge_core::ensure_bridge_dir(&cfg)?;
 

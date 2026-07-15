@@ -226,11 +226,11 @@ fn dispatch_tool_inner(
         "get-results" => {
             if let Some(request_id) = args.get("requestId").and_then(Value::as_str) {
                 let record = bridge.get_request_record(request_id)?;
-                Ok(tool_json(illustrator_record_value(record.to_value()))?)
+                Ok(tool_json(record.to_value())?)
             } else {
                 let value = bridge
                     .latest_request_record()?
-                    .map(|record| illustrator_record_value(record.to_value()))
+                    .map(|record| record.to_value())
                     .unwrap_or_else(
                         || json!({ "status": "empty", "message": "No retained request result." }),
                     );
@@ -327,7 +327,7 @@ fn run_jsx_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Res
 fn get_jsx_result_tool(bridge: &BridgeClient, args: Value) -> Result<Value> {
     let request_id = required_non_empty_string(&args, "requestId")?;
     let record = bridge.get_request_record(request_id)?;
-    Ok(tool_json(illustrator_record_value(record.to_value()))?)
+    Ok(tool_json(record.to_value())?)
 }
 
 fn list_illustrator_instances_tool(cfg: &AppConfig, bridge: &BridgeClient) -> Result<Value> {
@@ -414,7 +414,7 @@ fn run_bridge_command_value(
     };
 
     let outcome = bridge.run_command_sync(command, command_args, options)?;
-    Ok(illustrator_record_value(outcome.to_value()))
+    Ok(outcome.to_value())
 }
 
 fn required_non_empty_string<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
@@ -449,44 +449,6 @@ fn timeout_ms_from_args(cfg: &AppConfig, args: &Value) -> u64 {
         .and_then(Value::as_u64)
         .filter(|value| *value > 0)
         .unwrap_or(cfg.result_timeout_ms)
-}
-
-fn illustrator_record_value(mut value: Value) -> Value {
-    normalize_illustrator_host_text(&mut value);
-    if let Some(obj) = value.as_object_mut() {
-        if let Some(instance) = obj.remove("aeInstance") {
-            obj.insert("illustratorInstance".to_string(), instance);
-        }
-    }
-    value
-}
-
-fn normalize_illustrator_host_text(value: &mut Value) {
-    match value {
-        Value::String(text) => {
-            *text = text
-                .replace("After Effects", "Illustrator")
-                .replace(
-                    "Open Window > mcp-bridge-auto.jsx and enable Auto-run commands.",
-                    "Open Window > Extensions > Illustrator MCP Bridge and enable Auto-run commands.",
-                )
-                .replace("AE to", "Illustrator to")
-                .replace("AE instance", "Illustrator instance")
-                .replace("AE bridge", "Illustrator bridge")
-                .replace("AE to return", "Illustrator to return");
-        }
-        Value::Array(items) => {
-            for item in items {
-                normalize_illustrator_host_text(item);
-            }
-        }
-        Value::Object(map) => {
-            for item in map.values_mut() {
-                normalize_illustrator_host_text(item);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn tool_text(text: String) -> Value {

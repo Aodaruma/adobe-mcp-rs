@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use mcp_core::AppConfig;
+use mcp_core::{host_spec_by_id, AppConfig, HostSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
@@ -44,8 +44,12 @@ pub struct WaitingResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AeInstance {
+pub struct HostInstance {
+    #[serde(default = "default_protocol_version")]
+    pub protocol_version: u32,
     pub instance_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,13 +62,23 @@ pub struct AeInstance {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bridge_runtime: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
     pub bridge_root: String,
     pub command_file: String,
     pub result_file: String,
     pub last_heartbeat_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat_path: Option<String>,
 }
+
+/// Rust API compatibility alias. New code should use [`HostInstance`].
+#[deprecated(note = "use HostInstance")]
+pub type AeInstance = HostInstance;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -90,7 +104,7 @@ pub struct InstanceDiscoveryIssue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceDiscoveryReport {
-    pub instances: Vec<AeInstance>,
+    pub instances: Vec<HostInstance>,
     pub inactive_instances: Vec<InstanceDiscoveryIssue>,
 }
 
@@ -117,8 +131,8 @@ pub struct RequestRecord {
     pub created_at: String,
     pub updated_at: String,
     pub expires_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ae_instance: Option<AeInstance>,
+    #[serde(default, alias = "aeInstance", skip_serializing_if = "Option::is_none")]
+    pub host_instance: Option<HostInstance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,10 +192,13 @@ pub enum BridgeError {
 #[derive(Debug, Clone)]
 pub struct BridgeClient {
     cfg: AppConfig,
+    host: HostSpec,
 }
 
 impl BridgeClient {
     pub fn new(cfg: AppConfig) -> Result<Self> {
+        let host = host_spec_by_id(&cfg.host_id)
+            .ok_or_else(|| anyhow!("unsupported hostId in bridge config: {}", cfg.host_id))?;
         ensure_bridge_dir(&cfg)?;
         fs::create_dir_all(cfg.bridge.root_dir.join("instances")).with_context(|| {
             format!(
@@ -195,7 +212,7 @@ impl BridgeClient {
                 cfg.bridge.root_dir.join("registry").display()
             )
         })?;
-        Ok(Self { cfg })
+        Ok(Self { cfg, host })
     }
 
     pub fn config(&self) -> &AppConfig {
@@ -310,7 +327,7 @@ impl BridgeClient {
         }
     }
 
-    pub fn list_active_instances(&self, stale_threshold: Duration) -> Result<Vec<AeInstance>> {
+    pub fn list_active_instances(&self, stale_threshold: Duration) -> Result<Vec<HostInstance>> {
         Ok(self.discover_instances(stale_threshold)?.instances)
     }
 
@@ -377,7 +394,7 @@ impl BridgeClient {
                     continue;
                 }
             };
-            let mut instance = match serde_json::from_str::<AeInstance>(&raw) {
+            let mut instance = match serde_json::from_str::<HostInstance>(&raw) {
                 Ok(value) => value,
                 Err(error) => {
                     inactive_instances.push(instance_discovery_issue(
@@ -390,6 +407,15 @@ impl BridgeClient {
                     continue;
                 }
             };
+            if instance.host_id.is_empty() {
+                instance.host_id = self.host.id.to_string();
+            }
+            if instance.bridge_runtime.is_empty() {
+                instance.bridge_runtime = self.host.bridge_runtime.to_string();
+            }
+            if instance.updated_at.is_none() {
+                instance.updated_at = Some(instance.last_heartbeat_at.clone());
+            }
             let parsed_issue = instance_discovery_issue_from_instance(
                 folder_name.clone(),
                 &heartbeat_path,
@@ -488,7 +514,7 @@ impl BridgeClient {
         &self,
         command: &str,
         retention_seconds: u64,
-        ae_instance: Option<AeInstance>,
+        host_instance: Option<HostInstance>,
     ) -> Result<BridgeRunOutcome> {
         self.cleanup_registry()?;
         let request_id = generate_request_id();
@@ -501,7 +527,7 @@ impl BridgeClient {
             created_at: created_at.clone(),
             updated_at: created_at,
             expires_at: timestamp_after_seconds(retention_seconds),
-            ae_instance,
+            host_instance,
             message: None,
             result: None,
             result_raw: None,
@@ -531,12 +557,14 @@ impl BridgeClient {
         Ok(record)
     }
 
-    pub fn resolve_target(&self, target: &BridgeTarget) -> Result<AeInstance> {
+    pub fn resolve_target(&self, target: &BridgeTarget) -> Result<HostInstance> {
         let active = self
             .list_active_instances(Duration::from_millis(self.cfg.instance_heartbeat_stale_ms))?;
         if active.is_empty() {
             return Err(anyhow!(
-                "No active After Effects bridge instances were found. Open Window > mcp-bridge-auto.jsx and enable Auto-run commands."
+                "No active {} bridge instances were found. {}",
+                self.host.display_name,
+                self.host.bridge_setup_hint
             ));
         }
 
@@ -557,10 +585,14 @@ impl BridgeClient {
         };
 
         match filtered.len() {
-            0 => Err(anyhow!("No active After Effects instance matched the requested target")),
+            0 => Err(anyhow!(
+                "No active {} instance matched the requested target",
+                self.host.display_name
+            )),
             1 => Ok(filtered.into_iter().next().expect("single instance")),
             _ => Err(anyhow!(
-                "Multiple active After Effects instances matched. Specify targetInstanceId or targetVersion. Active instances: {}",
+                "Multiple active {} instances matched. Specify targetInstanceId or targetVersion. Active instances: {}",
+                self.host.display_name,
                 serde_json::to_string(&filtered)?
             )),
         }
@@ -571,14 +603,14 @@ impl BridgeClient {
         request_id: &str,
         command: &str,
         args: Value,
-        instance: AeInstance,
+        instance: HostInstance,
         options: BridgeRunOptions,
         started_at: Option<Instant>,
     ) -> Result<BridgeRunOutcome> {
         let registry_path = self.registry_path(request_id);
         let mut record = self.read_request_record(request_id)?;
         let started = started_at.unwrap_or_else(Instant::now);
-        record.ae_instance = Some(instance.clone());
+        record.host_instance = Some(instance.clone());
         record.updated_at = chrono_like_timestamp();
         self.write_request_record(&record)?;
 
@@ -587,8 +619,10 @@ impl BridgeClient {
                 record.status = "timeout".to_string();
                 record.updated_at = chrono_like_timestamp();
                 record.message = Some(
-                    "Timed out while waiting for the target After Effects instance to become available. Use get-jsx-result with requestId to check later."
-                        .to_string(),
+                    format!(
+                        "Timed out while waiting for the target {} instance to become available. Use get-jsx-result with requestId to check later.",
+                        self.host.display_name
+                    ),
                 );
                 self.write_request_record(&record)?;
                 return Ok(BridgeRunOutcome {
@@ -632,8 +666,10 @@ impl BridgeClient {
                 record.status = "timeout".to_string();
                 record.updated_at = chrono_like_timestamp();
                 record.message = Some(
-                    "Timed out while waiting for AE to return a result. Use get-jsx-result with requestId to check the result later."
-                        .to_string(),
+                    format!(
+                        "Timed out while waiting for {} to return a result. Use get-jsx-result with requestId to check the result later.",
+                        self.host.display_name
+                    ),
                 );
                 self.write_request_record(&record)?;
                 return Ok(BridgeRunOutcome {
@@ -655,7 +691,7 @@ impl BridgeClient {
             return Ok(record);
         }
 
-        if let Some(instance) = record.ae_instance.clone() {
+        if let Some(instance) = record.host_instance.clone() {
             if let Some((raw, parsed)) =
                 self.try_read_instance_result(&instance, request_id, Some(&record.command))?
             {
@@ -669,10 +705,10 @@ impl BridgeClient {
             } else if self.is_instance_stale(&instance)? {
                 record.status = "lost".to_string();
                 record.updated_at = chrono_like_timestamp();
-                record.message = Some(
-                    "The target After Effects instance heartbeat is stale; the request may have been lost."
-                        .to_string(),
-                );
+                record.message = Some(format!(
+                    "The target {} instance heartbeat is stale; the request may have been lost.",
+                    self.host.display_name
+                ));
                 self.write_request_record(&record)?;
                 self.clear_current_request_if_matches(&instance, request_id)?;
             }
@@ -770,7 +806,7 @@ impl BridgeClient {
 
     fn write_instance_command_file(
         &self,
-        instance: &AeInstance,
+        instance: &HostInstance,
         request_id: &str,
         command: &str,
         args: Value,
@@ -785,10 +821,14 @@ impl BridgeClient {
         write_json_file(&instance_command_path(instance), &payload)
     }
 
-    fn write_instance_waiting_result(&self, instance: &AeInstance, request_id: &str) -> Result<()> {
+    fn write_instance_waiting_result(
+        &self,
+        instance: &HostInstance,
+        request_id: &str,
+    ) -> Result<()> {
         let payload = WaitingResult {
             status: "waiting".to_string(),
-            message: "Waiting for new result from After Effects...".to_string(),
+            message: format!("Waiting for new result from {}...", self.host.display_name),
             timestamp: chrono_like_timestamp(),
             request_id: Some(request_id.to_string()),
         };
@@ -797,7 +837,7 @@ impl BridgeClient {
 
     fn write_current_request(
         &self,
-        instance: &AeInstance,
+        instance: &HostInstance,
         request_id: &str,
         command: &str,
     ) -> Result<()> {
@@ -810,7 +850,7 @@ impl BridgeClient {
         write_json_file(&instance_current_request_path(instance), &payload)
     }
 
-    fn read_current_request(&self, instance: &AeInstance) -> Result<Option<CurrentRequest>> {
+    fn read_current_request(&self, instance: &HostInstance) -> Result<Option<CurrentRequest>> {
         let path = instance_current_request_path(instance);
         if !path.exists() {
             return Ok(None);
@@ -822,7 +862,7 @@ impl BridgeClient {
         Ok(Some(current))
     }
 
-    fn clear_current_request(&self, instance: &AeInstance) -> Result<()> {
+    fn clear_current_request(&self, instance: &HostInstance) -> Result<()> {
         let path = instance_current_request_path(instance);
         if path.exists() {
             fs::remove_file(&path)
@@ -833,7 +873,7 @@ impl BridgeClient {
 
     fn clear_current_request_if_matches(
         &self,
-        instance: &AeInstance,
+        instance: &HostInstance,
         request_id: &str,
     ) -> Result<()> {
         if let Some(current) = self.read_current_request(instance)? {
@@ -844,7 +884,7 @@ impl BridgeClient {
         Ok(())
     }
 
-    fn is_instance_busy(&self, instance: &AeInstance) -> Result<bool> {
+    fn is_instance_busy(&self, instance: &HostInstance) -> Result<bool> {
         let Some(current) = self.read_current_request(instance)? else {
             return Ok(false);
         };
@@ -868,10 +908,10 @@ impl BridgeClient {
             if let Ok(mut record) = self.read_request_record(&current.request_id) {
                 record.status = "lost".to_string();
                 record.updated_at = chrono_like_timestamp();
-                record.message = Some(
-                    "The target After Effects instance heartbeat is stale; the request may have been lost."
-                        .to_string(),
-                );
+                record.message = Some(format!(
+                    "The target {} instance heartbeat is stale; the request may have been lost.",
+                    self.host.display_name
+                ));
                 let _ = self.write_request_record(&record);
             }
             self.clear_current_request(instance)?;
@@ -881,7 +921,7 @@ impl BridgeClient {
         Ok(true)
     }
 
-    fn is_instance_stale(&self, instance: &AeInstance) -> Result<bool> {
+    fn is_instance_stale(&self, instance: &HostInstance) -> Result<bool> {
         let heartbeat_path = instance_heartbeat_path(instance);
         if !heartbeat_path.exists() {
             return Ok(true);
@@ -897,7 +937,7 @@ impl BridgeClient {
 
     fn try_read_instance_result(
         &self,
-        instance: &AeInstance,
+        instance: &HostInstance,
         request_id: &str,
         expected_command: Option<&str>,
     ) -> Result<Option<(String, Value)>> {
@@ -1014,7 +1054,7 @@ pub fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
-fn instance_command_path(instance: &AeInstance) -> PathBuf {
+fn instance_command_path(instance: &HostInstance) -> PathBuf {
     PathBuf::from(&instance.command_file)
 }
 
@@ -1023,7 +1063,7 @@ fn instance_discovery_issue(
     heartbeat_path: &Path,
     reason: impl Into<String>,
     age: Option<Duration>,
-    instance: Option<&AeInstance>,
+    instance: Option<&HostInstance>,
 ) -> InstanceDiscoveryIssue {
     let mut issue = instance
         .map(|value| {
@@ -1048,7 +1088,7 @@ fn instance_discovery_issue_from_instance(
     folder_name: Option<String>,
     heartbeat_path: &Path,
     age: Option<Duration>,
-    instance: &AeInstance,
+    instance: &HostInstance,
 ) -> InstanceDiscoveryIssue {
     InstanceDiscoveryIssue {
         instance_id: Some(instance.instance_id.clone()),
@@ -1067,11 +1107,11 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-fn instance_result_path(instance: &AeInstance) -> PathBuf {
+fn instance_result_path(instance: &HostInstance) -> PathBuf {
     PathBuf::from(&instance.result_file)
 }
 
-fn instance_heartbeat_path(instance: &AeInstance) -> PathBuf {
+fn instance_heartbeat_path(instance: &HostInstance) -> PathBuf {
     instance
         .heartbeat_path
         .as_ref()
@@ -1084,14 +1124,14 @@ fn instance_heartbeat_path(instance: &AeInstance) -> PathBuf {
         })
 }
 
-fn instance_current_request_path(instance: &AeInstance) -> PathBuf {
+fn instance_current_request_path(instance: &HostInstance) -> PathBuf {
     PathBuf::from(&instance.bridge_root)
         .join("instances")
         .join(&instance.instance_id)
         .join("current_request.json")
 }
 
-fn instance_matches_version(instance: &AeInstance, version: &str) -> bool {
+fn instance_matches_version(instance: &HostInstance, version: &str) -> bool {
     let needle = version.trim().to_lowercase();
     if needle.is_empty() {
         return true;
@@ -1116,6 +1156,10 @@ fn result_record_status(value: &Value) -> &'static str {
         return "failed";
     }
     "completed"
+}
+
+fn default_protocol_version() -> u32 {
+    1
 }
 
 fn maybe_remove_stale_lock(path: &Path) -> Result<()> {
@@ -1196,21 +1240,26 @@ mod tests {
         )
     }
 
-    fn write_test_instance(cfg: &AppConfig, instance_id: &str) -> AeInstance {
+    fn write_test_instance(cfg: &AppConfig, instance_id: &str) -> HostInstance {
         let dir = cfg.bridge.root_dir.join("instances").join(instance_id);
         fs::create_dir_all(&dir).expect("instance dir");
-        let instance = AeInstance {
+        let instance = HostInstance {
+            protocol_version: 1,
             instance_id: instance_id.to_string(),
+            host_id: cfg.host_id.clone(),
             app_name: Some("After Effects".to_string()),
             app_version: Some("25.0".to_string()),
             display_name: Some("Adobe After Effects 2025".to_string()),
             project_path: None,
             status: Some("idle".to_string()),
             current_request_id: None,
+            bridge_runtime: "extendscript-scriptui".to_string(),
+            capabilities: vec!["run-jsx".to_string()],
             bridge_root: cfg.bridge.root_dir.display().to_string(),
             command_file: dir.join("ae_command.json").display().to_string(),
             result_file: dir.join("ae_mcp_result.json").display().to_string(),
             last_heartbeat_at: chrono_like_timestamp(),
+            updated_at: None,
             heartbeat_path: Some(dir.join("heartbeat.json").display().to_string()),
         };
         write_json_file(&dir.join("heartbeat.json"), &instance).expect("heartbeat");
@@ -1333,6 +1382,96 @@ mod tests {
             )
             .expect("run");
         assert_eq!(outcome.record.status, "completed");
-        assert!(outcome.record.ae_instance.is_some());
+        assert!(outcome.record.host_instance.is_some());
+    }
+
+    #[test]
+    fn legacy_heartbeat_is_normalized_to_host_schema() {
+        let (mut cfg, _guard) = test_config();
+        cfg.host_id = "photoshop".to_string();
+        let dir = cfg.bridge.root_dir.join("instances").join("ps-legacy");
+        fs::create_dir_all(&dir).expect("instance dir");
+        let now = chrono_like_timestamp();
+        write_json_file(
+            &dir.join("heartbeat.json"),
+            &json!({
+                "instanceId": "ps-legacy",
+                "appName": "Photoshop",
+                "appVersion": "26.0",
+                "bridgeRoot": cfg.bridge.root_dir,
+                "commandFile": dir.join("ps_command.json"),
+                "resultFile": dir.join("ps_mcp_result.json"),
+                "lastHeartbeatAt": now
+            }),
+        )
+        .expect("legacy heartbeat");
+
+        let bridge = BridgeClient::new(cfg).expect("client");
+        let instances = bridge
+            .list_active_instances(Duration::from_secs(10))
+            .expect("instances");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].protocol_version, 1);
+        assert_eq!(instances[0].host_id, "photoshop");
+        assert_eq!(instances[0].bridge_runtime, "uxp");
+        assert!(instances[0].updated_at.is_some());
+    }
+
+    #[test]
+    fn legacy_request_record_reads_ae_instance_and_writes_host_instance() {
+        let legacy = json!({
+            "requestId": "req-legacy",
+            "command": "ping",
+            "status": "completed",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:01Z",
+            "expiresAt": "2026-01-01T01:00:00Z",
+            "aeInstance": {
+                "instanceId": "ae-legacy",
+                "bridgeRoot": "bridge",
+                "commandFile": "command.json",
+                "resultFile": "result.json",
+                "lastHeartbeatAt": "2026-01-01T00:00:00Z"
+            }
+        });
+        let record: RequestRecord = serde_json::from_value(legacy).expect("legacy record");
+        assert_eq!(
+            record
+                .host_instance
+                .as_ref()
+                .map(|value| value.instance_id.as_str()),
+            Some("ae-legacy")
+        );
+
+        let value = record.to_value();
+        assert!(value.get("hostInstance").is_some());
+        assert!(value.get("aeInstance").is_none());
+    }
+
+    #[test]
+    fn diagnostics_are_derived_from_each_host_spec() {
+        for host in mcp_core::HOST_SPECS {
+            let dir = tempdir().expect("tempdir");
+            let root = dir.path().join(host.bridge_root_name);
+            let cfg = AppConfig {
+                host_id: host.id.to_string(),
+                bridge: BridgePaths {
+                    command_file: root.join(host.command_file_name),
+                    result_file: root.join(host.result_file_name),
+                    root_dir: root,
+                },
+                ..AppConfig::default()
+            };
+            let bridge = BridgeClient::new(cfg).expect("client");
+            let error = bridge
+                .resolve_target(&BridgeTarget::default())
+                .expect_err("no heartbeat");
+            let message = error.to_string();
+            assert!(message.contains(host.display_name));
+            assert!(message.contains(host.bridge_setup_hint));
+            if host.id != "aftereffects" {
+                assert!(!message.contains("After Effects"));
+            }
+        }
     }
 }

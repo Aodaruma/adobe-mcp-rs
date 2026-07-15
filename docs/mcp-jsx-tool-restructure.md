@@ -501,7 +501,7 @@ Promptsはtool数を減らした後の「使い方の足場」として有効。
   - 共有 `ae_command.json` の上書き競合を避ける。
 - `instances/<instanceId>/ae_mcp_result.json`
   - AEインスタンス専用のresult file。
-  - 結果には `_requestId` / `_commandExecuted` / `_aeInstance` を付与する。
+  - 結果には `_requestId` / `_commandExecuted` / `_hostInstance` を付与する。
 - `registry/<requestId>.json`
   - timeout後の再確認用request registry。
   - `queued` / `dispatched` / `running` / `completed` / `failed` / `timeout` / `lost` を保持する。

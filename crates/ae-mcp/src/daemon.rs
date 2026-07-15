@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use bridge_core::{AeInstance, BridgeClient, BridgeRunOptions, BridgeTarget};
+use bridge_core::{BridgeClient, BridgeRunOptions, BridgeTarget, HostInstance};
 use mcp_core::AppConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -55,7 +55,7 @@ struct DaemonJob {
     request_id: String,
     command: String,
     args: Value,
-    instance: AeInstance,
+    instance: HostInstance,
     options: BridgeRunOptions,
     global_exclusive: bool,
     response_tx: mpsc::Sender<Result<Value, String>>,
@@ -232,7 +232,10 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
     }
 }
 
-fn get_or_spawn_worker(state: &Arc<DaemonState>, instance: &AeInstance) -> mpsc::Sender<DaemonJob> {
+fn get_or_spawn_worker(
+    state: &Arc<DaemonState>,
+    instance: &HostInstance,
+) -> mpsc::Sender<DaemonJob> {
     let mut workers = state.workers.lock().expect("workers mutex poisoned");
     if let Some(sender) = workers.get(&instance.instance_id) {
         return sender.clone();

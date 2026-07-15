@@ -165,18 +165,24 @@ function mcpBridgeWriteHeartbeat() {
     try {
         appVersion = app.version ? String(app.version) : "";
     } catch (_versionErr) {}
+    var updatedAt = new Date().toISOString();
     var payload = {
+        protocolVersion: 1,
         instanceId: mcpGetBridgeInstanceId(),
+        hostId: "premiere",
         appName: "Premiere Pro",
         appVersion: appVersion,
         displayName: appVersion ? "Premiere Pro " + appVersion : "Premiere Pro CEP",
         projectPath: null,
         status: mcpBridgeState.lastStatus || "idle",
         currentRequestId: mcpBridgeState.currentRequestId || null,
+        bridgeRuntime: "cep-extendscript",
+        capabilities: ["run-jsx", "projects.read", "sequences.read", "tracks.read", "export"],
         bridgeRoot: root.fsName,
         commandFile: cmd.fsName,
         resultFile: res.fsName,
-        lastHeartbeatAt: new Date().toISOString(),
+        lastHeartbeatAt: updatedAt,
+        updatedAt: updatedAt,
         heartbeatPath: heartbeat.fsName
     };
     mcpBridgeWriteJsonFile(heartbeat, payload);

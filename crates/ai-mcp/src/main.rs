@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use mcp_core::{default_bridge_root_dir_named, AppConfig, BridgePaths};
+use mcp_core::{AppConfig, ILLUSTRATOR_HOST};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -105,13 +105,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cli_config = cli.config.clone();
 
-    let bridge_root = default_bridge_root_dir_named("ai-mcp-bridge");
-    let bridge_paths = BridgePaths {
-        root_dir: bridge_root.clone(),
-        command_file: bridge_root.join("ai_command.json"),
-        result_file: bridge_root.join("ai_mcp_result.json"),
-    };
-    let cfg = AppConfig::load_with_bridge_paths(cli.config.as_deref(), bridge_paths)?;
+    let cfg = AppConfig::load_for_host(cli.config.as_deref(), ILLUSTRATOR_HOST)?;
 
     init_tracing(&cfg.log_level);
     bridge_core::ensure_bridge_dir(&cfg)?;

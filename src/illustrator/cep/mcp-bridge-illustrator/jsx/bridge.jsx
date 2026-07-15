@@ -230,6 +230,7 @@ function aiGetInstanceMetadata() {
     } catch (_versionErr) {}
 
     return {
+        protocolVersion: 1,
         instanceId: aiGetInstanceId(),
         appName: "Illustrator",
         appVersion: version,
@@ -241,6 +242,7 @@ function aiGetInstanceMetadata() {
         commandFile: commandFile.fsName,
         resultFile: resultFile.fsName,
         lastHeartbeatAt: aiIsoDate(new Date()),
+        updatedAt: aiIsoDate(new Date()),
         hostId: "illustrator",
         bridgeRuntime: "cep-extendscript",
         bridgeVersion: AI_MCP_BRIDGE_VERSION,

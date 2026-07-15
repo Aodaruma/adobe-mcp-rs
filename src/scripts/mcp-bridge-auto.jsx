@@ -2830,9 +2830,11 @@ function getBridgeInstanceStatus() {
     return "idle";
 }
 
-function getAeInstanceMetadata() {
+function getHostInstanceMetadata() {
     var bridgeRoot = ensureBridgeFolder().fsName;
+    var updatedAt = fxDateToIsoString(new Date());
     return {
+        protocolVersion: 1,
         instanceId: getBridgeInstanceId(),
         appName: "After Effects",
         appVersion: (app && app.version) ? String(app.version) : "",
@@ -2840,6 +2842,7 @@ function getAeInstanceMetadata() {
         bridgeVersion: AE_MCP_BRIDGE_VERSION,
         bridgeRuntime: "extendscript-scriptui",
         hostId: "aftereffects",
+        capabilities: ["run-jsx", "projects.read", "compositions.read", "layers.read", "render-queue"],
         projectPath: getProjectPathForHeartbeat(),
         status: getBridgeInstanceStatus(),
         currentRequestId: currentRequestId || null,
@@ -2847,7 +2850,8 @@ function getAeInstanceMetadata() {
         bridgeRoot: bridgeRoot,
         commandFile: getCommandFilePath(),
         resultFile: getResultFilePath(),
-        lastHeartbeatAt: fxDateToIsoString(new Date())
+        lastHeartbeatAt: updatedAt,
+        updatedAt: updatedAt
     };
 }
 
@@ -2856,7 +2860,7 @@ function writeInstanceHeartbeat() {
         var heartbeatFile = new File(getHeartbeatFilePath());
         heartbeatFile.encoding = "UTF-8";
         if (heartbeatFile.open("w")) {
-            heartbeatFile.write(JSON.stringify(getAeInstanceMetadata(), null, 2));
+            heartbeatFile.write(JSON.stringify(getHostInstanceMetadata(), null, 2));
             heartbeatFile.close();
         }
     } catch (heartbeatError) {
@@ -3410,7 +3414,7 @@ function executeCommand(command, args, requestId) {
             resultObj._responseTimestamp = fxDateToIsoString(new Date());
             resultObj._commandExecuted = command;
             resultObj._requestId = requestId;
-            resultObj._aeInstance = getAeInstanceMetadata();
+            resultObj._hostInstance = getHostInstanceMetadata();
             resultString = JSON.stringify(resultObj, null, 2);
             logToPanel("Added timestamp to result JSON for tracking freshness.");
         } catch (parseError) {
@@ -3421,7 +3425,7 @@ function executeCommand(command, args, requestId) {
                 _responseTimestamp: fxDateToIsoString(new Date()),
                 _commandExecuted: command,
                 _requestId: requestId,
-                _aeInstance: getAeInstanceMetadata()
+                _hostInstance: getHostInstanceMetadata()
             }, null, 2);
         }
         
@@ -3489,7 +3493,7 @@ function executeCommand(command, args, requestId) {
                 command: command,
                 _commandExecuted: command,
                 _requestId: requestId,
-                _aeInstance: getAeInstanceMetadata(),
+                _hostInstance: getHostInstanceMetadata(),
                 _responseTimestamp: fxDateToIsoString(new Date()),
                 message: error.toString(),
                 line: error.line,

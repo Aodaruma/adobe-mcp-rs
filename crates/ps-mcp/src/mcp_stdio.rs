@@ -223,11 +223,11 @@ fn dispatch_tool_inner(
         "get-results" => {
             if let Some(request_id) = args.get("requestId").and_then(Value::as_str) {
                 let record = bridge.get_request_record(request_id)?;
-                Ok(tool_json(photoshop_record_value(record.to_value()))?)
+                Ok(tool_json(record.to_value())?)
             } else {
                 let value = bridge
                     .latest_request_record()?
-                    .map(|record| photoshop_record_value(record.to_value()))
+                    .map(|record| record.to_value())
                     .unwrap_or_else(
                         || json!({ "status": "empty", "message": "No retained request result." }),
                     );
@@ -324,7 +324,7 @@ fn run_jsx_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Res
 fn get_jsx_result_tool(bridge: &BridgeClient, args: Value) -> Result<Value> {
     let request_id = required_non_empty_string(&args, "requestId")?;
     let record = bridge.get_request_record(request_id)?;
-    Ok(tool_json(photoshop_record_value(record.to_value()))?)
+    Ok(tool_json(record.to_value())?)
 }
 
 fn list_photoshop_instances_tool(cfg: &AppConfig, bridge: &BridgeClient) -> Result<Value> {
@@ -397,7 +397,7 @@ fn run_bridge_command(
     };
 
     match bridge.run_command_sync(command, command_args, options) {
-        Ok(outcome) => Ok(tool_json(photoshop_record_value(outcome.to_value()))?),
+        Ok(outcome) => Ok(tool_json(outcome.to_value())?),
         Err(error) => Ok(tool_error(format!("{error_prefix}: {error}"))),
     }
 }
@@ -434,43 +434,6 @@ fn timeout_ms_from_args(cfg: &AppConfig, args: &Value) -> u64 {
         .and_then(Value::as_u64)
         .filter(|value| *value > 0)
         .unwrap_or(cfg.result_timeout_ms)
-}
-
-fn photoshop_record_value(mut value: Value) -> Value {
-    normalize_photoshop_host_text(&mut value);
-    if let Some(obj) = value.as_object_mut() {
-        if let Some(instance) = obj.remove("aeInstance") {
-            obj.insert("photoshopInstance".to_string(), instance);
-        }
-    }
-    value
-}
-
-fn normalize_photoshop_host_text(value: &mut Value) {
-    match value {
-        Value::String(text) => {
-            *text = text
-                .replace("After Effects", "Photoshop")
-                .replace(
-                    "Open Window > mcp-bridge-auto.jsx and enable Auto-run commands.",
-                    "Open the Photoshop MCP Bridge panel and enable Auto-run commands.",
-                )
-                .replace("AE to", "Photoshop to")
-                .replace("AE instance", "Photoshop instance")
-                .replace("AE bridge", "Photoshop bridge");
-        }
-        Value::Array(items) => {
-            for item in items {
-                normalize_photoshop_host_text(item);
-            }
-        }
-        Value::Object(map) => {
-            for item in map.values_mut() {
-                normalize_photoshop_host_text(item);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn tool_text(text: String) -> Value {

@@ -222,12 +222,14 @@
       projectPath: projectPath,
       bridgeRuntime: "uxp",
       bridgeVersion: BRIDGE_VERSION,
+      capabilities: ["run-jsx", "projects.read", "sequences.read", "tracks.read", "export"],
       status: status || state.lastStatus || "idle",
       currentRequestId: currentRequestId,
       bridgeRoot: paths.root,
       commandFile: paths.instanceCommandFile,
       resultFile: paths.instanceResultFile,
       lastHeartbeatAt: nowIso(),
+      updatedAt: nowIso(),
       heartbeatPath: paths.heartbeatFile
     };
     writeJsonFile(paths.heartbeatFile, payload);

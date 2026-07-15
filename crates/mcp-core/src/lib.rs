@@ -43,6 +43,95 @@ pub const ALLOWED_SCRIPTS: &[&str] = &[
     "bridgeTestEffects",
 ];
 
+/// Static metadata that defines one Adobe host integration.
+///
+/// Adding a host starts with declaring one of these values; bridge paths and
+/// host-aware diagnostics are then derived from the same source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostSpec {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub binary_name: &'static str,
+    pub bridge_root_name: &'static str,
+    pub command_file_name: &'static str,
+    pub result_file_name: &'static str,
+    pub instance_tool_name: &'static str,
+    pub bridge_runtime: &'static str,
+    pub bridge_setup_hint: &'static str,
+}
+
+impl HostSpec {
+    pub fn bridge_paths(self) -> BridgePaths {
+        let root_dir = default_bridge_root_dir_named(self.bridge_root_name);
+        BridgePaths {
+            command_file: root_dir.join(self.command_file_name),
+            result_file: root_dir.join(self.result_file_name),
+            root_dir,
+        }
+    }
+}
+
+pub const AFTER_EFFECTS_HOST: HostSpec = HostSpec {
+    id: "aftereffects",
+    display_name: "After Effects",
+    binary_name: "ae-mcp",
+    bridge_root_name: "ae-mcp-bridge",
+    command_file_name: "ae_command.json",
+    result_file_name: "ae_mcp_result.json",
+    instance_tool_name: "list-ae-instances",
+    bridge_runtime: "extendscript-scriptui",
+    bridge_setup_hint: "Open Window > mcp-bridge-auto.jsx and enable Auto-run commands.",
+};
+
+pub const PREMIERE_PRO_HOST: HostSpec = HostSpec {
+    id: "premiere",
+    display_name: "Premiere Pro",
+    binary_name: "pr-mcp",
+    bridge_root_name: "pr-mcp-bridge",
+    command_file_name: "pr_command.json",
+    result_file_name: "pr_mcp_result.json",
+    instance_tool_name: "list-premiere-instances",
+    bridge_runtime: "uxp",
+    bridge_setup_hint:
+        "Open Window > UXP Plugins > Premiere MCP Bridge and enable Auto-run commands.",
+};
+
+pub const PHOTOSHOP_HOST: HostSpec = HostSpec {
+    id: "photoshop",
+    display_name: "Photoshop",
+    binary_name: "ps-mcp",
+    bridge_root_name: "ps-mcp-bridge",
+    command_file_name: "ps_command.json",
+    result_file_name: "ps_mcp_result.json",
+    instance_tool_name: "list-photoshop-instances",
+    bridge_runtime: "uxp",
+    bridge_setup_hint: "Open the Photoshop MCP Bridge panel and enable Auto-run commands.",
+};
+
+pub const ILLUSTRATOR_HOST: HostSpec = HostSpec {
+    id: "illustrator",
+    display_name: "Illustrator",
+    binary_name: "ai-mcp",
+    bridge_root_name: "ai-mcp-bridge",
+    command_file_name: "ai_command.json",
+    result_file_name: "ai_mcp_result.json",
+    instance_tool_name: "list-illustrator-instances",
+    bridge_runtime: "cep-extendscript",
+    bridge_setup_hint:
+        "Open Window > Extensions > Illustrator MCP Bridge and enable Auto-run commands.",
+};
+
+pub const HOST_SPECS: &[HostSpec] = &[
+    AFTER_EFFECTS_HOST,
+    PREMIERE_PRO_HOST,
+    PHOTOSHOP_HOST,
+    ILLUSTRATOR_HOST,
+];
+
+pub fn host_spec_by_id(id: &str) -> Option<HostSpec> {
+    HOST_SPECS.iter().copied().find(|spec| spec.id == id)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BridgePaths {
     pub root_dir: PathBuf,
@@ -52,6 +141,8 @@ pub struct BridgePaths {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
+    #[serde(default = "default_host_id")]
+    pub host_id: String,
     pub bridge: BridgePaths,
     #[serde(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
@@ -71,16 +162,11 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let root_dir = default_bridge_root_dir();
-        let command_file = root_dir.join("ae_command.json");
-        let result_file = root_dir.join("ae_mcp_result.json");
+        let bridge = AFTER_EFFECTS_HOST.bridge_paths();
 
         Self {
-            bridge: BridgePaths {
-                root_dir,
-                command_file,
-                result_file,
-            },
+            host_id: AFTER_EFFECTS_HOST.id.to_string(),
+            bridge,
             poll_interval_ms: default_poll_interval_ms(),
             result_timeout_ms: default_result_timeout_ms(),
             result_retention_seconds: default_result_retention_seconds(),
@@ -90,6 +176,10 @@ impl Default for AppConfig {
             log_level: default_log_level(),
         }
     }
+}
+
+fn default_host_id() -> String {
+    AFTER_EFFECTS_HOST.id.to_string()
 }
 
 fn default_poll_interval_ms() -> u64 {
@@ -140,10 +230,19 @@ impl AppConfig {
         }
         Ok(cfg)
     }
+
+    pub fn load_for_host(config_path: Option<&Path>, host: HostSpec) -> Result<Self> {
+        let mut cfg = Self::load(config_path)?;
+        cfg.host_id = host.id.to_string();
+        if config_path.is_none() {
+            cfg.bridge = host.bridge_paths();
+        }
+        Ok(cfg)
+    }
 }
 
 pub fn default_bridge_root_dir() -> PathBuf {
-    default_bridge_root_dir_named("ae-mcp-bridge")
+    default_bridge_root_dir_named(AFTER_EFFECTS_HOST.bridge_root_name)
 }
 
 pub fn default_bridge_root_dir_named(folder: &str) -> PathBuf {
@@ -664,9 +763,51 @@ mod tests {
     #[test]
     fn default_config_has_expected_files() {
         let cfg = AppConfig::default();
+        assert_eq!(cfg.host_id, AFTER_EFFECTS_HOST.id);
         assert!(cfg.bridge.command_file.ends_with("ae_command.json"));
         assert!(cfg.bridge.result_file.ends_with("ae_mcp_result.json"));
         assert_eq!(cfg.poll_interval_ms, 250);
+    }
+
+    #[test]
+    fn all_supported_hosts_derive_distinct_bridge_paths() {
+        assert_eq!(HOST_SPECS.len(), 4);
+        for host in HOST_SPECS {
+            let paths = host.bridge_paths();
+            assert!(paths.root_dir.ends_with(host.bridge_root_name));
+            assert!(paths.command_file.ends_with(host.command_file_name));
+            assert!(paths.result_file.ends_with(host.result_file_name));
+            assert_eq!(host_spec_by_id(host.id), Some(*host));
+
+            let cfg = AppConfig::load_for_host(None, *host).expect("host config");
+            assert_eq!(cfg.host_id, host.id);
+            assert_eq!(cfg.bridge, paths);
+        }
+    }
+
+    #[test]
+    fn bridge_heartbeats_declare_protocol_v1_fields() {
+        let sources = [
+            include_str!("../../../src/scripts/mcp-bridge-auto.jsx"),
+            include_str!("../../../src/premiere/uxp/mcp-bridge-premiere/js/main.js"),
+            include_str!("../../../src/premiere/cep/mcp-bridge-premiere/jsx/bridge.jsx"),
+            include_str!("../../../src/photoshop/uxp/mcp-bridge-photoshop/js/main.js"),
+            include_str!("../../../src/illustrator/cep/mcp-bridge-illustrator/jsx/bridge.jsx"),
+        ];
+        for source in sources {
+            for field in [
+                "protocolVersion",
+                "hostId",
+                "bridgeRuntime",
+                "capabilities",
+                "updatedAt",
+            ] {
+                assert!(
+                    source.contains(field),
+                    "heartbeat source is missing {field}"
+                );
+            }
+        }
     }
 
     #[test]
