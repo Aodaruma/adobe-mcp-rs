@@ -6,6 +6,8 @@ members = [
     "crates/bridge-core",
     "crates/bridge-contract-tests",
     "crates/daemon-core",
+    "crates/id-core",
+    "crates/id-mcp",
     "crates/mcp-core",
     "crates/platform-service",
     "crates/pr-core",

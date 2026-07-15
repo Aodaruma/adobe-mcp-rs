@@ -413,6 +413,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
+name = "id-core"
+version = "0.4.4"
+dependencies = [
+ "mcp-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "id-mcp"
+version = "0.4.4"
+dependencies = [
+ "anyhow",
+ "bridge-core",
+ "clap",
+ "daemon-core",
+ "id-core",
+ "mcp-core",
+ "platform-service",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

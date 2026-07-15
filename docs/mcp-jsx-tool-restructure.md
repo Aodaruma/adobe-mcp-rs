@@ -528,7 +528,7 @@ Promptsはtool数を減らした後の「使い方の足場」として有効。
 
 ### v2への移行
 
-`serve-daemon` のローカルIPCと `serve-stdio` proxyは実装済みで、現在は `daemon-core` を4 hostで共有する。file-based v1は互換・CLI診断用途として残す。
+`serve-daemon` のローカルIPCと `serve-stdio` proxyは実装済みで、現在は `daemon-core` を5 hostで共有する。file-based v1は互換・CLI診断用途として残す。
 
 ## 実装メモ: daemon broker v2
 

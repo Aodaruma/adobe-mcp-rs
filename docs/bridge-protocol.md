@@ -4,7 +4,7 @@
 
 ## HostSpec
 
-ホスト固有の静的設定は `mcp-core::HostSpec` に集約します。現在は After Effects、Premiere Pro、Photoshop、Illustrator の4ホストを `HOST_SPECS` で定義しています。
+ホスト固有の静的設定は `mcp-core::HostSpec` に集約します。現在は After Effects、Premiere Pro、Photoshop、Illustrator、InDesign の5ホストを `HOST_SPECS` で定義しています。
 
 新しいホストを追加する場合は、次の順で実装します。
 
@@ -15,7 +15,7 @@
 
 `HostSpec` は host id、表示名、binary名、bridge root、command/result file名、instance tool名、primary runtime、bridge起動案内、daemon既定portを保持します。設定ファイルで bridge path や `daemon_addr` を明示した場合、その値は従来どおり優先されます。
 
-例えば InDesign 用の雛形は次の形です（この例自体は InDesign 実装を追加しません）。
+InDesign は次の `HostSpec` で登録されています。
 
 ```rust
 pub const INDESIGN_HOST: HostSpec = HostSpec {
@@ -26,15 +26,15 @@ pub const INDESIGN_HOST: HostSpec = HostSpec {
     command_file_name: "id_command.json",
     result_file_name: "id_mcp_result.json",
     instance_tool_name: "list-indesign-instances",
-    bridge_runtime: "uxp-script",
-    bridge_setup_hint: "Install and enable the InDesign MCP startup script.",
+    bridge_runtime: "uxp-startup-script",
+    bridge_setup_hint: "Install mcp-bridge-indesign.idjs into the InDesign Startup Scripts folder.",
     daemon_port: 47659,
 };
 ```
 
 ## daemon broker
 
-4 host の `serve-daemon` は `daemon-core` の同一 protocol を実装します。localhost TCP の1行JSONで次の operationを受け付けます。
+5 host の `serve-daemon` は `daemon-core` の同一 protocol を実装します。localhost TCP の1行JSONで次の operationを受け付けます。
 
 - `ping`
 - `listInstances`

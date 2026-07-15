@@ -2,16 +2,16 @@
 
 - 最終更新: 2026-07-15
 - 対象OS: Windows / macOS
-- 対象: Rust版 `ae-mcp` / `pr-mcp` / `ps-mcp` / `ai-mcp` を Codex のカスタムMCPサーバーとして使う
+- 対象: Rust版 `ae-mcp` / `pr-mcp` / `ps-mcp` / `ai-mcp` / `id-mcp` を Codex のカスタムMCPサーバーとして使う
 
 ## 1. 前提
 
-1. 操作対象の Adobe host。repository の manifest 上の最小 version は Premiere Pro UXP 25.6、Premiere Pro CEP fallback 24.0、Photoshop UXP 23.3、Illustrator CEP 24.0。After Effects は 2022 以降を推奨
+1. 操作対象の Adobe host。repository の manifest 上の最小 version は Premiere Pro UXP 25.6、Premiere Pro CEP fallback 24.0、Photoshop UXP 23.3、Illustrator CEP 24.0。InDesignはfile I/Oを使うため18.5+をPoC対象とし、After Effects は 2022 以降を推奨
 2. Rust（stable）と Cargo
-3. After Effects は ScriptUI / ExtendScript の `mcp-bridge-auto.jsx`、Premiere Pro は UXP（CEP fallback あり）、Photoshop は UXP、Illustrator は CEP / ExtendScript の bridge panel を開けること
+3. After Effects は ScriptUI / ExtendScript の `mcp-bridge-auto.jsx`、Premiere Pro は UXP（CEP fallback あり）、Photoshop は UXP、Illustrator は CEP / ExtendScript の bridge panel、InDesignはUXP Startup Scriptを利用できること
 4. Codex CLI もしくは Codex IDE Extension が利用可能であること
 
-現在の状態は After Effects が **Primary**、Premiere Pro / Photoshop / Illustrator が **Experimental** です。Experimental host は binary と最小 MCP surface を実装済みですが、実機 E2E、配布、runtime compatibility、broker / service の同等性が未完成です。詳しい基準と制約は [Adobe host support status and roadmap](adobe-host-roadmap.md) を参照してください。
+現在の状態は After Effects が **Primary**、Premiere Pro / Photoshop / Illustrator / InDesign が **Experimental** です。Experimental host は binary と最小 MCP surface を実装済みですが、実機 E2E、配布、runtime compatibility、broker / service の同等性が未完成です。詳しい基準と制約は [Adobe host support status and roadmap](adobe-host-roadmap.md) を参照してください。
 
 ## 2. Rustバイナリをビルド
 
@@ -22,6 +22,7 @@ cargo build --release -p ae-mcp
 cargo build --release -p pr-mcp
 cargo build --release -p ps-mcp
 cargo build --release -p ai-mcp
+cargo build --release -p id-mcp
 ```
 
 生成物:
@@ -30,6 +31,7 @@ cargo build --release -p ai-mcp
 - Premiere Pro: `target/release/pr-mcp(.exe)`
 - Photoshop: `target/release/ps-mcp(.exe)`
 - Illustrator: `target/release/ai-mcp(.exe)`
+- InDesign: `target/release/id-mcp(.exe)`
 
 ## 3. After Effectsブリッジパネルを導入（npm不要）
 
@@ -98,6 +100,7 @@ codex mcp add aftereffects -- "C:\Users\<YOU>\path\adobe-mcp-rs\target\release\a
 codex mcp add premiere -- "C:\Users\<YOU>\path\adobe-mcp-rs\target\release\pr-mcp.exe" serve-stdio
 codex mcp add photoshop -- "C:\Users\<YOU>\path\adobe-mcp-rs\target\release\ps-mcp.exe" serve-stdio
 codex mcp add illustrator -- "C:\Users\<YOU>\path\adobe-mcp-rs\target\release\ai-mcp.exe" serve-stdio
+codex mcp add indesign -- "C:\Users\<YOU>\path\adobe-mcp-rs\target\release\id-mcp.exe" serve-stdio
 ```
 
 ## 4.2 macOS例
@@ -107,6 +110,7 @@ codex mcp add aftereffects -- /Users/<YOU>/path/adobe-mcp-rs/target/release/ae-m
 codex mcp add premiere -- /Users/<YOU>/path/adobe-mcp-rs/target/release/pr-mcp serve-stdio
 codex mcp add photoshop -- /Users/<YOU>/path/adobe-mcp-rs/target/release/ps-mcp serve-stdio
 codex mcp add illustrator -- /Users/<YOU>/path/adobe-mcp-rs/target/release/ai-mcp serve-stdio
+codex mcp add indesign -- /Users/<YOU>/path/adobe-mcp-rs/target/release/id-mcp serve-stdio
 ```
 
 登録確認:
@@ -155,6 +159,14 @@ cwd = "C:\\Users\\<YOU>\\path\\adobe-mcp-rs"
 startup_timeout_sec = 20
 tool_timeout_sec = 120
 enabled = true
+
+[mcp_servers.indesign]
+command = "C:\\Users\\<YOU>\\path\\adobe-mcp-rs\\target\\release\\id-mcp.exe"
+args = ["serve-stdio"]
+cwd = "C:\\Users\\<YOU>\\path\\adobe-mcp-rs"
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = true
 ```
 
 ### 5.2 macOS例
@@ -186,6 +198,14 @@ enabled = true
 
 [mcp_servers.illustrator]
 command = "/Users/<YOU>/path/adobe-mcp-rs/target/release/ai-mcp"
+args = ["serve-stdio"]
+cwd = "/Users/<YOU>/path/adobe-mcp-rs"
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = true
+
+[mcp_servers.indesign]
+command = "/Users/<YOU>/path/adobe-mcp-rs/target/release/id-mcp"
 args = ["serve-stdio"]
 cwd = "/Users/<YOU>/path/adobe-mcp-rs"
 startup_timeout_sec = 20
@@ -239,10 +259,13 @@ enabled = true
 - Illustrator は `~/Documents/ai-mcp-bridge/` を使います
   - `ai_command.json`
   - `ai_mcp_result.json`
+- InDesign は `~/Documents/id-mcp-bridge/` を使います
+  - `id_command.json`
+  - `id_mcp_result.json`
 
 root 直下の command / result は compatibility 用です。複数 instance の routing では `instances/<instanceId>/heartbeat.json` と host 別 command / result、retained result では `registry/<requestId>.json` も使います。
 
-### 7.1 Premiere Pro / Photoshop の UXP bridge と Illustrator CEP bridge
+### 7.1 Premiere Pro / Photoshop / InDesign の UXP bridge と Illustrator CEP bridge
 
 Windows installer を使う場合は、MSI の Custom Setup 画面で After Effects / Premiere Pro / Photoshop / Illustrator の bridge component を選択できます。MSI 本体のファイル配置後、選択された host integration と Codex config の更新は非表示の custom action として実行されるため、通常は別の PowerShell ウィンドウは表示されません。
 
@@ -266,12 +289,20 @@ Illustrator:
 2. Illustrator で `Window > Extensions > Illustrator MCP Bridge` を開く
 3. `Auto-run commands` を ON
 
+InDesign:
+
+1. `src/indesign/uxp/mcp-bridge-indesign.idjs`をInDesignの`Scripts/Startup Scripts`へ配置する
+2. InDesignを再起動する。panelやAuto-run toggleは不要
+3. `id-mcp serve-daemon`を起動して`list-indesign-instances`と`run-bridge-test`を確認する
+4. raw `run-script`は実機未検証PoCとして扱い、[InDesign MCP PoC](indesign-mcp.md)のE2E gateを通す
+
 Premiere Pro / Photoshop / Illustrator も MCP stdio server から host 別 `serve-daemon` broker を経由します。host panel の準備後、対応する daemon を起動してください。
 
 ```powershell
 .\target\release\pr-mcp.exe serve-daemon # 127.0.0.1:47656
 .\target\release\ps-mcp.exe serve-daemon # 127.0.0.1:47657
 .\target\release\ai-mcp.exe serve-daemon # 127.0.0.1:47658
+.\target\release\id-mcp.exe serve-daemon # 127.0.0.1:47659
 ```
 
 daemon 未起動時は stdio tool が接続エラーと起動コマンドを返します。timeout 後も `requestId` を `get-jsx-result` または `get-results` に渡すと、後から完了した結果を回収できます。root 直下の command/result file と `bridge` CLI は互換・診断用途です。
@@ -303,7 +334,7 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 
 ## 8. host 別 daemon の常駐化
 
-各 host broker を常駐させる場合、Windows は対象 binary の `autostart`、macOS は launchd を操作する `service` を使います。Windows Service は実装しておらず、Windows 版 CLI は `service` を公開しません。macOS 版 CLI は逆に `autostart` を公開しません。複数 host を利用する場合は binary ごとに登録します。既定 address は AE `127.0.0.1:47655`、Premiere `:47656`、Photoshop `:47657`、Illustrator `:47658` です。
+各 host broker を常駐させる場合、Windows は対象 binary の `autostart`、macOS は launchd を操作する `service` を使います。Windows Service は実装しておらず、Windows 版 CLI は `service` を公開しません。macOS 版 CLI は逆に `autostart` を公開しません。複数 host を利用する場合は binary ごとに登録します。既定 address は AE `127.0.0.1:47655`、Premiere `:47656`、Photoshop `:47657`、Illustrator `:47658`、InDesign `:47659` です。
 
 ### 8.1 Windows
 

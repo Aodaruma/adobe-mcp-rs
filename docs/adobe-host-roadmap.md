@@ -23,9 +23,9 @@
 | Premiere Pro | `pr-mcp` | UXP panel（25.6+）、CEP / ExtendScript fallback（24.0+） | **Experimental** | 共通 broker を使用。UXP の install/release と実機 version matrix が未確立。CEP は fallback。 |
 | Photoshop | `ps-mcp` | UXP panel（23.3+、API v2） | **Experimental** | 共通 broker を使用。modal policy、書き込み操作、配布・実機 E2E が未完成。 |
 | Illustrator | `ai-mcp` | CEP panel / ExtendScript（24.0+、CSXS 10） | **Experimental** | 共通 broker を使用。現行 version の実機検証と署名・配布が未完成。 |
-| InDesign | `id-mcp`（計画） | UXP Startup Script `.idjs`（計画） | **Planned** | Issue #21 で binary、Startup Script、raw `.idjs` 実行、daemon 接続を PoC する。 |
+| InDesign | `id-mcp` | UXP Startup Script（18.5+ PoC） | **Experimental** | panel不要。raw `app.doScript`、startup lifecycle、atomic file I/Oを実機検証するまでPoC扱い。 |
 
-4 host とも `daemon-core` の localhost TCP broker を使用します。`serve-daemon` は command routing、待機、instance別FIFO、別instance並列、global exclusive、request registry、result retention を担当します。既定 port は AE `47655` / Premiere `47656` / Photoshop `47657` / Illustrator `47658` です。
+5 host とも `daemon-core` の localhost TCP broker を使用します。`serve-daemon` は command routing、待機、instance別FIFO、別instance並列、global exclusive、request registry、result retention を担当します。既定 port は AE `47655` / Premiere `47656` / Photoshop `47657` / Illustrator `47658` / InDesign `47659` です。
 
 ## Host 別の実装範囲
 
@@ -121,25 +121,29 @@ MCP client -> ai-mcp serve-stdio -> ai-mcp serve-daemon
 - `ai-mcp serve-daemon` の起動が通常の MCP 操作に必要。CEP 実機での broker E2E は release gate。
 - UXP を既定 runtime にはしない。third-party host support と配布経路が明確になるまで CEP / ExtendScript を baseline とする。
 
-### InDesign — Planned
-
-候補経路:
+### InDesign — Experimental
 
 ```text
 MCP client -> id-mcp serve-stdio -> id-mcp serve-daemon
-           -> InDesign UXP Startup Script (.idjs)
-           -> audited temporary .idjs -> app.doScript(..., UXPSCRIPT)
+           -> ~/Documents/id-mcp-bridge
+           -> UXP Startup Script (.idjs) -> InDesign DOM
 ```
 
-設計方針:
+初期 surface:
 
-- UXP Startup Script による host 起動時の自動起動と、未解決 Promise / event loop による bridge lifespan を Issue #21 で検証する。
-- UXP Script は文字列からの code generation が無効なため、raw source は監査済み一時 `.idjs` にして `app.doScript` で実行する案を第一候補とする。
-- structured input は `doScript` の `withArguments` / `script.args`、結果は `script.setResult` または bridge envelope で返す。
-- `HostSpec`、共通 daemon、heartbeat、instance routing、retained result、script file policy は既存 host と同じ契約へ追加する。
-- UXP plugin は permission と lifecycle の比較候補だが、操作ごとの panel Tool を既定 surface にはしない。
+- raw-first: `run-script` / `run-script-file`。`eval`/`Function`ではなく、InDesign DOMの`app.doScript`へ`ScriptLanguage.UXPSCRIPT`として渡す。
+- allowlist: `run-template`で app / document / page / story の読み取り操作を提供。
+- retained result: `get-script-result` / `get-results`。
+- bridge操作: `list-indesign-instances` / `run-bridge-test` / `get-help`。
+- Resource: `indesign://documents`。
 
-5 host の runtime、raw code、read / write / export、undo / modal / filesystem、lifecycle、payload、guard 方針は [capability matrix](capability-matrix.md) を参照してください。
+制約:
+
+- `.idjs`を`Scripts/Startup Scripts`へ配置し、InDesign起動時から未解決Promiseでbridgeを維持する。panelやAuto-run checkboxには依存しない。
+- UXP scriptの固定permissionはfilesystem/networkへの強い権限を持つ。`unsafe`はsandboxではない。
+- Adobe APIは`Application.doScript`のString入力を記載する一方、長時間動作するStartup Scriptからのraw文字列実行は本repositoryでは実機未検証。
+- Windows/macOS、InDesign/UXP version、locale、startup/restart、sleep/modal、atomic renameを[InDesign MCP PoC](indesign-mcp.md)の手順で検証するまでExperimentalから昇格しない。
+- 5 host の runtime、raw code、read / write / export、undo / modal / filesystem、lifecycle、payload、guard 方針は [capability matrix](capability-matrix.md) を参照する。
 
 ## Bridge protocol の現状
 
@@ -156,15 +160,15 @@ MCP client -> id-mcp serve-stdio -> id-mcp serve-daemon
   registry/<requestId>.json
 ```
 
-`mcp-core` の `HostSpec` に4 hostのmetadataを集約し、`bridge-core` は `HostInstance` と `hostInstance` を共通schemaとして使用します。heartbeatは `protocolVersion`、`hostId`、`bridgeRuntime`、`capabilities` を持つprotocol v1へ移行済みです。旧heartbeatとrequest recordの `aeInstance` は読み取り互換を維持します。詳細は [bridge protocol](bridge-protocol.md) を参照してください。
+`mcp-core` の `HostSpec` に5 hostのmetadataを集約し、`bridge-core` は `HostInstance` と `hostInstance` を共通schemaとして使用します。heartbeatは `protocolVersion`、`hostId`、`bridgeRuntime`、`capabilities` を持つprotocol v1へ移行済みです。旧heartbeatとrequest recordの `aeInstance` は読み取り互換を維持します。詳細は [bridge protocol](bridge-protocol.md) を参照してください。
 
 ## Roadmap
 
 1. **完了:** host名、binary、bridge root、file名、instance tool名を `HostSpec` に集約し、protocol v1を導入する。
-2. **完了:** 4 host の daemon を `daemon-core` の共通 broker に統一する。direct file bridge は互換・診断用途として残す。
-3. **完了:** host 共通の protocol / E2E fixture を追加する。Adobe 実機 test matrix は継続する。
+2. **完了:** 5 host の daemon を `daemon-core` の共通 broker に統一する。direct file bridge は互換・診断用途として残す。
+3. **完了:** host 共通の protocol / E2E fixture を追加する。Adobe実機test matrixは継続する。
 4. **設計済み:** [capability matrix](capability-matrix.md) で raw-script-first、共通 script contract、guard の非 sandbox 境界、structured Tool 追加基準を定義する。schema / guard 実装は段階導入する。
-5. Issue #21 の InDesign Startup Script PoC と Issue #22 の AE lifecycle / reconnect PoC を並行する。
+5. InDesign Startup Script PoC と AE lifecycle / reconnect PoC を実機で検証・hardeningする。
 6. Premiere Pro の UXP package / CEP fallback、Photoshop の modal / write / export、Illustrator の export / packaging を実機で hardening する。
 7. Windows / macOS の host 別 component install、署名、公証、upgrade / uninstall を release gate に組み込む。
 
@@ -174,11 +178,12 @@ repository 上の静的確認:
 
 ```powershell
 cargo test --workspace
-cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp
+cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp -p id-mcp
 .\target\release\ae-mcp.exe health
 .\target\release\pr-mcp.exe health
 .\target\release\ps-mcp.exe health
 .\target\release\ai-mcp.exe health
+.\target\release\id-mcp.exe health
 ```
 
 加えて、各 `*-core` の `tool_specs()` / allowlist、各 `mcp_stdio.rs` の dispatch、bridge manifest の host / minimum version、installer script の配置処理を照合します。2026-07-15 の文書同期ではこの repository-level verification を実施しています。
@@ -198,4 +203,6 @@ Primary / Experimental の release 判定では、実際の Adobe host で次も
 - [Photoshop API reference](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/)
 - [Premiere Pro UXP API](https://developer.adobe.com/premiere-pro/uxp/)
 - [Illustrator developer overview](https://developer.adobe.com/illustrator/)
+- [UXP for InDesign](https://developer.adobe.com/indesign/uxp/)
+- [InDesign UXP Startup Scripts](https://developer.adobe.com/indesign/uxp/scripts/tutorials/tips-tricks/)
 - [UXP host version table](https://developer.adobe.com/xd/uxp/uxp/versions/)

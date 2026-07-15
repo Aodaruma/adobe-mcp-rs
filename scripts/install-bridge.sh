@@ -193,3 +193,32 @@ if [[ -d "$PREMIERE_SOURCE" ]]; then
     fi
   fi
 fi
+
+INDESIGN_SOURCE="$REPO_ROOT/src/indesign/uxp/mcp-bridge-indesign.idjs"
+INDESIGN_PREFERENCE_ROOT="$HOME/Library/Preferences/Adobe InDesign"
+INDESIGN_TARGETS=()
+if [[ -f "$INDESIGN_SOURCE" && -d "$INDESIGN_PREFERENCE_ROOT" ]]; then
+  while IFS= read -r locale_dir; do
+    INDESIGN_TARGETS+=("$locale_dir/Scripts/Startup Scripts")
+  done < <(find "$INDESIGN_PREFERENCE_ROOT" -mindepth 2 -maxdepth 2 -type d -path '*/Version */??_??' 2>/dev/null | sort)
+fi
+
+echo
+if [[ ! -f "$INDESIGN_SOURCE" ]]; then
+  echo "InDesign UXP startup bridge source not found. Skipped InDesign deployment."
+elif [[ "${#INDESIGN_TARGETS[@]}" -eq 0 ]]; then
+  echo "No existing InDesign preference profile was detected. Skipped InDesign deployment."
+  echo "See docs/setup-codex-mcp.md for the manual Startup Scripts path."
+else
+  for target in "${INDESIGN_TARGETS[@]}"; do
+    destination="$target/mcp-bridge-indesign.idjs"
+    if [[ "$DRY_RUN" == "true" ]]; then
+      echo "Dry-run: InDesign bridge would be installed to $destination"
+    else
+      mkdir -p "$target"
+      cp "$INDESIGN_SOURCE" "$destination"
+      echo "InDesign startup bridge installed: $destination"
+    fi
+  done
+  echo "Restart InDesign; no panel or Auto-run toggle is required."
+fi

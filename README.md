@@ -2,7 +2,7 @@
 
 Rust-based MCP servers and Adobe host bridge panels for LLM-driven local automation.
 
-This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the project can grow beyond After Effects. The current codebase contains the most complete implementation for After Effects, experimental Premiere Pro, Photoshop, and Illustrator paths, and a planned InDesign path.
+This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the project can grow beyond After Effects. The current codebase contains the most complete implementation for After Effects, plus experimental Premiere Pro, Photoshop, Illustrator, and InDesign paths.
 
 - Japanese: [README-ja.md](README-ja.md)
 
@@ -16,7 +16,7 @@ Last synchronized with the code on 2026-07-15.
 | Premiere Pro | `pr-mcp` | UXP 25.6+, CEP / ExtendScript 24.0+ fallback | **Experimental** | Initial sequence/export surface; `serve-daemon` broker required |
 | Photoshop | `ps-mcp` | UXP 23.3+ (API v2) | **Experimental** | Initial generic execution and read-only document/layer surface |
 | Illustrator | `ai-mcp` | CEP / ExtendScript 24.0+ (CSXS 10) | **Experimental** | Initial document/artboard/layer/export surface; runtime packaging needs validation |
-| InDesign | planned `id-mcp` | planned UXP Startup Script (`.idjs`) | **Planned** | Issue #21 will validate raw `.idjs` execution, automatic startup, and daemon connectivity |
+| InDesign | `id-mcp` | UXP Startup Script 18.5+ PoC | **Experimental** | Panel-free raw `app.doScript` and document/page/story reads; real-host verification required |
 
 **Primary** means the default operational path is implemented. **Experimental** means a binary, bridge, and minimal MCP surface exist, but real-host E2E, packaging, runtime compatibility, or broker/service parity still needs hardening. **Planned** is reserved for hosts without a usable binary-and-bridge pair. See [the host status source of truth](docs/adobe-host-roadmap.md) for the full criteria, runtime constraints, and verification procedure.
 
@@ -31,6 +31,8 @@ The workspace is split into reusable Rust crates and host-specific binaries:
 | `crates/ps-mcp` | Photoshop CLI and MCP stdio server |
 | `crates/ai-core` | Illustrator tool specs, prompts, and allowlisted script names |
 | `crates/ai-mcp` | Illustrator CLI and MCP stdio server |
+| `crates/id-core` | InDesign raw-first tool specs and allowlisted read templates |
+| `crates/id-mcp` | InDesign CLI and MCP stdio server |
 | `crates/mcp-core` | Shared config, MCP tool/prompt specs, bridge path defaults |
 | `crates/bridge-core` | File bridge client, instance discovery, request registry, result retention |
 | `crates/daemon-core` | Shared TCP broker/client, per-instance scheduler, global-exclusive gate |
@@ -42,10 +44,11 @@ The workspace is split into reusable Rust crates and host-specific binaries:
 | `src/premiere/cep` | Legacy Premiere Pro CEP bridge fallback |
 | `src/photoshop/uxp` | Photoshop UXP bridge panel |
 | `src/illustrator/cep` | Illustrator CEP / ExtendScript bridge panel |
+| `src/indesign/uxp` | InDesign UXP Startup Script bridge |
 
-All four binaries use the same local TCP broker model: `serve-stdio` proxies normal MCP execution to `serve-daemon`, which routes file-bridge commands to `instances/<instanceId>/` and retains results by `requestId`. Jobs are FIFO within one instance, may run in parallel on separate instances, and can request a host-wide global-exclusive gate.
+All five binaries use the same local TCP broker model: `serve-stdio` proxies normal MCP execution to `serve-daemon`, which routes file-bridge commands to `instances/<instanceId>/` and retains results by `requestId`. Jobs are FIFO within one instance, may run in parallel on separate instances, and can request a host-wide global-exclusive gate.
 
-Default loopback addresses are host-specific: After Effects `127.0.0.1:47655`, Premiere Pro `:47656`, Photoshop `:47657`, and Illustrator `:47658`. `daemon_addr` in a host-specific config can override the default. The root command/result files and each binary's `bridge` CLI remain available only for compatibility and diagnostics; they are not the normal MCP transport. See [ADR 0001](docs/adr/0001-host-neutral-daemon-broker.md).
+Default loopback addresses are host-specific: After Effects `127.0.0.1:47655`, Premiere Pro `:47656`, Photoshop `:47657`, Illustrator `:47658`, and InDesign `:47659`. `daemon_addr` in a host-specific config can override the default. The root command/result files and each binary's `bridge` CLI remain available only for compatibility and diagnostics; they are not the normal MCP transport. See [ADR 0001](docs/adr/0001-host-neutral-daemon-broker.md).
 
 ## Setup
 
@@ -68,6 +71,7 @@ cargo build --release -p ae-mcp
 cargo build --release -p pr-mcp
 cargo build --release -p ps-mcp
 cargo build --release -p ai-mcp
+cargo build --release -p id-mcp
 ```
 
 ### After Effects
@@ -153,6 +157,16 @@ Register the MCP server:
 
 ```powershell
 codex mcp add illustrator -- "<ABSOLUTE_PATH>\target\release\ai-mcp.exe" serve-stdio
+```
+
+### InDesign
+
+Build `id-mcp`, copy `src/indesign/uxp/mcp-bridge-indesign.idjs` into the installed InDesign version's `Scripts/Startup Scripts` folder, restart InDesign, and start `id-mcp serve-daemon`. No panel or Auto-run toggle is required.
+
+The raw-first `run-script` surface uses InDesign's documented `app.doScript` String input instead of `eval`/`Function`. This is a real-host-unverified PoC; see [InDesign MCP PoC and E2E gate](docs/indesign-mcp.md) before relying on it for production documents.
+
+```powershell
+codex mcp add indesign -- "<ABSOLUTE_PATH>\target\release\id-mcp.exe" serve-stdio
 ```
 
 ## Quick Validation
@@ -268,9 +282,9 @@ The public API follows a **raw-script-first** direction. When an LLM can compose
 
 1. **Done:** Extract host metadata into `HostSpec`.
 2. **Done:** Normalize the bridge protocol and retained request records across hosts.
-3. **Done:** Share the `daemon-core` broker model across all four binaries; keep direct file bridge only for compatibility and diagnostics.
+3. **Done:** Share the `daemon-core` broker model across all five binaries; keep direct file bridge only for compatibility and diagnostics.
 4. Introduce a common script contract, capability reporting, payload limits, and explicitly non-sandboxed risk preflight in phases.
-5. Run the InDesign UXP Startup Script PoC and the After Effects automatic-start/reconnect PoC in parallel.
+5. Validate and harden the InDesign UXP Startup Script PoC and After Effects automatic-start/reconnect PoC on real hosts.
 6. Harden Photoshop write/modal/export and Illustrator export/packaging behavior against real host versions.
 
 Detailed notes are in [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md).
@@ -306,6 +320,7 @@ See [docs/worktree.md](docs/worktree.md) for the local workflow notes.
 - [Codex MCP setup](docs/setup-codex-mcp.md)
 - [Operations runbook](docs/operations-runbook.md)
 - [Bridge contract and Adobe host smoke testing](docs/bridge-contract-testing.md)
+- [InDesign MCP PoC and E2E gate](docs/indesign-mcp.md)
 - [Installer E2E guide](docs/installer-e2e.md)
 - [Release checklist](docs/release-checklist.md)
 - [Rust migration specification](docs/specification-rust-migration.md)

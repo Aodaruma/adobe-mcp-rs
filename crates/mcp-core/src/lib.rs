@@ -193,11 +193,25 @@ pub const ILLUSTRATOR_HOST: HostSpec = HostSpec {
     daemon_port: 47658,
 };
 
+pub const INDESIGN_HOST: HostSpec = HostSpec {
+    id: "indesign",
+    display_name: "InDesign",
+    binary_name: "id-mcp",
+    bridge_root_name: "id-mcp-bridge",
+    command_file_name: "id_command.json",
+    result_file_name: "id_mcp_result.json",
+    instance_tool_name: "list-indesign-instances",
+    bridge_runtime: "uxp-startup-script",
+    bridge_setup_hint: "Install mcp-bridge-indesign.idjs into the InDesign Startup Scripts folder.",
+    daemon_port: 47659,
+};
+
 pub const HOST_SPECS: &[HostSpec] = &[
     AFTER_EFFECTS_HOST,
     PREMIERE_PRO_HOST,
     PHOTOSHOP_HOST,
     ILLUSTRATOR_HOST,
+    INDESIGN_HOST,
 ];
 
 pub fn host_spec_by_id(id: &str) -> Option<HostSpec> {
@@ -412,6 +426,7 @@ fn validate_script_extension(host_id: &str, path: &Path) -> Result<()> {
     let allowed = match host_id {
         "aftereffects" | "illustrator" => &["jsx"][..],
         "premiere" | "photoshop" => &["js", "jsx"][..],
+        "indesign" => &["idjs"][..],
         other => anyhow::bail!("unsupported hostId for script file policy: {other}"),
     };
     if !allowed.contains(&extension.as_str()) {
@@ -1168,8 +1183,10 @@ mod tests {
     fn host_specific_extension_and_utf8_rules_are_enforced() {
         let dir = tempfile::tempdir().unwrap();
         let js = dir.path().join("script.js");
+        let idjs = dir.path().join("script.idjs");
         let binary = dir.path().join("binary.jsx");
         fs::write(&js, "return 1;").unwrap();
+        fs::write(&idjs, "return 1;").unwrap();
         fs::write(&binary, [0xff, 0xfe]).unwrap();
 
         let ae = script_test_config(AFTER_EFFECTS_HOST, dir.path());
@@ -1180,6 +1197,9 @@ mod tests {
 
         let premiere = script_test_config(PREMIERE_PRO_HOST, dir.path());
         assert!(validate_and_read_script_file(&premiere, js.to_str().unwrap(), "unsafe").is_ok());
+        let indesign = script_test_config(INDESIGN_HOST, dir.path());
+        assert!(validate_and_read_script_file(&indesign, idjs.to_str().unwrap(), "unsafe").is_ok());
+        assert!(validate_and_read_script_file(&indesign, js.to_str().unwrap(), "unsafe").is_err());
         let error = validate_and_read_script_file(&ae, binary.to_str().unwrap(), "unsafe")
             .unwrap_err()
             .to_string();
@@ -1266,7 +1286,7 @@ mod tests {
 
     #[test]
     fn all_supported_hosts_derive_distinct_bridge_paths() {
-        assert_eq!(HOST_SPECS.len(), 4);
+        assert_eq!(HOST_SPECS.len(), 5);
         for host in HOST_SPECS {
             let paths = host.bridge_paths();
             assert!(paths.root_dir.ends_with(host.bridge_root_name));
@@ -1331,6 +1351,7 @@ result_file = "bridge/result.json"
         assert_eq!(PREMIERE_PRO_HOST.daemon_addr(), "127.0.0.1:47656");
         assert_eq!(PHOTOSHOP_HOST.daemon_addr(), "127.0.0.1:47657");
         assert_eq!(ILLUSTRATOR_HOST.daemon_addr(), "127.0.0.1:47658");
+        assert_eq!(INDESIGN_HOST.daemon_addr(), "127.0.0.1:47659");
     }
 
     #[test]
@@ -1341,6 +1362,7 @@ result_file = "bridge/result.json"
             include_str!("../../../src/premiere/cep/mcp-bridge-premiere/jsx/bridge.jsx"),
             include_str!("../../../src/photoshop/uxp/mcp-bridge-photoshop/js/main.js"),
             include_str!("../../../src/illustrator/cep/mcp-bridge-illustrator/jsx/bridge.jsx"),
+            include_str!("../../../src/indesign/uxp/mcp-bridge-indesign.idjs"),
         ];
         for source in sources {
             for field in [

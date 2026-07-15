@@ -395,6 +395,7 @@ function Update-CodexMcpConfig {
 
     $aePath = Resolve-McpBinaryPath -RepoRoot $RepoRoot -WindowsFileName "ae-mcp.exe" -UnixFileName "ae-mcp"
     $prPath = Resolve-McpBinaryPath -RepoRoot $RepoRoot -WindowsFileName "pr-mcp.exe" -UnixFileName "pr-mcp"
+    $idPath = Resolve-McpBinaryPath -RepoRoot $RepoRoot -WindowsFileName "id-mcp.exe" -UnixFileName "id-mcp"
     if (-not $aePath -or -not $prPath) {
         Write-Warning "MCP binaries were not found. Skipped Codex config update."
         return
@@ -419,6 +420,12 @@ function Update-CodexMcpConfig {
             $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "args" -ValueLine 'args = ["serve-stdio"]'
             $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
             $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            if ($idPath) {
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $idPath))
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "args" -ValueLine 'args = ["serve-stdio"]'
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            }
 
             if ($DryRun) {
                 Write-Host "DryRun mode: Codex MCP server config would be updated: $config"
@@ -563,6 +570,41 @@ if ($premiereTargets.Count -eq 0) {
             Write-Host "3. Enable Auto-run commands"
         }
     }
+}
+
+$indesignSource = Join-Path $repoRoot "src\indesign\uxp\mcp-bridge-indesign.idjs"
+$indesignPreferenceRoot = Join-Path $env:APPDATA "Adobe\InDesign"
+$indesignStartupTargets = @()
+if (Test-Path -LiteralPath $indesignPreferenceRoot) {
+    $versionFolders = @(Get-ChildItem -LiteralPath $indesignPreferenceRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^Version\s+' })
+    foreach ($versionFolder in $versionFolders) {
+        $localeFolders = @(Get-ChildItem -LiteralPath $versionFolder.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^[a-z]{2}_[A-Z]{2}$' })
+        foreach ($localeFolder in $localeFolders) {
+            $indesignStartupTargets += Join-Path $localeFolder.FullName "Scripts\Startup Scripts"
+        }
+    }
+}
+
+Write-Host ""
+if (-not (Test-Path -LiteralPath $indesignSource)) {
+    Write-Host "InDesign UXP startup bridge source not found. Skipped InDesign deployment."
+} elseif ($indesignStartupTargets.Count -eq 0) {
+    Write-Host "No existing InDesign preference profile was detected. Skipped InDesign deployment."
+    Write-Host "See docs/setup-codex-mcp.md for the manual Startup Scripts path."
+} else {
+    foreach ($target in $indesignStartupTargets) {
+        $destination = Join-Path $target "mcp-bridge-indesign.idjs"
+        if ($DryRun) {
+            Write-Host "DryRun mode: InDesign bridge would be installed to $destination"
+        } else {
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Copy-Item -LiteralPath $indesignSource -Destination $destination -Force
+            Write-Host "InDesign startup bridge installed: $destination"
+        }
+    }
+    Write-Host "Restart InDesign; no panel or Auto-run toggle is required."
 }
 
 Update-CodexMcpConfig -RepoRoot $repoRoot -DryRun:$DryRun

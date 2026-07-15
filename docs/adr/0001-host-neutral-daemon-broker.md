@@ -9,7 +9,7 @@ After Effects had a localhost TCP request broker, while Premiere Pro, Photoshop,
 
 ## Decision
 
-`daemon-core` owns one broker implementation shared by all four host binaries.
+`daemon-core` owns one broker implementation shared by all five host binaries.
 
 - Protocol: newline-delimited JSON over a host-specific loopback TCP address.
 - Operations: `ping`, `listInstances`, `runCommand`, `getResult`, `latestResult`.

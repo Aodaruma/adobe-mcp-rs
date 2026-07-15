@@ -1,0 +1,574 @@
+const { app, ScriptLanguage, UndoModes } = require("indesign");
+const fs = require("fs");
+const os = require("os");
+
+const BRIDGE_VERSION = "0.4.4";
+const POLL_INTERVAL_MS = 250;
+const HEARTBEAT_INTERVAL_MS = 2000;
+const instanceId =
+  "id-uxp-" +
+  Date.now().toString(36) +
+  "-" +
+  Math.random().toString(36).slice(2, 10);
+
+let pollInFlight = false;
+let currentRequestId = null;
+let lastStatus = "initializing";
+let atomicWriteCounter = 0;
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function errorText(error) {
+  if (!error) {
+    return "Unknown error";
+  }
+  return error.stack || error.message || String(error);
+}
+
+function joinPath() {
+  const separator = os.platform() === "win32" ? "\\" : "/";
+  const parts = [];
+  for (let index = 0; index < arguments.length; index += 1) {
+    let part = String(arguments[index] || "");
+    if (!part) {
+      continue;
+    }
+    part = part.replace(/[\\\/]+$/g, "");
+    if (parts.length > 0) {
+      part = part.replace(/^[\\\/]+/g, "");
+    }
+    parts.push(part);
+  }
+  return parts.join(separator);
+}
+
+function bridgePaths() {
+  const root = joinPath(os.homedir(), "Documents", "id-mcp-bridge");
+  const instanceRoot = joinPath(root, "instances", instanceId);
+  return {
+    root,
+    commandFile: joinPath(root, "id_command.json"),
+    resultFile: joinPath(root, "id_mcp_result.json"),
+    instancesRoot: joinPath(root, "instances"),
+    instanceRoot,
+    instanceCommandFile: joinPath(instanceRoot, "id_command.json"),
+    instanceResultFile: joinPath(instanceRoot, "id_mcp_result.json"),
+    heartbeatFile: joinPath(instanceRoot, "heartbeat.json"),
+  };
+}
+
+function pathExists(path) {
+  try {
+    fs.lstatSync(path);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function ensureDirectory(path) {
+  if (!pathExists(path)) {
+    fs.mkdirSync(path, { recursive: true });
+  }
+}
+
+function ensureBridgeDirectories() {
+  const paths = bridgePaths();
+  ensureDirectory(paths.root);
+  ensureDirectory(paths.instancesRoot);
+  ensureDirectory(paths.instanceRoot);
+}
+
+function writeTextFileAtomic(path, text) {
+  const splitAt = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const parent = splitAt >= 0 ? path.slice(0, splitAt) : ".";
+  const fileName = splitAt >= 0 ? path.slice(splitAt + 1) : path;
+  const prefix = "." + fileName + ".tmp-";
+  const now = Date.now();
+
+  try {
+    const entries = fs.readdirSync(parent);
+    for (let index = 0; index < entries.length; index += 1) {
+      if (entries[index].indexOf(prefix) !== 0) {
+        continue;
+      }
+      const residue = joinPath(parent, entries[index]);
+      try {
+        const stat = fs.statSync(residue);
+        const modifiedAt =
+          typeof stat.mtimeMs === "number"
+            ? stat.mtimeMs
+            : stat.mtime && stat.mtime.getTime
+              ? stat.mtime.getTime()
+              : now;
+        if (now - modifiedAt >= 60 * 60 * 1000) {
+          fs.unlinkSync(residue);
+        }
+      } catch (_cleanupError) {}
+    }
+  } catch (_scanError) {}
+
+  atomicWriteCounter += 1;
+  const tempPath = joinPath(
+    parent,
+    prefix +
+      "uxp-" +
+      now +
+      "-" +
+      atomicWriteCounter +
+      "-" +
+      Math.random().toString(36).slice(2, 10),
+  );
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(tempPath, "wx");
+    fs.writeFileSync(descriptor, text, { encoding: "utf-8" });
+    if (fs.fsyncSync) {
+      fs.fsyncSync(descriptor);
+    }
+    fs.closeSync(descriptor);
+    descriptor = null;
+
+    let renameError = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        fs.renameSync(tempPath, path);
+        renameError = null;
+        break;
+      } catch (error) {
+        renameError = error;
+        if (attempt < 4) {
+          const waitUntil = Date.now() + 10;
+          while (Date.now() < waitUntil) {}
+        }
+      }
+    }
+    if (renameError) {
+      throw renameError;
+    }
+  } catch (error) {
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor);
+      } catch (_closeError) {}
+    }
+    try {
+      fs.unlinkSync(tempPath);
+    } catch (_removeError) {}
+    throw error;
+  }
+}
+
+function writeJson(path, value) {
+  writeTextFileAtomic(path, JSON.stringify(value, null, 2));
+}
+
+function readJson(path) {
+  if (!pathExists(path)) {
+    return null;
+  }
+  const raw = fs.readFileSync(path, { encoding: "utf-8" });
+  if (!raw || !raw.trim()) {
+    return null;
+  }
+  return JSON.parse(raw);
+}
+
+function collectionItem(collection, index) {
+  if (!collection) {
+    return null;
+  }
+  if (typeof collection.item === "function") {
+    return collection.item(index);
+  }
+  return collection[index];
+}
+
+function documentPath(document) {
+  try {
+    if (!document || !document.saved || !document.fullName) {
+      return null;
+    }
+    return document.fullName.fsName || document.fullName.nativePath || String(document.fullName);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function activeDocument() {
+  if (!app.documents || app.documents.length === 0) {
+    return null;
+  }
+  try {
+    return app.activeDocument || collectionItem(app.documents, 0);
+  } catch (_error) {
+    return collectionItem(app.documents, 0);
+  }
+}
+
+function summarizeDocument(document, index) {
+  if (!document) {
+    return null;
+  }
+  return {
+    id: document.id === undefined ? null : String(document.id),
+    index,
+    name: document.name || "",
+    path: documentPath(document),
+    saved: Boolean(document.saved),
+    modified: Boolean(document.modified),
+    pageCount: document.pages ? document.pages.length : 0,
+    storyCount: document.stories ? document.stories.length : 0,
+  };
+}
+
+function listDocuments() {
+  const documents = [];
+  const count = app.documents ? app.documents.length : 0;
+  for (let index = 0; index < count; index += 1) {
+    documents.push(summarizeDocument(collectionItem(app.documents, index), index + 1));
+  }
+  return { status: "success", documents };
+}
+
+function getActiveDocument() {
+  return {
+    status: "success",
+    document: summarizeDocument(activeDocument(), 1),
+  };
+}
+
+function listPages() {
+  const document = activeDocument();
+  if (!document) {
+    return { status: "error", message: "No active InDesign document." };
+  }
+  const pages = [];
+  for (let index = 0; index < document.pages.length; index += 1) {
+    const page = collectionItem(document.pages, index);
+    pages.push({
+      id: page && page.id !== undefined ? String(page.id) : null,
+      index: index + 1,
+      name: page && page.name ? page.name : "",
+      bounds: page ? toSerializable(page.bounds, 2, []) : null,
+    });
+  }
+  return {
+    status: "success",
+    document: summarizeDocument(document, 1),
+    pages,
+  };
+}
+
+function listStories() {
+  const document = activeDocument();
+  if (!document) {
+    return { status: "error", message: "No active InDesign document." };
+  }
+  const stories = [];
+  for (let index = 0; index < document.stories.length; index += 1) {
+    const story = collectionItem(document.stories, index);
+    let contents = "";
+    try {
+      contents = String(story.contents || "");
+    } catch (_error) {}
+    stories.push({
+      id: story && story.id !== undefined ? String(story.id) : null,
+      index: index + 1,
+      length: contents.length,
+      preview: contents.slice(0, 500),
+    });
+  }
+  return {
+    status: "success",
+    document: summarizeDocument(document, 1),
+    stories,
+  };
+}
+
+function getAppInfo() {
+  return {
+    status: "success",
+    app: {
+      name: app.name || "InDesign",
+      version: app.version || "",
+      locale: app.locale === undefined ? null : String(app.locale),
+      documentCount: app.documents ? app.documents.length : 0,
+    },
+  };
+}
+
+function toSerializable(value, depth, seen) {
+  if (value === null || value === undefined) {
+    return value === undefined ? null : value;
+  }
+  const kind = typeof value;
+  if (kind === "string" || kind === "number" || kind === "boolean") {
+    return value;
+  }
+  if (kind === "function") {
+    return "[Function]";
+  }
+  if (kind !== "object") {
+    return String(value);
+  }
+  if (depth <= 0) {
+    return String(value);
+  }
+  if (seen.indexOf(value) >= 0) {
+    return "[Circular]";
+  }
+  seen.push(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => toSerializable(item, depth - 1, seen));
+    }
+    const result = {};
+    const keys = Object.keys(value);
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index];
+      try {
+        result[key] = toSerializable(value[key], depth - 1, seen);
+      } catch (error) {
+        result[key] = "[Unserializable: " + errorText(error) + "]";
+      }
+    }
+    return result;
+  } finally {
+    seen.pop();
+  }
+}
+
+async function executeScript(args) {
+  if (!args || typeof args.code !== "string" || !args.code.trim()) {
+    throw new Error("executeScript requires non-empty args.code.");
+  }
+  if (args.mode !== "unsafe" && args.mode !== "trusted") {
+    throw new Error("executeScript requires mode unsafe or trusted.");
+  }
+
+  const suppliedArgs = args.args && typeof args.args === "object" ? args.args : {};
+  const wrapped =
+    "const __adobeMcpScript = require('uxp').script;\n" +
+    "const __adobeMcpResult = (function(args) {\n" +
+    args.code +
+    "\n})(JSON.parse(" +
+    JSON.stringify(JSON.stringify(suppliedArgs)) +
+    "));\n" +
+    "__adobeMcpScript.setResult(JSON.stringify(__adobeMcpResult === undefined ? null : __adobeMcpResult));";
+  const serializedResult = app.doScript(
+    wrapped,
+    ScriptLanguage.UXPSCRIPT,
+    [],
+    UndoModes.ENTIRE_SCRIPT,
+    args.description || "Adobe MCP raw script",
+  );
+  let result = serializedResult;
+  if (typeof serializedResult === "string") {
+    try {
+      result = JSON.parse(serializedResult);
+    } catch (_error) {}
+  }
+  return {
+    status: "success",
+    result: toSerializable(result, 8, []),
+  };
+}
+
+async function dispatchCommand(command, args) {
+  switch (command) {
+    case "ping":
+      return {
+        status: "success",
+        pong: true,
+        hostId: "indesign",
+        instanceId,
+        timestamp: nowIso(),
+      };
+    case "getAppInfo":
+      return getAppInfo();
+    case "listDocuments":
+      return listDocuments();
+    case "getActiveDocument":
+      return getActiveDocument();
+    case "listPages":
+      return listPages();
+    case "listStories":
+      return listStories();
+    case "executeScript":
+      return executeScript(args || {});
+    default:
+      throw new Error("Unsupported InDesign bridge command: " + command);
+  }
+}
+
+function normalizeResult(command, requestId, rawResult) {
+  let result = rawResult;
+  if (!result || typeof result !== "object") {
+    result = { status: "success", result };
+  }
+  if (!result.status) {
+    result.status = "success";
+  }
+  result._commandExecuted = command;
+  result._requestId = requestId || null;
+  result._responseTimestamp = nowIso();
+  return result;
+}
+
+function findPendingCommand() {
+  const paths = bridgePaths();
+  const candidates = [
+    {
+      commandFile: paths.instanceCommandFile,
+      resultFile: paths.instanceResultFile,
+      scope: "instance",
+    },
+    {
+      commandFile: paths.commandFile,
+      resultFile: paths.resultFile,
+      scope: "global",
+    },
+  ];
+  for (let index = 0; index < candidates.length; index += 1) {
+    try {
+      const payload = readJson(candidates[index].commandFile);
+      if (
+        payload &&
+        payload.command &&
+        String(payload.status || "").toLowerCase() === "pending"
+      ) {
+        candidates[index].payload = payload;
+        return candidates[index];
+      }
+    } catch (_error) {}
+  }
+  return null;
+}
+
+function updateCommandStatus(path, payload, status) {
+  const next = {};
+  Object.keys(payload).forEach((key) => {
+    next[key] = payload[key];
+  });
+  next.status = status;
+  writeJson(path, next);
+}
+
+function writeResult(context, result) {
+  const paths = bridgePaths();
+  writeJson(context.resultFile, result);
+  if (context.resultFile !== paths.resultFile) {
+    writeJson(paths.resultFile, result);
+  }
+}
+
+function writeHeartbeat(status, lastError) {
+  const paths = bridgePaths();
+  const document = activeDocument();
+  const timestamp = nowIso();
+  writeJson(paths.heartbeatFile, {
+    protocolVersion: 1,
+    instanceId,
+    hostId: "indesign",
+    appName: app.name || "InDesign",
+    appVersion: app.version || "",
+    displayName: app.version ? "InDesign " + app.version : "InDesign UXP",
+    projectPath: documentPath(document),
+    bridgeRuntime: "uxp-startup-script",
+    bridgeVersion: BRIDGE_VERSION,
+    capabilities: [
+      "script.doScript-string",
+      "documents.list",
+      "pages.list",
+      "stories.list",
+    ],
+    status: status || lastStatus,
+    currentRequestId,
+    lastError: lastError || null,
+    bridgeRoot: paths.root,
+    commandFile: paths.instanceCommandFile,
+    resultFile: paths.instanceResultFile,
+    lastHeartbeatAt: timestamp,
+    updatedAt: timestamp,
+    heartbeatPath: paths.heartbeatFile,
+  });
+}
+
+async function executePendingCommand(context) {
+  const payload = context.payload;
+  const command = payload.command;
+  const requestId = payload.requestId || payload.request_id || null;
+  currentRequestId = requestId;
+  lastStatus = "running";
+  writeHeartbeat("running", null);
+  updateCommandStatus(context.commandFile, payload, "running");
+
+  let result;
+  try {
+    result = normalizeResult(
+      command,
+      requestId,
+      await dispatchCommand(command, payload.args || {}),
+    );
+  } catch (error) {
+    result = normalizeResult(command, requestId, {
+      status: "error",
+      message: errorText(error),
+    });
+  }
+  writeResult(context, result);
+  const finalStatus = result.status === "error" ? "error" : "completed";
+  updateCommandStatus(context.commandFile, payload, finalStatus);
+  currentRequestId = null;
+  lastStatus = finalStatus;
+  writeHeartbeat(finalStatus, finalStatus === "error" ? result.message : null);
+}
+
+async function pollOnce() {
+  if (pollInFlight) {
+    return;
+  }
+  pollInFlight = true;
+  try {
+    ensureBridgeDirectories();
+    const context = findPendingCommand();
+    if (context) {
+      await executePendingCommand(context);
+    } else if (lastStatus === "initializing" || lastStatus === "running") {
+      lastStatus = "waiting";
+    }
+  } catch (error) {
+    lastStatus = "error";
+    try {
+      writeHeartbeat("error", errorText(error));
+    } catch (_heartbeatError) {}
+    console.error("InDesign MCP bridge poll failed:", error);
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+async function runForever() {
+  ensureBridgeDirectories();
+  writeHeartbeat("initializing", null);
+  await pollOnce();
+  setInterval(() => {
+    pollOnce().catch((error) => console.error(error));
+  }, POLL_INTERVAL_MS);
+  setInterval(() => {
+    try {
+      writeHeartbeat(lastStatus, null);
+    } catch (error) {
+      console.error("InDesign MCP heartbeat failed:", error);
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
+  // Startup scripts exit when their top-level promise resolves. Keeping this
+  // promise pending makes the bridge available for the full InDesign session.
+  return new Promise(() => {});
+}
+
+await runForever();

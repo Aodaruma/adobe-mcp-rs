@@ -6,12 +6,12 @@
 
 - repository 名は Adobe アプリ横断の `adobe-mcp-rs` へ変更済み。
 - **Primary** は After Effects。Rust バイナリ `ae-mcp`、ScriptUI / ExtendScript bridge、TCP daemon broker、instance routing / retained result が実装済み。
-- **Experimental** は Premiere Pro / Photoshop / Illustrator。各 host の Rust バイナリと bridge の初期実装はあるが、実機 E2E、配布、daemon broker の同等性が未完了。
+- **Experimental** は Premiere Pro / Photoshop / Illustrator / InDesign。各 host の Rust バイナリと bridge の初期実装はあるが、実機 E2E、配布、daemon broker の同等性が未完了。
   - Premiere Pro: `pr-mcp` + UXP（25.6+）。CEP / ExtendScript（24.0+）は fallback。
   - Photoshop: `ps-mcp` + UXP（23.3+）。読み取り中心の小さな allowlist と任意 UXP code 実行。
   - Illustrator: `ai-mcp` + CEP / ExtendScript（24.0+）。document / artboard / layer 読み取りと export の初期実装。
-- **Planned** は InDesign。Issue #21 で `id-mcp`、UXP Startup Script、raw `.idjs` 実行、daemon 接続を検証する。
-- 4 host の `serve-daemon` は `daemon-core` の共通 TCP broker を使う。MCP stdio server は host 別 daemon を経由し、instance別FIFO・別instance並列・global exclusive・retained resultを共有する。
+  - InDesign: `id-mcp` + UXP Startup Script（18.5+ PoC）。raw `app.doScript` と document / page / story 読み取りの初期実装。実機未検証。
+- 5 host の `serve-daemon` は `daemon-core` の共通 TCP broker を使う。MCP stdio server は host 別 daemon を経由し、instance別FIFO・別instance並列・global exclusive・retained resultを共有する。
 - 状態区分の基準、host 別 runtime / 最小機能 / 制約の source of truth は `docs/adobe-host-roadmap.md`。
 - 今後の公開 API は raw-script-first。host 間の capability matrix、非 sandbox の risk policy、structured Tool 追加基準は `docs/capability-matrix.md`。
 - npm/TypeScript サーバー実装は削除済み（`package.json` / `src/index.ts` 等は廃止）。
@@ -44,13 +44,13 @@
 
 ```powershell
 cargo test --workspace
-cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp
+cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp -p id-mcp
 .\target\release\ae-mcp.exe health
 .\target\release\ae-mcp.exe bridge run-script --script listCompositions --parameters '{}'
 .\target\release\ae-mcp.exe bridge get-results
 ```
 
-`health` は binary、bridge root、host 別 daemon address の確認に留まり、Adobe host 内の実行確認にはならない。host panel の `Auto-run commands` を有効にし、対象 binary の `serve-daemon` を起動して `list-*-instances` と `run-bridge-test` まで確認する。
+`health` は binary、bridge root、host 別 daemon address の確認に留まり、Adobe host 内の実行確認にはならない。panel host は `Auto-run commands` を有効にし、InDesign は Startup Script を配置して再起動する。対象 binary の `serve-daemon` を起動して `list-*-instances` と `run-bridge-test` まで確認する。
 
 ## ドキュメント
 

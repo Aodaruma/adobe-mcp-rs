@@ -15,6 +15,7 @@
 |---|---|
 | After Effects / Illustrator | `.jsx` |
 | Premiere Pro / Photoshop | `.js`, `.jsx` |
+| InDesign | `.idjs` |
 
 `.jsxbin` は UTF-8 source として監査できないため対象外です。
 
