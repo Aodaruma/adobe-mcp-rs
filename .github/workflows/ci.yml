@@ -55,5 +55,8 @@ jobs:
       - name: Check workspace and all targets
         run: cargo check --workspace --all-targets
 
+      - name: Test bridge protocol contracts
+        run: cargo test -p bridge-contract-tests
+
       - name: Test workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude bridge-contract-tests

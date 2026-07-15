@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "runId": "2026-07-15-aftereffects-windows-25.0",
+  "recordedAt": "2026-07-15T12:00:00Z",
+  "repository": {
+    "commit": "0123456789abcdef",
+    "dirty": false
+  },
+  "environment": {
+    "os": "Windows",
+    "osVersion": "11",
+    "arch": "x86_64"
+  },
+  "host": {
+    "protocolVersion": 1,
+    "hostId": "aftereffects",
+    "appVersion": "25.0",
+    "bridgeRuntime": "extendscript-scriptui",
+    "bridgeVersion": "0.4.4",
+    "instanceId": "redacted-instance",
+    "capabilities": ["ping", "run-jsx"]
+  },
+  "daemon": {
+    "binary": "ae-mcp",
+    "version": "0.4.4",
+    "address": "127.0.0.1:47655",
+    "startOrder": "host-first"
+  },
+  "checks": [
+    {
+      "id": "heartbeat.discovery",
+      "status": "pass",
+      "durationMs": 80,
+      "evidencePaths": ["logs/list-instances.json"]
+    },
+    {
+      "id": "request.late-result",
+      "status": "pass",
+      "durationMs": 1200,
+      "requestId": "redacted-request",
+      "evidencePaths": ["logs/late-result.json"]
+    }
+  ],
+  "summary": {
+    "status": "pass",
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0
+  }
+}

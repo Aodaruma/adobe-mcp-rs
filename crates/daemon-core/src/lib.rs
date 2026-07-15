@@ -159,6 +159,16 @@ fn run_daemon_with_listener(cfg: AppConfig, listener: TcpListener) -> Result<()>
     Ok(())
 }
 
+/// Run the daemon on an already-bound listener.
+///
+/// This entry point lets protocol contract tests reserve an ephemeral port
+/// without a bind race. Production binaries should normally use
+/// [`run_daemon_server`].
+#[doc(hidden)]
+pub fn run_daemon_server_with_listener(cfg: AppConfig, listener: TcpListener) -> Result<()> {
+    run_daemon_with_listener(cfg, listener)
+}
+
 fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>) -> Result<()> {
     let mut line = String::new();
     BufReader::new(stream.try_clone()?)

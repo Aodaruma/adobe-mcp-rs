@@ -134,6 +134,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
+name = "bridge-contract-tests"
+version = "0.4.4"
+dependencies = [
+ "anyhow",
+ "bridge-core",
+ "chrono",
+ "daemon-core",
+ "mcp-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "bridge-core"
 version = "0.4.4"
 dependencies = [

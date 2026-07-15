@@ -1,0 +1,15 @@
+[package]
+name = "bridge-contract-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+bridge-core = { path = "../bridge-core" }
+chrono.workspace = true
+daemon-core = { path = "../daemon-core" }
+mcp-core = { path = "../mcp-core" }
+serde_json.workspace = true
+tempfile = "3.20"

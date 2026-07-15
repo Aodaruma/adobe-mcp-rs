@@ -301,6 +301,7 @@ local 運用メモは [docs/worktree.md](docs/worktree.md) を参照してくだ
 - [Worktree workflow](docs/worktree.md)
 - [Codex MCP setup](docs/setup-codex-mcp.md)
 - [Operations runbook](docs/operations-runbook.md)
+- [Bridge contract / 実機 smoke test](docs/bridge-contract-testing.md)
 - [Installer E2E guide](docs/installer-e2e.md)
 - [Release checklist](docs/release-checklist.md)
 - [Rust migration specification](docs/specification-rust-migration.md)

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Aodaruma/adobe-mcp-rs/docs/bridge-smoke-result.schema.json",
+  "title": "Adobe MCP bridge smoke result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "recordedAt",
+    "repository",
+    "environment",
+    "host",
+    "daemon",
+    "checks",
+    "summary"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "recordedAt": { "type": "string", "format": "date-time" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit"],
+      "properties": {
+        "commit": { "type": "string", "minLength": 7 },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch"],
+      "properties": {
+        "os": { "type": "string", "minLength": 1 },
+        "osVersion": { "type": "string" },
+        "arch": { "type": "string", "minLength": 1 },
+        "operator": { "type": "string" }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "hostId", "appVersion", "bridgeRuntime", "instanceId"],
+      "properties": {
+        "protocolVersion": { "const": 1 },
+        "hostId": { "type": "string", "minLength": 1 },
+        "appVersion": { "type": "string", "minLength": 1 },
+        "bridgeRuntime": { "type": "string", "minLength": 1 },
+        "bridgeVersion": { "type": "string" },
+        "instanceId": { "type": "string", "minLength": 1 },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "daemon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binary", "version", "startOrder"],
+      "properties": {
+        "binary": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "address": { "type": "string" },
+        "startOrder": { "enum": ["host-first", "daemon-first"] }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["pass", "fail", "skip"] },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "requestId": { "type": "string" },
+          "notes": { "type": "string" },
+          "evidencePaths": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "status": { "enum": ["fail", "skip"] } },
+              "required": ["status"]
+            },
+            "then": { "required": ["notes"] }
+          },
+          {
+            "if": {
+              "properties": { "status": { "const": "fail" } },
+              "required": ["status"]
+            },
+            "then": { "required": ["evidencePaths"] }
+          }
+        ]
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "passed", "failed", "skipped"],
+      "properties": {
+        "status": { "enum": ["pass", "fail"] },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

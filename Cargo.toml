@@ -4,6 +4,7 @@ members = [
     "crates/ai-core",
     "crates/ai-mcp",
     "crates/bridge-core",
+    "crates/bridge-contract-tests",
     "crates/daemon-core",
     "crates/mcp-core",
     "crates/platform-service",

@@ -302,6 +302,7 @@ See [docs/worktree.md](docs/worktree.md) for the local workflow notes.
 - [Worktree workflow](docs/worktree.md)
 - [Codex MCP setup](docs/setup-codex-mcp.md)
 - [Operations runbook](docs/operations-runbook.md)
+- [Bridge contract and Adobe host smoke testing](docs/bridge-contract-testing.md)
 - [Installer E2E guide](docs/installer-e2e.md)
 - [Release checklist](docs/release-checklist.md)
 - [Rust migration specification](docs/specification-rust-migration.md)
