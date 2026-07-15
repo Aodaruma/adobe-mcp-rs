@@ -2,7 +2,7 @@
 
 ## Status
 
-InDesign support is **Experimental / Windows live-verified**. Windows 11、InDesign 2026 21.4.1.4（`Version 21.0-J/ja_JP`）では、Startup Scriptのcold start、daemon discovery、raw UXP、retained result、daemon再接続を確認済みです。macOS、複数version、sleep/modal、undo、normal shutdown cleanupは未完了です。
+InDesign support is **Experimental / Windows live-verified**. Windows 11、InDesign 2026 21.4.1.4（`Version 21.0-J/ja_JP`）では、Startup Scriptのcold start、daemon discovery、raw UXP、PDF/IDML export、modal timeoutからのresult回収、retained result、daemon再接続を確認済みです。macOS、実際の複数version、sleep、usable undo、normal shutdown時の即時heartbeat削除は未完了です。
 
 The minimum target is InDesign 18.5. InDesign supports UXP scripts from 18.0, while Adobe's current filesystem recipe calls out 18.5 or later. The repository bridge uses a UXP Startup Script (.idjs) rather than a panel and starts without an Auto-run checkbox on the verified Windows host.
 
@@ -129,13 +129,22 @@ Verified on Windows 11 x86_64, InDesign 2026 21.4.1.4, Japanese locale, bridge/i
 | `listDocuments` with no open document | pass (`[]`) |
 | non-mutating raw `app.doScript(String, UXPSCRIPT)` | pass |
 | raw temporary document creation, rectangle creation, no-save close | pass |
+| raw temporary PDF / IDML export, no-save close | pass (`12,053` byte PDF / `33,259` byte IDML) |
 | short timeout followed by `get-script-result` | pass |
+| modal dialog timeout and recovery | pass: heartbeat paused while modal, then resumed; retained result was recovered after closing the dialog |
 | daemon restart while InDesign remains open | pass |
 | forced host termination followed by new instance discovery | pass |
-| one-step undo for `UndoModes.ENTIRE_SCRIPT` | fail: Ctrl+Z and enabled Undo menu action did not remove the rectangle; `undoName` remained empty |
-| normal shutdown heartbeat removal | fail: application exited, but heartbeat remained and was reported as stale after 10 seconds |
+| routing ambiguity and `targetInstanceId` | pass with one real host plus one synthetic heartbeat; a second real InDesign version remains untested |
+| one-step undo for `UndoModes.ENTIRE_SCRIPT` | fail: the called script observed `activeScriptUndoMode=SCRIPT_REQUEST`; the requested name did not become the top undo item and the rectangle was not safely undoable as one step |
+| normal shutdown heartbeat removal | fail: `beforeQuit` was registered but did not run; a temporary `afterQuit` fallback also did not run, so it was reverted |
+| stale shutdown fallback | pass: the remaining heartbeat is excluded from active routing and reported under `inactiveInstances` after 10 seconds |
+| Windows ZIP / MSI contents | pass: 0.4.4 ZIP and MSI File table contain `id-mcp.exe`, the Startup Script, and installer; actual install/upgrade/uninstall remains pending |
 
 Creating a new document took longer than 5 seconds in one run. Callers that intentionally use a short timeout can recover the completed result through `get-script-result`.
+
+InDesign 21.4.1.4 did not dispatch either application quit event to this pending Startup Script during the tested normal UI shutdown. The bridge therefore keeps the synchronous `beforeQuit` cleanup attempt, but the supported failure path is the broker's 10-second heartbeat lease: a stopped host is no longer eligible for target selection even if its diagnostic heartbeat file remains on disk. The broker does not guess that an old instance directory is safe to delete.
+
+The undo observation is also a release constraint rather than a rollback guarantee. Although the nested `app.doScript` call requests `UndoModes.ENTIRE_SCRIPT`, the long-running Startup Script remains the outer script transaction and the called code observed `SCRIPT_REQUEST`. Raw mutations must be designed with their own validation and compensation until a usable host undo step is verified.
 
 ## Manual real-host E2E gate
 
@@ -160,7 +169,7 @@ The following remain explicit PoC gates, not current guarantees:
 - callback-based fs.rename replacement works on macOS and other supported InDesign UXP runtimes.
 - the user preference Startup Scripts directory is honored on every supported macOS version/locale.
 - one `UndoModes.ENTIRE_SCRIPT` request produces one usable host Undo step.
-- normal host shutdown removes the heartbeat instead of relying on stale-instance detection.
+- normal host shutdown removes the heartbeat instead of relying on the documented 10-second stale-instance fallback.
 - an unresolved top-level Promise remains alive without delaying or destabilizing other supported hosts.
 
 Save results using docs/bridge-smoke-result.schema.json. Do not promote InDesign beyond Experimental until the required checks pass on both Windows and macOS.

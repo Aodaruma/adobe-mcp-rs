@@ -61,6 +61,8 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 
 ## 3.3 Windows MSI の install / upgrade / uninstall
 
+2026-07-15のWindows実機では、WiX 5.0.2で0.4.4 ZIP/MSIを生成し、MSI Property/File/Feature tableとZIP entryを検査した。`ProductVersion=0.4.4.0`、全bridge featureのdefault `Level=1`、`id-mcp.exe`、`mcp-bridge-indesign.idjs`、`install-indesign-bridge.ps1`の収録は確認済み。別hostの実機検証と競合させないため、install/upgrade/uninstall matrix自体はmain統合後に実施する。
+
 1. 初回 install では5 hostとも Run key が新規作成されない
 2. 任意の host で `autostart install` し、MSI upgrade 後も opt-in が維持され、登録値が新しいインストール先を指す
 3. MSI upgrade 中の旧製品削除では Run key が一時削除されない
