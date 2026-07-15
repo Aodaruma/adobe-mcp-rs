@@ -23,14 +23,15 @@
 1. Rust版バイナリをビルド
 2. AEブリッジパネルをシェルスクリプトで導入
 3. CodexのMCP設定を `ae-mcp serve-stdio` に更新
-4. `run-script` / `get-results` の最小動作確認
+4. 公開Tool `list-ae-instances` / `run-bridge-test` の最小動作確認
 5. 必要に応じて `service install` で常駐化
 
 ## 4. 互換性メモ
 
-1. tool/resource/prompt 名は互換維持を優先
-2. `test-animation` は一時スクリプト生成型として継続
-3. エラーメッセージはRust実装側で明確化（権限不足など）
+1. 現在の公開ToolはREADMEと`tools/list`に列挙される9個。TS版の旧Tool名は非公開互換dispatchとしてのみ受理
+2. 旧Tool呼出時は公開置換先を返す。新規設定・Prompt・確認手順では旧Tool名を使わない
+3. `test-animation` は一時スクリプト生成型の非公開互換dispatchとして継続
+4. エラーメッセージはRust実装側で明確化（権限不足など）
 
 ## 5. ロールバック
 

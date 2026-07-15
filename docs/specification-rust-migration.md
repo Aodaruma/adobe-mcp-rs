@@ -47,7 +47,7 @@
 
 ## 5.1 MCP公開要素の互換
 
-以下は現行TS実装で提供されているため、Rust版でも互換維持を原則とする。
+現行の公開契約は [After Effects MCP public surface](after-effects-mcp-surface.md) に記載した9 Tool、1 Resource、6 Promptとする。旧TS実装の名前は削除せず、`tools/list`へ出さない非公開互換dispatchとして受理し、公開置換先を返す。
 
 - Resources:
 1. `compositions` (`aftereffects://compositions`)
@@ -56,21 +56,12 @@
 1. `list-compositions`
 2. `analyze-composition`
 3. `create-composition`
+4. `save-preview-png`
+5. `render-queue-setup`
+6. `cleanup-preview-folder`
 
-- Tools:
-1. `run-script`
-2. `get-results`
-3. `get-help`
-4. `create-composition`
-5. `setLayerKeyframe`
-6. `setLayerExpression`
-7. `test-animation`
-8. `apply-effect`
-9. `apply-effect-template`
-10. `mcp_aftereffects_applyEffect`
-11. `mcp_aftereffects_applyEffectTemplate`
-12. `mcp_aftereffects_get_effects_help`
-13. `run-bridge-test`
+- 公開Tools: `run-jsx`, `run-jsx-file`, `get-jsx-result`, `list-ae-instances`, `get-results`, `get-help`, `save-frame-png`, `cleanup-preview-folder`, `run-bridge-test`
+- 旧TS Tool名を含む非公開互換dispatchの完全な一覧は公開surface文書を参照
 
 ## 5.2 ファイルブリッジ契約の互換
 

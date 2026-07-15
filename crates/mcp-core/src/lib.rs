@@ -43,6 +43,67 @@ pub const ALLOWED_SCRIPTS: &[&str] = &[
     "bridgeTestEffects",
 ];
 
+/// After Effects tools advertised through MCP `tools/list`.
+///
+/// Keep this list in the same order as [`tool_specs`]. Hidden legacy dispatch
+/// names are intentionally excluded from the public contract.
+pub const PUBLIC_TOOL_NAMES: &[&str] = &[
+    "run-jsx",
+    "run-jsx-file",
+    "get-jsx-result",
+    "list-ae-instances",
+    "get-results",
+    "get-help",
+    "save-frame-png",
+    "cleanup-preview-folder",
+    "run-bridge-test",
+];
+
+/// Names accepted only so older MCP clients receive a migration path.
+pub const LEGACY_TOOL_NAMES: &[&str] = &[
+    "run-script",
+    "create-composition",
+    "setLayerKeyframe",
+    "setLayerExpression",
+    "test-animation",
+    "apply-effect",
+    "apply-effect-template",
+    "list-supported-effects",
+    "describe-effect",
+    "render-queue-add",
+    "render-queue-status",
+    "render-queue-start",
+    "render-queue-is-rendering",
+    "set-current-time",
+    "get-current-time",
+    "set-work-area",
+    "get-work-area",
+    "get-composition-markers",
+    "set-suppress-dialogs",
+    "get-suppress-dialogs",
+    "project-open",
+    "project-close",
+    "project-save",
+    "project-save-as",
+    "application-quit",
+    "mcp_aftereffects_applyEffect",
+    "mcp_aftereffects_applyEffectTemplate",
+    "mcp_aftereffects_listSupportedEffects",
+    "mcp_aftereffects_describeEffect",
+    "mcp_aftereffects_get_effects_help",
+];
+
+pub fn legacy_tool_replacement(name: &str) -> Option<&'static str> {
+    if !LEGACY_TOOL_NAMES.contains(&name) {
+        return None;
+    }
+
+    Some(match name {
+        "mcp_aftereffects_get_effects_help" => "get-help",
+        _ => "run-jsx",
+    })
+}
+
 /// Static metadata that defines one Adobe host integration.
 ///
 /// Adding a host starts with declaring one of these values; bridge paths and
@@ -594,21 +655,17 @@ pub fn prompt_specs() -> Vec<PromptSpec> {
 
 pub fn prompt_messages(name: &str, args: &Value) -> Option<Value> {
     let msg = match name {
-        "list-compositions" => {
-            "Please list all compositions in the current After Effects project.".to_string()
-        }
+        "list-compositions" => "Read the public `aftereffects://compositions` resource and list all compositions in the current After Effects project. The resource read is routed through the daemon broker. If custom inspection is needed, use only the public `run-jsx` tool with `mode: \"unsafe\"` and a clear description.".to_string(),
         "analyze-composition" => {
             let target = args
                 .get("compositionName")
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown");
             format!(
-                "Please analyze the composition named \"{target}\" in the current After Effects project. Provide details about its duration, frame rate, resolution, and layers."
+                "Analyze the composition named \"{target}\" in the current After Effects project. Use only the public `run-jsx` tool with `mode: \"unsafe\"`, a clear description, and JSX that returns structured JSON. Provide its duration, frame rate, resolution, and layers."
             )
         }
-        "create-composition" => {
-            "Please create a new composition with custom settings. You can specify parameters like name, width, height, frame rate, etc.".to_string()
-        }
+        "create-composition" => "Create a new composition with custom settings by using only the public `run-jsx` tool with `mode: \"unsafe\"` and a clear description. Ask for any missing name, width, height, duration, or frame-rate values before executing JSX.".to_string(),
         "save-preview-png" => {
             let composition_name = args
                 .get("compositionName")
@@ -624,7 +681,7 @@ pub fn prompt_messages(name: &str, args: &Value) -> Option<Value> {
                 .map(|v| v.to_string())
                 .unwrap_or("current time".to_string());
             format!(
-                "Please save a single-frame PNG preview using the save-frame-png tool.\nComposition: {composition_name}\nTime: {time_seconds}\nOutput path: {output_path}\nRemember: outputPath is required, and after queueing call get-results."
+                "Save a single-frame PNG preview using the public `save-frame-png` tool.\nComposition: {composition_name}\nTime: {time_seconds}\nOutput path: {output_path}\n`outputPath` is required. The tool waits through the daemon broker and returns its request result; use public `get-results` only if a retained result must be recovered."
             )
         }
         "render-queue-setup" => {
@@ -645,7 +702,7 @@ pub fn prompt_messages(name: &str, args: &Value) -> Option<Value> {
                 .and_then(Value::as_str)
                 .unwrap_or("(default)");
             format!(
-                "Please add a render queue item using the render-queue-add tool.\nComposition: {composition_name}\nOutput path: {output_path}\nRender settings template: {render_template}\nOutput module template: {output_template}\nDo not start rendering automatically. After queueing, call get-results."
+                "Add a render queue item by using only the public `run-jsx` tool with `mode: \"unsafe\"` and a clear description. Write JSX that resolves the composition, adds it to `app.project.renderQueue`, applies the requested templates when present, sets the output file, and returns structured JSON.\nComposition: {composition_name}\nOutput path: {output_path}\nRender settings template: {render_template}\nOutput module template: {output_template}\nDo not start rendering automatically."
             )
         }
         "cleanup-preview-folder" => {
@@ -667,7 +724,7 @@ pub fn prompt_messages(name: &str, args: &Value) -> Option<Value> {
                 .map(|v| v.to_string())
                 .unwrap_or("(none)".to_string());
             format!(
-                "Please clean up preview files using the cleanup-preview-folder tool.\nFolder: {folder_path}\nExtension: {extension}\nPrefix: {prefix}\nMax age (seconds): {max_age}\nAfter queueing, call get-results."
+                "Clean up preview files using the public `cleanup-preview-folder` tool.\nFolder: {folder_path}\nExtension: {extension}\nPrefix: {prefix}\nMax age (seconds): {max_age}\nThe tool executes through the daemon broker and returns its request result."
             )
         }
         _ => return None,
@@ -696,7 +753,18 @@ To use this integration with After Effects, follow these steps:
 3. Open Adobe After Effects
 4. Open Window > mcp-bridge-auto.jsx
 5. Enable "Auto-run commands"
-6. Use tools from MCP client and read back results
+6. Call `list-ae-instances`, then `run-bridge-test` for the shortest end-to-end check
+
+Public tools (the exact `tools/list` contract):
+- run-jsx
+- run-jsx-file
+- get-jsx-result
+- list-ae-instances
+- get-results
+- get-help
+- save-frame-png
+- cleanup-preview-folder
+- run-bridge-test
 
 Best practices:
 - Use list-ae-instances when multiple After Effects versions are open
@@ -704,14 +772,19 @@ Best practices:
 - Prefer compId/layerId when available to avoid index drift
 - Use get-jsx-result with requestId after a timeout
 - save-frame-png is optimized for fast previews (single PNG only)
-- Use render-queue-start when you want MCP to wait until render completion
-- Use suppressDialogs (default true) to avoid blocking dialogs
+- Use run-jsx for render-queue and other host-specific operations that do not have a public intent tool
+- For save-frame-png, keep suppressDialogs at its default true to avoid blocking dialogs
 - Ensure outputPath points to a writable location
-- Default mode is non-interactive. For LLM automation, keep interactive=false and pass explicit paths.
-- For user handoff, set interactive=true (dialogs allowed; suppressDialogs is treated as false).
-- In non-interactive close/open/quit flows, avoid prompt-based close options and provide saveAsPath when needed.
+- Public JSX execution has no interactive flag. Write non-interactive JSX, pass explicit paths in code/args, and avoid prompt-based project lifecycle operations.
+- If a workflow deliberately needs user dialogs, treat it as an explicit unsafe run-jsx handoff rather than relying on a hidden compatibility-tool argument.
 
-Available scripts:
+Compatibility boundary:
+- Historical host-specific tool names and `run-script` are accepted only as hidden legacy dispatch entries and are not advertised by `tools/list`.
+- A legacy call returns a deprecation notice naming the public replacement. New prompts and setup instructions never depend on those names.
+- `run-script` remains hidden because its allowlist is useful for compatibility, but its historical asynchronous direct-file semantics do not match the synchronous daemon-backed public contract. It should not be republished until a distinct trusted-script safety boundary and broker semantics are defined.
+- MCP resources that query After Effects use the daemon broker. MCP prompts only return instructions; every operation named by those instructions uses a public daemon-backed tool or resource.
+
+Bridge script allowlist (compatibility/diagnostics, not public MCP tools):
 - getProjectInfo
 - listCompositions
 - getLayerInfo
@@ -772,9 +845,9 @@ Templates:
 - cinematic-look
 - text-pop
 
-Additional tools:
-- list-supported-effects
-- describe-effect
+Public access:
+- Use `run-jsx` with `mode: "unsafe"` to inspect or apply effects.
+- `list-supported-effects` and `describe-effect` are deprecated compatibility dispatch names and are not public MCP tools.
 "#
 }
 
@@ -889,5 +962,101 @@ result_file = "bridge/result.json"
         assert!(is_allowed_script("listCompositions"));
         assert!(is_allowed_script("applyEffectTemplate"));
         assert!(!is_allowed_script("unknownScript"));
+    }
+
+    #[test]
+    fn public_tool_names_match_advertised_specs() {
+        let names = tool_specs()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, PUBLIC_TOOL_NAMES);
+        assert!(!names.contains(&"run-script"));
+        assert!(!names.contains(&"render-queue-add"));
+    }
+
+    #[test]
+    fn every_prompt_uses_only_public_execution_paths() {
+        let cases = [
+            ("list-compositions", json!({})),
+            (
+                "analyze-composition",
+                json!({ "compositionName": "Comp 1" }),
+            ),
+            ("create-composition", json!({})),
+            (
+                "save-preview-png",
+                json!({ "outputPath": "C:/preview.png" }),
+            ),
+            (
+                "render-queue-setup",
+                json!({ "outputPath": "C:/render.mov" }),
+            ),
+            (
+                "cleanup-preview-folder",
+                json!({ "folderPath": "C:/preview" }),
+            ),
+        ];
+
+        let prompt_names = prompt_specs()
+            .into_iter()
+            .map(|prompt| prompt.name)
+            .collect::<Vec<_>>();
+        let covered_names = cases.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        assert_eq!(
+            prompt_names, covered_names,
+            "add new prompts to this contract test"
+        );
+
+        for (name, args) in cases {
+            let message = prompt_messages(name, &args)
+                .expect("known prompt")
+                .to_string();
+            assert!(
+                message.contains("run-jsx")
+                    || message.contains("save-frame-png")
+                    || message.contains("cleanup-preview-folder"),
+                "prompt {name} does not name a public execution path"
+            );
+            for legacy_name in LEGACY_TOOL_NAMES {
+                assert!(
+                    !message.contains(legacy_name),
+                    "prompt {name} refers to legacy tool {legacy_name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn help_lists_every_public_tool_and_explains_legacy_boundary() {
+        let help = general_help_text();
+        for tool in PUBLIC_TOOL_NAMES {
+            assert!(
+                help.contains(&format!("- {tool}")),
+                "help is missing {tool}"
+            );
+        }
+        assert!(help.contains("hidden legacy dispatch"));
+        assert!(help.contains("`run-script` remains hidden"));
+        assert!(!help.contains("Use render-queue-start"));
+    }
+
+    #[test]
+    fn setup_smoke_test_uses_only_public_tools() {
+        let setup = include_str!("../../../docs/setup-codex-mcp.md");
+        let smoke = setup
+            .split("## 7. 動作確認（最短）")
+            .nth(1)
+            .and_then(|tail| tail.split("### 7.1").next())
+            .expect("setup smoke-test section");
+
+        assert!(smoke.contains("`list-ae-instances`"));
+        assert!(smoke.contains("`run-bridge-test`"));
+        for legacy_name in LEGACY_TOOL_NAMES {
+            assert!(
+                !smoke.contains(legacy_name),
+                "setup smoke test refers to legacy tool {legacy_name}"
+            );
+        }
     }
 }

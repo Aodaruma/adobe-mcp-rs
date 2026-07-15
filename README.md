@@ -222,6 +222,10 @@ After Effects currently exposes:
 - `cleanup-preview-folder`
 - `run-bridge-test`
 
+This nine-tool list is the complete After Effects public contract returned by `tools/list`. Historical names such as `run-script`, `create-composition`, effect helpers, render-queue helpers, and project lifecycle helpers remain accepted only by hidden compatibility dispatch. A legacy call includes a deprecation notice and its public replacement; prompts and setup instructions do not depend on hidden names.
+
+`run-script` is intentionally not republished. Its allowlist remains useful for old clients, but its asynchronous direct-file behavior does not match the synchronous daemon-backed public contract, and it does not yet define a distinct trusted-script boundary. New host-specific operations should use explicit `run-jsx` calls (`mode: "unsafe"`) until such a boundary is designed. The `aftereffects://compositions` resource and every operation named by an After Effects prompt use the daemon broker; prompts themselves only return reusable instructions.
+
 Premiere Pro currently exposes:
 
 - `run-jsx`
@@ -294,6 +298,7 @@ See [docs/worktree.md](docs/worktree.md) for the local workflow notes.
 ## Docs
 
 - [Adobe host roadmap](docs/adobe-host-roadmap.md)
+- [After Effects MCP public surface](docs/after-effects-mcp-surface.md)
 - [Worktree workflow](docs/worktree.md)
 - [Codex MCP setup](docs/setup-codex-mcp.md)
 - [Operations runbook](docs/operations-runbook.md)

@@ -63,8 +63,8 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 2. ポータブル版（zip/tar.gz）の場合は `mcp-bridge-auto.jsx` を手動配置
 3. AEで `Window > mcp-bridge-auto.jsx` を開く
 4. `Auto-run commands` をON
-5. Codexで `run-script(script=listCompositions)` を実行
-6. `get-results` で結果JSON取得
+5. Codexで公開Tool `list-ae-instances` を実行し、対象instanceを確認
+6. 公開Tool `run-bridge-test` を実行し、daemon broker経由の結果JSONを取得
 
 ## 4. 失敗時の確認ポイント
 

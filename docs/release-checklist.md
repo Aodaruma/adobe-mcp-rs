@@ -6,7 +6,7 @@
 
 1. `cargo check` が成功
 2. `cargo test` が成功
-3. 主要MCP操作の手動確認（`run-script`, `get-results`, `create-composition`）
+3. AEの公開MCP操作を手動確認（`list-ae-instances`, `run-bridge-test`, `run-jsx`, `get-results`）
 4. Windows/macOS のインストーラ生成確認
 
 ## 2. 署名・公証
@@ -34,4 +34,3 @@
 1. 初期ユーザーの導入可否確認
 2. 重大不具合（P1）監視
 3. Hotfix要否判断
-

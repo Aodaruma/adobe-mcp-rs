@@ -85,7 +85,7 @@ After Effects 側で:
 .\target\release\ae-mcp.exe serve-daemon
 ```
 
-常駐化する場合は「7. After Effects daemon の常駐化」を参照してください。
+常駐化する場合は「8. host 別 daemon の常駐化」を参照してください。
 
 ## 4. CodexにMCPサーバーを登録（推奨: CLI）
 
@@ -193,7 +193,27 @@ tool_timeout_sec = 120
 enabled = true
 ```
 
-## 6. 動作確認（最短）
+## 6. After Effectsの公開MCP surface
+
+`tools/list` が公開するAfter Effects Toolは次の9個です。
+
+- `run-jsx`
+- `run-jsx-file`
+- `get-jsx-result`
+- `list-ae-instances`
+- `get-results`
+- `get-help`
+- `save-frame-png`
+- `cleanup-preview-folder`
+- `run-bridge-test`
+
+`run-script`や個別のcomposition / effect / render queue / project操作Toolは、旧client向けの非公開互換dispatchです。旧Toolを直接呼ぶと実行結果とともに公開置換先が案内されますが、新しい設定・Prompt・確認手順では使用しません。`run-script`のallowlistと非同期direct-file動作は、`run-jsx`の明示的な`mode: "unsafe"`および同期daemon broker契約とは安全境界・完了条件が異なるため、現時点では再公開しません。
+
+公開ToolのAE実行、`aftereffects://compositions` Resourceの読み取り、Promptが案内する操作は`serve-daemon` brokerを経由します。MCP Prompt自体は操作を実行せず、公開Toolまたは公開Resourceを使う手順を返します。
+
+全Tool / Prompt / Resourceと非公開互換名の対応は [After Effects MCP public surface](after-effects-mcp-surface.md) を参照してください。
+
+## 7. 動作確認（最短）
 
 1. After Effects を起動
 2. `Window > mcp-bridge-auto.jsx` を開き、`Auto-run commands` を ON
@@ -220,7 +240,7 @@ enabled = true
 
 root 直下の command / result は compatibility 用です。複数 instance の routing では `instances/<instanceId>/heartbeat.json` と host 別 command / result、retained result では `registry/<requestId>.json` も使います。
 
-### 6.1 Premiere Pro / Photoshop の UXP bridge と Illustrator CEP bridge
+### 7.1 Premiere Pro / Photoshop の UXP bridge と Illustrator CEP bridge
 
 Windows installer を使う場合は、MSI の Custom Setup 画面で After Effects / Premiere Pro / Photoshop / Illustrator の bridge component を選択できます。MSI 本体のファイル配置後、選択された host integration と Codex config の更新は非表示の custom action として実行されるため、通常は別の PowerShell ウィンドウは表示されません。
 
@@ -254,36 +274,36 @@ Premiere Pro / Photoshop / Illustrator も MCP stdio server から host 別 `ser
 
 daemon 未起動時は stdio tool が接続エラーと起動コマンドを返します。timeout 後も `requestId` を `get-jsx-result` または `get-results` に渡すと、後から完了した結果を回収できます。root 直下の command/result file と `bridge` CLI は互換・診断用途です。
 
-### 6.2 LLM運用時の推奨プロンプト（重要）
+### 7.2 LLM運用時の推奨プロンプト（重要）
 
 LLMがMCPを自動実行する場合は、まず非対話モードを前提にしてください。
 
 - 通常（自動実行）:
-  - `interactive=false` を使う（既定）
-  - `suppressDialogs=true` を維持
-  - 保存系は必ず `saveAsPath/filePath/path` を渡す
-  - `closeOption` は `SAVE_CHANGES` または `DO_NOT_SAVE_CHANGES` を使う
+  - 公開`run-jsx`には`interactive`引数がないため、dialogを開かないJSXを書く
+  - pathは`code`または`args`内へ絶対pathで明示する
+  - 公開`save-frame-png`では`suppressDialogs=true`（既定）を維持する
+  - project lifecycleをJSXで実装する場合、保存先とclose方針をcode内で明示する
 - ユーザーに操作を渡す場合のみ:
-  - `interactive=true` を指定（ダイアログ表示を許可）
-  - `PROMPT_TO_SAVE_CHANGES` や未保存時の Save As ダイアログを許可
+  - dialogを含む`run-jsx`を明示的なunsafe handoffとして扱う
+  - 自動処理の継続を前提にしない
 
 プロンプト例（LLM向け運用ルール）:
 
 ```text
 After Effects MCP を使う際は、通常は non-interactive で実行すること。
-- interactive=false（default）
-- suppressDialogs=true
-- 保存が必要な操作では saveAsPath/filePath/path を必ず明示
-- closeOption は SAVE_CHANGES または DO_NOT_SAVE_CHANGES を使い、PROMPT は使わない
+- 公開 run-jsx に interactive 引数はない。dialog を開かない JSX を書く
+- path は code または args 内へ絶対 path で明示する
+- save-frame-png は suppressDialogs=true を維持する
+- project lifecycle を実装するときは保存先と close 方針を code 内で明示する
 
-ユーザー操作に引き継ぐときだけ interactive=true を使ってダイアログ表示を許可する。
+ユーザー操作に引き継ぐときだけ、dialog を含む run-jsx を明示的な unsafe handoff として扱う。
 ```
 
-## 7. host 別 daemon の常駐化
+## 8. host 別 daemon の常駐化
 
 各 host broker を常駐させる場合、Windows は対象 binary の `autostart`、macOS は `service` を使います。複数 host を利用する場合は binary ごとに登録します。既定 address は AE `127.0.0.1:47655`、Premiere `:47656`、Photoshop `:47657`、Illustrator `:47658` です。
 
-### 7.1 Windows
+### 8.1 Windows
 
 ```powershell
 .\target\release\<host>-mcp.exe autostart install
@@ -293,7 +313,7 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 .\target\release\<host>-mcp.exe autostart uninstall
 ```
 
-### 7.2 macOS
+### 8.2 macOS
 
 ```bash
 ./target/release/<host>-mcp service install
@@ -303,7 +323,7 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 ./target/release/<host>-mcp service uninstall
 ```
 
-## 8. よくあるトラブル
+## 9. よくあるトラブル
 
 1. `get-results` が stale warning を返す
 - AE側パネルが閉じているか、`Auto-run commands` が OFF の可能性があります。
@@ -316,7 +336,7 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 3. パネルは動いているのに結果が返らない
 - `~/Documents/ae-mcp-bridge/ae_command.json` の `status` が `pending/running/completed/error` のどこで止まっているか確認
 
-## 9. 参考（公式）
+## 10. 参考（公式）
 
 - Codex MCP設定: <https://developers.openai.com/codex/mcp>
 - Docs MCP（Codex設定例）: <https://developers.openai.com/learn/docs-mcp>

@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use bridge_core::BridgeClient;
 use mcp_core::{
-    effects_help_text, general_help_text, prompt_messages, prompt_specs, tool_specs, AppConfig,
+    effects_help_text, general_help_text, legacy_tool_replacement, prompt_messages, prompt_specs,
+    tool_specs, AppConfig,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -171,14 +172,7 @@ fn resources_read_result(cfg: &AppConfig, _bridge: &BridgeClient, params: &Value
 
     let outcome = daemon_core::call_daemon(
         cfg,
-        json!({
-            "op": "runCommand",
-            "command": "listCompositions",
-            "args": {},
-            "timeoutMs": cfg.result_timeout_ms + 1_000,
-            "pollIntervalMs": cfg.poll_interval_ms,
-            "retentionSeconds": cfg.result_retention_seconds
-        }),
+        compositions_resource_daemon_request(cfg),
         cfg.result_timeout_ms + 1_000,
     )?;
     let text = serde_json::to_string_pretty(&outcome)
@@ -193,6 +187,17 @@ fn resources_read_result(cfg: &AppConfig, _bridge: &BridgeClient, params: &Value
             }
         ]
     }))
+}
+
+fn compositions_resource_daemon_request(cfg: &AppConfig) -> Value {
+    json!({
+        "op": "runCommand",
+        "command": "listCompositions",
+        "args": {},
+        "timeoutMs": cfg.result_timeout_ms + 1_000,
+        "pollIntervalMs": cfg.poll_interval_ms,
+        "retentionSeconds": cfg.result_retention_seconds
+    })
 }
 
 fn tools_call_result(cfg: &AppConfig, bridge: &BridgeClient, params: &Value) -> Result<Value> {
@@ -210,10 +215,41 @@ fn tools_call_result(cfg: &AppConfig, bridge: &BridgeClient, params: &Value) -> 
 
 fn dispatch_tool(cfg: &AppConfig, bridge: &BridgeClient, name: &str, args: Value) -> Value {
     let result = dispatch_tool_inner(cfg, bridge, name, args);
-    match result {
+    let value = match result {
         Ok(value) => value,
         Err(e) => tool_error(format!("Error: {e}")),
+    };
+
+    match legacy_tool_replacement(name) {
+        Some(replacement) => with_legacy_tool_notice(value, name, replacement),
+        None => value,
     }
+}
+
+fn with_legacy_tool_notice(mut value: Value, name: &str, replacement: &str) -> Value {
+    let notice = format!(
+        "Deprecated compatibility tool `{name}` is not advertised by `tools/list`. This call was accepted for backward compatibility; migrate to the public `{replacement}` tool."
+    );
+
+    if let Some(text) = value
+        .get_mut("content")
+        .and_then(Value::as_array_mut)
+        .and_then(|content| content.first_mut())
+        .and_then(|item| item.get_mut("text"))
+        .and_then(|text| text.as_str())
+        .map(str::to_string)
+    {
+        value["content"][0]["text"] = Value::String(format!("{notice}\n\n{text}"));
+        return value;
+    }
+
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "content".to_string(),
+            json!([{ "type": "text", "text": notice }]),
+        );
+    }
+    value
 }
 
 fn dispatch_tool_inner(
@@ -1017,6 +1053,7 @@ fn error_response(id: Value, code: i64, message: String) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn tools_list_contains_run_jsx() {
@@ -1028,6 +1065,62 @@ mod tests {
         assert!(tools
             .iter()
             .any(|t| t.get("name").and_then(Value::as_str) == Some("run-jsx")));
+    }
+
+    #[test]
+    fn tools_list_is_exactly_the_documented_public_surface() {
+        let result = tools_list_result();
+        let names = result
+            .get("tools")
+            .and_then(Value::as_array)
+            .expect("tools array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(names, mcp_core::PUBLIC_TOOL_NAMES);
+        assert!(!names.contains(&"run-script"));
+        assert!(!names.contains(&"render-queue-add"));
+    }
+
+    #[test]
+    fn deprecated_dispatch_returns_public_replacement_notice() {
+        let root = std::env::temp_dir().join(format!(
+            "ae-mcp-legacy-dispatch-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let mut cfg = AppConfig::default();
+        cfg.bridge.root_dir = root.clone();
+        cfg.bridge.command_file = root.join("ae_command.json");
+        cfg.bridge.result_file = root.join("ae_mcp_result.json");
+        let bridge = BridgeClient::new(cfg.clone()).expect("temporary bridge");
+
+        let result = dispatch_tool(
+            &cfg,
+            &bridge,
+            "mcp_aftereffects_get_effects_help",
+            json!({}),
+        );
+        let text = result["content"][0]["text"].as_str().expect("text result");
+        assert!(text.contains("Deprecated compatibility tool"));
+        assert!(text.contains("public `get-help` tool"));
+        assert!(!result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false));
+
+        let _ = fs::remove_dir_all(PathBuf::from(root));
+    }
+
+    #[test]
+    fn compositions_resource_builds_a_daemon_broker_request() {
+        let cfg = AppConfig::default();
+        let request = compositions_resource_daemon_request(&cfg);
+        assert_eq!(request["op"], "runCommand");
+        assert_eq!(request["command"], "listCompositions");
+        assert_eq!(request["timeoutMs"], cfg.result_timeout_ms + 1_000);
+        assert_eq!(request["pollIntervalMs"], cfg.poll_interval_ms);
+        assert_eq!(request["retentionSeconds"], cfg.result_retention_seconds);
     }
 
     #[test]

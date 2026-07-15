@@ -222,6 +222,10 @@ After Effects:
 - `cleanup-preview-folder`
 - `run-bridge-test`
 
+この9 Toolが `tools/list` に返る After Effects の公開契約すべてです。`run-script`、`create-composition`、effect / render queue / project lifecycle の旧Tool名は、非公開の互換dispatchとしてのみ受理します。旧Tool呼出時は非推奨の案内と公開置換先を返し、Promptとセットアップ手順は非公開名へ依存しません。
+
+`run-script` は意図的に再公開しません。allowlist は旧clientとの互換に有用ですが、非同期direct-file動作が同期daemon brokerの公開契約と一致せず、独立したtrusted script境界も未定義だからです。新規のhost固有操作は、その境界を設計するまで `mode: "unsafe"` を明示した `run-jsx` を使います。`aftereffects://compositions` ResourceとAfter Effects Promptが案内する全操作はdaemon broker経路を使い、Prompt自体は再利用可能な手順だけを返します。
+
 Premiere Pro:
 
 - `run-jsx`
@@ -267,7 +271,7 @@ Illustrator:
 4. Photoshop UXP bridge は書き込み操作、modal execution policy、installer E2E を強化する。
 5. Illustrator CEP bridge は export coverage、現行バージョンでの runtime 検証、署名、installer E2E を強化する。UXP は公開 host support が明確になるまで optional 扱いにする。
 
-詳細は [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md) にまとめています。
+詳細は [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md) にまとめています。After Effectsの公開Tool、Resource、Prompt、非公開互換dispatchの正確な一覧は [docs/after-effects-mcp-surface.md](docs/after-effects-mcp-surface.md) を参照してください。
 
 ## Worktree 運用
 
