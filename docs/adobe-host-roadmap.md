@@ -23,6 +23,7 @@
 | Premiere Pro | `pr-mcp` | UXP panel（25.6+）、CEP / ExtendScript fallback（24.0+） | **Experimental** | 共通 broker を使用。UXP の install/release と実機 version matrix が未確立。CEP は fallback。 |
 | Photoshop | `ps-mcp` | UXP panel（23.3+、API v2） | **Experimental** | 共通 broker を使用。modal policy、書き込み操作、配布・実機 E2E が未完成。 |
 | Illustrator | `ai-mcp` | CEP panel / ExtendScript（24.0+、CSXS 10） | **Experimental** | 共通 broker を使用。現行 version の実機検証と署名・配布が未完成。 |
+| InDesign | `id-mcp`（計画） | UXP Startup Script `.idjs`（計画） | **Planned** | Issue #21 で binary、Startup Script、raw `.idjs` 実行、daemon 接続を PoC する。 |
 
 4 host とも `daemon-core` の localhost TCP broker を使用します。`serve-daemon` は command routing、待機、instance別FIFO、別instance並列、global exclusive、request registry、result retention を担当します。既定 port は AE `47655` / Premiere `47656` / Photoshop `47657` / Illustrator `47658` です。
 
@@ -120,6 +121,26 @@ MCP client -> ai-mcp serve-stdio -> ai-mcp serve-daemon
 - `ai-mcp serve-daemon` の起動が通常の MCP 操作に必要。CEP 実機での broker E2E は release gate。
 - UXP を既定 runtime にはしない。third-party host support と配布経路が明確になるまで CEP / ExtendScript を baseline とする。
 
+### InDesign — Planned
+
+候補経路:
+
+```text
+MCP client -> id-mcp serve-stdio -> id-mcp serve-daemon
+           -> InDesign UXP Startup Script (.idjs)
+           -> audited temporary .idjs -> app.doScript(..., UXPSCRIPT)
+```
+
+設計方針:
+
+- UXP Startup Script による host 起動時の自動起動と、未解決 Promise / event loop による bridge lifespan を Issue #21 で検証する。
+- UXP Script は文字列からの code generation が無効なため、raw source は監査済み一時 `.idjs` にして `app.doScript` で実行する案を第一候補とする。
+- structured input は `doScript` の `withArguments` / `script.args`、結果は `script.setResult` または bridge envelope で返す。
+- `HostSpec`、共通 daemon、heartbeat、instance routing、retained result、script file policy は既存 host と同じ契約へ追加する。
+- UXP plugin は permission と lifecycle の比較候補だが、操作ごとの panel Tool を既定 surface にはしない。
+
+5 host の runtime、raw code、read / write / export、undo / modal / filesystem、lifecycle、payload、guard 方針は [capability matrix](capability-matrix.md) を参照してください。
+
 ## Bridge protocol の現状
 
 現在は host ごとに root / command / result file 名が異なり、root 直下の compatibility file と instance ごとの file を併用します。
@@ -141,10 +162,11 @@ MCP client -> ai-mcp serve-stdio -> ai-mcp serve-daemon
 
 1. **完了:** host名、binary、bridge root、file名、instance tool名を `HostSpec` に集約し、protocol v1を導入する。
 2. **完了:** 4 host の daemon を `daemon-core` の共通 broker に統一する。direct file bridge は互換・診断用途として残す。
-3. host 共通の protocol / E2E fixture と Adobe 実機 test matrix を追加する。
-4. Premiere Pro の UXP package、CEP fallback、installer の対応 version を実機で固定する。
-5. Photoshop の書き込み・export・modal policy と Illustrator の export / packaging を hardening する。
-6. Windows / macOS の host 別 component install、署名、公証、upgrade / uninstall を release gate に組み込む。
+3. **完了:** host 共通の protocol / E2E fixture を追加する。Adobe 実機 test matrix は継続する。
+4. **設計済み:** [capability matrix](capability-matrix.md) で raw-script-first、共通 script contract、guard の非 sandbox 境界、structured Tool 追加基準を定義する。schema / guard 実装は段階導入する。
+5. Issue #21 の InDesign Startup Script PoC と Issue #22 の AE lifecycle / reconnect PoC を並行する。
+6. Premiere Pro の UXP package / CEP fallback、Photoshop の modal / write / export、Illustrator の export / packaging を実機で hardening する。
+7. Windows / macOS の host 別 component install、署名、公証、upgrade / uninstall を release gate に組み込む。
 
 ## 状態を更新するときの検証
 

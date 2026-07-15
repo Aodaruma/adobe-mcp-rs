@@ -2,7 +2,7 @@
 
 Rust-based MCP servers and Adobe host bridge panels for LLM-driven local automation.
 
-This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the project can grow beyond After Effects. The current codebase contains the most complete implementation for After Effects, plus experimental Premiere Pro, Photoshop, and Illustrator paths.
+This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the project can grow beyond After Effects. The current codebase contains the most complete implementation for After Effects, experimental Premiere Pro, Photoshop, and Illustrator paths, and a planned InDesign path.
 
 - Japanese: [README-ja.md](README-ja.md)
 
@@ -16,6 +16,7 @@ Last synchronized with the code on 2026-07-15.
 | Premiere Pro | `pr-mcp` | UXP 25.6+, CEP / ExtendScript 24.0+ fallback | **Experimental** | Initial sequence/export surface; `serve-daemon` broker required |
 | Photoshop | `ps-mcp` | UXP 23.3+ (API v2) | **Experimental** | Initial generic execution and read-only document/layer surface |
 | Illustrator | `ai-mcp` | CEP / ExtendScript 24.0+ (CSXS 10) | **Experimental** | Initial document/artboard/layer/export surface; runtime packaging needs validation |
+| InDesign | planned `id-mcp` | planned UXP Startup Script (`.idjs`) | **Planned** | Issue #21 will validate raw `.idjs` execution, automatic startup, and daemon connectivity |
 
 **Primary** means the default operational path is implemented. **Experimental** means a binary, bridge, and minimal MCP surface exist, but real-host E2E, packaging, runtime compatibility, or broker/service parity still needs hardening. **Planned** is reserved for hosts without a usable binary-and-bridge pair. See [the host status source of truth](docs/adobe-host-roadmap.md) for the full criteria, runtime constraints, and verification procedure.
 
@@ -263,13 +264,14 @@ For arbitrary code execution, pass `mode: "unsafe"` and a short `description`. `
 
 ## Expansion Plan
 
-The next step is to make host support a first-class concept instead of cloning the After Effects assumptions into every app.
+The public API follows a **raw-script-first** direction. When an LLM can compose the host JavaScript/JSX directly, generic script execution, structured input, recipes, and result recovery take priority over one Tool per operation. Static deletion detection and confirmation can reduce accidents but do not create a sandbox, so they are described as risk policies rather than a "safe mode." See the [capability matrix](docs/capability-matrix.md) for the host comparison, proposed schemas, guard limitations, and Tool admission criteria.
 
 1. **Done:** Extract host metadata into `HostSpec`.
 2. **Done:** Normalize the bridge protocol and retained request records across hosts.
 3. **Done:** Share the `daemon-core` broker model across all four binaries; keep direct file bridge only for compatibility and diagnostics.
-4. Harden the initial Photoshop UXP bridge with write operations, modal execution policies, and installer E2E coverage.
-5. Harden the initial Illustrator CEP bridge with export coverage, current-version runtime validation, signing, and installer E2E coverage. Keep UXP optional until public host support is clear enough for third-party automation.
+4. Introduce a common script contract, capability reporting, payload limits, and explicitly non-sandboxed risk preflight in phases.
+5. Run the InDesign UXP Startup Script PoC and the After Effects automatic-start/reconnect PoC in parallel.
+6. Harden Photoshop write/modal/export and Illustrator export/packaging behavior against real host versions.
 
 Detailed notes are in [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md).
 
@@ -298,6 +300,7 @@ See [docs/worktree.md](docs/worktree.md) for the local workflow notes.
 ## Docs
 
 - [Adobe host roadmap](docs/adobe-host-roadmap.md)
+- [Adobe host capability matrix and raw-script-first policy](docs/capability-matrix.md)
 - [After Effects MCP public surface](docs/after-effects-mcp-surface.md)
 - [Worktree workflow](docs/worktree.md)
 - [Codex MCP setup](docs/setup-codex-mcp.md)

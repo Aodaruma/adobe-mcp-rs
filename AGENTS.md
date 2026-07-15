@@ -10,8 +10,10 @@
   - Premiere Pro: `pr-mcp` + UXP（25.6+）。CEP / ExtendScript（24.0+）は fallback。
   - Photoshop: `ps-mcp` + UXP（23.3+）。読み取り中心の小さな allowlist と任意 UXP code 実行。
   - Illustrator: `ai-mcp` + CEP / ExtendScript（24.0+）。document / artboard / layer 読み取りと export の初期実装。
+- **Planned** は InDesign。Issue #21 で `id-mcp`、UXP Startup Script、raw `.idjs` 実行、daemon 接続を検証する。
 - 4 host の `serve-daemon` は `daemon-core` の共通 TCP broker を使う。MCP stdio server は host 別 daemon を経由し、instance別FIFO・別instance並列・global exclusive・retained resultを共有する。
 - 状態区分の基準、host 別 runtime / 最小機能 / 制約の source of truth は `docs/adobe-host-roadmap.md`。
+- 今後の公開 API は raw-script-first。host 間の capability matrix、非 sandbox の risk policy、structured Tool 追加基準は `docs/capability-matrix.md`。
 - npm/TypeScript サーバー実装は削除済み（`package.json` / `src/index.ts` 等は廃止）。
 - AE 連携は `mcp-bridge-auto.jsx` 経由（`~/Documents/ae-mcp-bridge` の command/result ファイル）。
 - `applyEffect` / `applyEffectTemplate` は ExtendScript 互換化済み（`Object.keys` 非依存）。
@@ -55,3 +57,4 @@ cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp
 - セットアップ: `docs/setup-codex-mcp.md`
 - 開発段階: `docs/development-stages.md`
 - 移行仕様: `docs/specification-rust-migration.md`
+- Capability matrix: `docs/capability-matrix.md`

@@ -2,7 +2,7 @@
 
 LLM から Adobe アプリをローカル自動操作するための、Rust 製 MCP サーバー群とホスト側ブリッジのプロジェクトです。
 
-この repository は、After Effects 専用の `after-effects-mcp-rs` から、Adobe アプリ横断の `adobe-mcp-rs` へ育てる前提でリネームされています。現時点では After Effects 実装が最も進んでおり、Premiere Pro / Photoshop / Illustrator は実験的な実装が入っています。
+この repository は、After Effects 専用の `after-effects-mcp-rs` から、Adobe アプリ横断の `adobe-mcp-rs` へ育てる前提でリネームされています。現時点では After Effects 実装が最も進んでおり、Premiere Pro / Photoshop / Illustrator は実験的な実装、InDesign は計画段階です。
 
 - English: [README.md](README.md)
 
@@ -16,6 +16,7 @@ LLM から Adobe アプリをローカル自動操作するための、Rust 製 
 | Premiere Pro | `pr-mcp` | UXP 25.6+、CEP / ExtendScript 24.0+ fallback | **Experimental** | sequence / export の初期 surface。`serve-daemon` broker が必要 |
 | Photoshop | `ps-mcp` | UXP 23.3+（API v2） | **Experimental** | 汎用実行と document / layer 読み取りの初期 surface |
 | Illustrator | `ai-mcp` | CEP / ExtendScript 24.0+（CSXS 10） | **Experimental** | document / artboard / layer / export の初期 surface。runtime 配布の検証が必要 |
+| InDesign | `id-mcp`（計画） | UXP Startup Script `.idjs`（計画） | **Planned** | Issue #21 で raw `.idjs` 実行、自動起動、daemon 接続を検証 |
 
 **Primary** は既定の運用経路が実装済み、**Experimental** は binary、bridge、最小 MCP surface はあるものの、実機 E2E、配布、runtime compatibility、broker / service の同等性のいずれかが未完成、**Planned** は利用可能な binary と bridge の組がまだない状態です。詳しい基準、runtime 制約、検証方法は [host 状態の source of truth](docs/adobe-host-roadmap.md) を参照してください。
 
@@ -263,13 +264,14 @@ Illustrator:
 
 ## 今後の拡張方針
 
-次は、After Effects 前提を各アプリへコピーするのではなく、host 対応を明示的な設計要素にします。
+公開 API は **raw-script-first** とします。LLM が JavaScript / JSX を直接組み立てられる操作は、操作ごとの Tool を増やすより `run-script` / `run-jsx` 系、structured input、recipe、結果回収を優先します。静的な削除検知や確認は事故防止には有用ですが sandbox にはならないため、`safe mode` とは呼ばず risk policy として扱います。host 別の比較、schema 案、guard の限界、Tool 追加基準は [capability matrix](docs/capability-matrix.md) を参照してください。
 
 1. **完了:** host metadata を `HostSpec` に集約する。
 2. **完了:** `heartbeat.json`、command/result file、instance metadata、capabilities、retained request record を共通化する。
 3. **完了:** 4 binary で `daemon-core` の broker model を共有し、direct file bridge は互換・診断用途に限定する。
-4. Photoshop UXP bridge は書き込み操作、modal execution policy、installer E2E を強化する。
-5. Illustrator CEP bridge は export coverage、現行バージョンでの runtime 検証、署名、installer E2E を強化する。UXP は公開 host support が明確になるまで optional 扱いにする。
+4. 共通 script contract、capability report、payload 上限、非 sandbox の risk preflight を段階導入する。
+5. InDesign UXP Startup Script PoC と AE の自動起動・再接続 PoC を並行する。
+6. Photoshop UXP bridge の write / modal / export と、Illustrator CEP bridge の export / packaging を実機で強化する。
 
 詳細は [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md) にまとめています。After Effectsの公開Tool、Resource、Prompt、非公開互換dispatchの正確な一覧は [docs/after-effects-mcp-surface.md](docs/after-effects-mcp-surface.md) を参照してください。
 
@@ -298,6 +300,7 @@ local 運用メモは [docs/worktree.md](docs/worktree.md) を参照してくだ
 ## ドキュメント
 
 - [Adobe host roadmap](docs/adobe-host-roadmap.md)
+- [Adobe host capability matrix / raw-script-first policy](docs/capability-matrix.md)
 - [Worktree workflow](docs/worktree.md)
 - [Codex MCP setup](docs/setup-codex-mcp.md)
 - [Operations runbook](docs/operations-runbook.md)
