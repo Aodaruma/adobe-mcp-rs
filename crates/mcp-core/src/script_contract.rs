@@ -839,8 +839,9 @@ mod tests {
                 ..base.clone()
             },
         );
+        let replacement = if tampered.ends_with('0') { '1' } else { '0' };
         tampered.pop();
-        tampered.push('0');
+        tampered.push(replacement);
         assert!(verify_and_consume_approval_token(
             &cfg,
             &tampered,
