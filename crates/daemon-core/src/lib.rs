@@ -676,14 +676,13 @@ mod tests {
                 thread::sleep(Duration::from_millis(5));
             };
             thread::sleep(Duration::from_millis(80));
-            fs::write(
-                result_path,
-                serde_json::to_vec(&json!({
+            bridge_core::write_json_file(
+                &result_path,
+                &json!({
                     "status": "success",
                     "_commandExecuted": "ping",
                     "_requestId": request_id
-                }))
-                .unwrap(),
+                }),
             )
             .unwrap();
         });
@@ -710,14 +709,31 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap()
             .to_string();
-        thread::sleep(Duration::from_millis(120));
-
-        let recovered = call_daemon(
-            &cfg,
-            json!({ "op": "getResult", "requestId": request_id }),
-            100,
-        )
-        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let recovered = loop {
+            let value = call_daemon(
+                &cfg,
+                json!({ "op": "getResult", "requestId": request_id }),
+                200,
+            )
+            .unwrap();
+            if matches!(
+                value.get("status").and_then(Value::as_str),
+                Some("completed" | "failed" | "lost" | "cancelled")
+            ) {
+                break value;
+            }
+            assert_eq!(
+                value.get("status").and_then(Value::as_str),
+                Some("timeout"),
+                "outer timeout must not be downgraded to a worker intermediate state"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "request did not reach a terminal state: {value}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
         assert_eq!(
             recovered.get("status").and_then(Value::as_str),
             Some("completed")

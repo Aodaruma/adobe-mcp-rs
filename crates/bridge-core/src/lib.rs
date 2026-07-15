@@ -15,6 +15,8 @@ use thiserror::Error;
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static ATOMIC_REPLACE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+static REQUEST_RECORD_UPDATE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
+    OnceLock::new();
 const BROKER_LOCK_STALE_SECONDS: u64 = 86_400;
 const ATOMIC_TEMP_STALE_SECONDS: u64 = 3_600;
 const ATOMIC_REPLACE_RETRIES: usize = 50;
@@ -533,21 +535,27 @@ impl BridgeClient {
     }
 
     pub fn mark_request_timeout(&self, request_id: &str, message: String) -> Result<RequestRecord> {
-        let mut record = self.read_request_record(request_id)?;
-        record.status = "timeout".to_string();
-        record.updated_at = chrono_like_timestamp();
-        record.message = Some(message);
-        self.write_request_record(&record)?;
-        Ok(record)
+        self.update_request_record(request_id, |record| {
+            if is_terminal_request_status(&record.status) {
+                return false;
+            }
+            record.status = "timeout".to_string();
+            record.updated_at = chrono_like_timestamp();
+            record.message = Some(message);
+            true
+        })
     }
 
     pub fn mark_request_failed(&self, request_id: &str, message: String) -> Result<RequestRecord> {
-        let mut record = self.read_request_record(request_id)?;
-        record.status = "failed".to_string();
-        record.updated_at = chrono_like_timestamp();
-        record.message = Some(message);
-        self.write_request_record(&record)?;
-        Ok(record)
+        self.update_request_record(request_id, |record| {
+            if is_terminal_request_status(&record.status) {
+                return false;
+            }
+            record.status = "failed".to_string();
+            record.updated_at = chrono_like_timestamp();
+            record.message = Some(message);
+            true
+        })
     }
 
     pub fn resolve_target(&self, target: &BridgeTarget) -> Result<HostInstance> {
@@ -618,6 +626,7 @@ impl BridgeClient {
                     ),
                 );
                 self.write_request_record(&record)?;
+                record = self.read_request_record(request_id)?;
                 return Ok(BridgeRunOutcome {
                     record,
                     registry_path,
@@ -648,6 +657,7 @@ impl BridgeClient {
                 record.result_raw = Some(raw);
                 record.message = None;
                 self.write_request_record(&record)?;
+                record = self.read_request_record(request_id)?;
                 self.clear_current_request(&instance)?;
                 return Ok(BridgeRunOutcome {
                     record,
@@ -665,6 +675,7 @@ impl BridgeClient {
                     ),
                 );
                 self.write_request_record(&record)?;
+                record = self.read_request_record(request_id)?;
                 return Ok(BridgeRunOutcome {
                     record,
                     registry_path,
@@ -694,6 +705,7 @@ impl BridgeClient {
                 record.result_raw = Some(raw);
                 record.message = None;
                 self.write_request_record(&record)?;
+                record = self.read_request_record(request_id)?;
                 self.clear_current_request_if_matches(&instance, request_id)?;
             } else if self.is_instance_stale(&instance)? {
                 record.status = "lost".to_string();
@@ -703,6 +715,7 @@ impl BridgeClient {
                     self.host.display_name
                 ));
                 self.write_request_record(&record)?;
+                record = self.read_request_record(request_id)?;
                 self.clear_current_request_if_matches(&instance, request_id)?;
             }
         }
@@ -961,7 +974,39 @@ impl BridgeClient {
     }
 
     fn write_request_record(&self, record: &RequestRecord) -> Result<()> {
-        write_json_file(&self.registry_path(&record.request_id), record)
+        validate_request_id(&record.request_id)?;
+        let path = self.registry_path(&record.request_id);
+        let update_lock = request_record_update_lock(&path)?;
+        let _update_guard = update_lock
+            .lock()
+            .map_err(|_| anyhow!("request record update lock is poisoned"))?;
+
+        if path.exists() {
+            let current: RequestRecord = read_json_file_with_retry(&path)
+                .with_context(|| format!("failed to read request registry: {}", path.display()))?;
+            if should_preserve_current_record(&current, record) {
+                return Ok(());
+            }
+        }
+        write_json_file(&path, record)
+    }
+
+    fn update_request_record<F>(&self, request_id: &str, update: F) -> Result<RequestRecord>
+    where
+        F: FnOnce(&mut RequestRecord) -> bool,
+    {
+        validate_request_id(request_id)?;
+        let path = self.registry_path(request_id);
+        let update_lock = request_record_update_lock(&path)?;
+        let _update_guard = update_lock
+            .lock()
+            .map_err(|_| anyhow!("request record update lock is poisoned"))?;
+        let mut record: RequestRecord = read_json_file_with_retry(&path)
+            .with_context(|| format!("failed to read request registry: {}", path.display()))?;
+        if update(&mut record) {
+            write_json_file(&path, &record)?;
+        }
+        Ok(record)
     }
 
     fn read_request_record(&self, request_id: &str) -> Result<RequestRecord> {
@@ -1030,6 +1075,36 @@ pub fn ensure_bridge_dir(cfg: &AppConfig) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+fn request_record_update_lock(path: &Path) -> Result<Arc<Mutex<()>>> {
+    let mut locks = REQUEST_RECORD_UPDATE_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| anyhow!("request record lock registry is poisoned"))?;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    Ok(lock)
+}
+
+fn is_terminal_request_status(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "lost" | "cancelled")
+}
+
+// A client timeout is recoverable, but a completed/error result is final.
+// Slow atomic I/O may let worker intermediate writes arrive after the outer
+// timeout marker, so those writes must not move the registry backwards.
+fn should_preserve_current_record(current: &RequestRecord, proposed: &RequestRecord) -> bool {
+    is_terminal_request_status(&current.status)
+        || (current.status == "timeout"
+            && matches!(
+                proposed.status.as_str(),
+                "queued" | "dispatched" | "running"
+            ))
 }
 
 pub fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -1778,6 +1853,105 @@ mod tests {
             .expect("run");
         assert_eq!(outcome.record.status, "completed");
         assert!(outcome.record.host_instance.is_some());
+    }
+
+    #[test]
+    fn timeout_record_recovers_from_a_late_result() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).expect("client");
+        let instance = write_test_instance(&cfg, "late-result");
+        let prepared = bridge
+            .prepare_request("ping", 60, Some(instance.clone()))
+            .expect("prepare");
+        let request_id = prepared.record.request_id;
+        let timed_out = bridge
+            .mark_request_timeout(&request_id, "outer timeout".to_string())
+            .expect("timeout");
+        assert_eq!(timed_out.status, "timeout");
+        let mut late_intermediate = timed_out.clone();
+        late_intermediate.status = "dispatched".to_string();
+        late_intermediate.updated_at = chrono_like_timestamp();
+        bridge
+            .write_request_record(&late_intermediate)
+            .expect("late intermediate update");
+        assert_eq!(
+            bridge
+                .read_request_record(&request_id)
+                .expect("preserved timeout")
+                .status,
+            "timeout"
+        );
+
+        write_json_file(
+            &PathBuf::from(instance.result_file),
+            &json!({
+                "status": "success",
+                "_commandExecuted": "ping",
+                "_requestId": request_id
+            }),
+        )
+        .expect("late result");
+        let recovered = bridge.get_request_record(&request_id).expect("recover");
+        assert_eq!(recovered.status, "completed");
+        assert!(recovered.result.is_some());
+    }
+
+    #[test]
+    fn terminal_result_wins_race_with_outer_timeout_marker() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).expect("client");
+        let instance = write_test_instance(&cfg, "terminal-race");
+
+        for (result_status, expected_status) in [("success", "completed"), ("error", "failed")] {
+            for _ in 0..12 {
+                let prepared = bridge
+                    .prepare_request("ping", 60, Some(instance.clone()))
+                    .expect("prepare");
+                let request_id = prepared.record.request_id;
+                write_json_file(
+                    &PathBuf::from(&instance.result_file),
+                    &json!({
+                        "status": result_status,
+                        "_commandExecuted": "ping",
+                        "_requestId": request_id.clone()
+                    }),
+                )
+                .expect("host result");
+
+                let start = Arc::new(std::sync::Barrier::new(3));
+                let result_bridge = bridge.clone();
+                let result_id = request_id.clone();
+                let result_start = Arc::clone(&start);
+                let result_reader = thread::spawn(move || {
+                    result_start.wait();
+                    result_bridge
+                        .get_request_record(&result_id)
+                        .expect("result transition")
+                });
+                let timeout_bridge = bridge.clone();
+                let timeout_id = request_id.clone();
+                let timeout_start = Arc::clone(&start);
+                let timeout_marker = thread::spawn(move || {
+                    timeout_start.wait();
+                    timeout_bridge
+                        .mark_request_timeout(&timeout_id, "outer timeout".to_string())
+                        .expect("timeout marker")
+                });
+                start.wait();
+                let _ = result_reader.join().expect("result reader");
+                let _ = timeout_marker.join().expect("timeout marker");
+
+                let final_record = bridge
+                    .get_request_record(&request_id)
+                    .expect("final record");
+                assert_eq!(final_record.status, expected_status);
+                assert!(final_record.result.is_some());
+                let late_timeout = bridge
+                    .mark_request_timeout(&request_id, "later timeout".to_string())
+                    .expect("late timeout marker");
+                assert_eq!(late_timeout.status, expected_status);
+            }
+        }
     }
 
     #[test]
