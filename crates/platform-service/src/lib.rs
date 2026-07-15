@@ -168,31 +168,27 @@ fn status(cfg: &ServiceConfig) -> Result<String> {
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn install(_cfg: &ServiceConfig) -> Result<String> {
-    Err(anyhow!(
-        "service install is supported only on Windows/macOS"
-    ))
+    Err(anyhow!("service install is supported only on macOS"))
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn uninstall(_cfg: &ServiceConfig) -> Result<String> {
-    Err(anyhow!(
-        "service uninstall is supported only on Windows/macOS"
-    ))
+    Err(anyhow!("service uninstall is supported only on macOS"))
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn start(_cfg: &ServiceConfig) -> Result<String> {
-    Err(anyhow!("service start is supported only on Windows/macOS"))
+    Err(anyhow!("service start is supported only on macOS"))
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn stop(_cfg: &ServiceConfig) -> Result<String> {
-    Err(anyhow!("service stop is supported only on Windows/macOS"))
+    Err(anyhow!("service stop is supported only on macOS"))
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn status(_cfg: &ServiceConfig) -> Result<String> {
-    Err(anyhow!("service status is supported only on Windows/macOS"))
+    Err(anyhow!("service status is supported only on macOS"))
 }
 
 pub fn run_autostart(action: AutostartAction, cfg: &AutostartConfig) -> Result<String> {
@@ -233,6 +229,13 @@ fn autostart_install(cfg: &AutostartConfig) -> Result<String> {
 
 #[cfg(target_os = "windows")]
 fn autostart_uninstall(cfg: &AutostartConfig) -> Result<String> {
+    if read_autostart_command(cfg)?.is_none() {
+        return Ok(format!(
+            "autostart already removed for current user: {}",
+            cfg.app_name
+        ));
+    }
+
     let output = Command::new("reg")
         .args([
             "delete",
@@ -244,10 +247,7 @@ fn autostart_uninstall(cfg: &AutostartConfig) -> Result<String> {
         .output()
         .with_context(|| "failed to execute 'reg delete'")?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}\n{stderr}");
-    if !output.status.success() && !combined.contains("unable to find") {
+    if !output.status.success() {
         return Err(anyhow!(render_output("reg delete", output)));
     }
 
@@ -259,26 +259,72 @@ fn autostart_uninstall(cfg: &AutostartConfig) -> Result<String> {
 
 #[cfg(target_os = "windows")]
 fn autostart_start(cfg: &AutostartConfig) -> Result<String> {
-    if let Some(pid) = running_pid_for_config(cfg)? {
-        return Ok(format!("daemon already running (pid={pid})"));
-    }
-
-    spawn_detached(cfg)?;
-    for _ in 0..20 {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        if let Some(pid) = running_pid_for_config(cfg)? {
-            return Ok(format!("daemon started (pid={pid})"));
+    match daemon_state(cfg)? {
+        DaemonState::NotRunning => cleanup_stale_pid_file(cfg)?,
+        DaemonState::Running {
+            pid,
+            executable_matches: true,
+            ..
+        } => return Ok(format!("daemon already running (pid={pid})")),
+        DaemonState::Running {
+            pid,
+            recorded_executable,
+            executable_matches: false,
+        } => {
+            return Err(anyhow!(
+                "daemon pid={pid} is still running from `{}`. Stop it before starting `{}`",
+                recorded_executable.display(),
+                cfg.binary_path.display()
+            ));
         }
     }
 
-    Ok("daemon start requested; process did not publish a pid file yet".to_string())
+    let mut child = spawn_detached(cfg)?;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        match daemon_state(cfg)? {
+            DaemonState::Running {
+                pid,
+                executable_matches: true,
+                ..
+            } => return Ok(format!("daemon started (pid={pid})")),
+            DaemonState::Running {
+                pid,
+                recorded_executable,
+                executable_matches: false,
+            } => {
+                terminate_spawned_child(&mut child);
+                return Err(anyhow!(
+                    "daemon pid={pid} published an unexpected executable path `{}`",
+                    recorded_executable.display()
+                ));
+            }
+            DaemonState::NotRunning => {}
+        }
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| "failed to query spawned daemon process")?
+        {
+            return Err(anyhow!(
+                "daemon process exited before publishing a valid pid file (status={status})"
+            ));
+        }
+    }
+
+    terminate_spawned_child(&mut child);
+    Err(anyhow!(
+        "daemon process did not publish a valid pid file within 5 seconds; it may have failed to bind or exited during startup"
+    ))
 }
 
 #[cfg(target_os = "windows")]
 fn autostart_stop(cfg: &AutostartConfig) -> Result<String> {
-    let Some(pid) = running_pid_for_config(cfg)? else {
-        cleanup_stale_pid_file(cfg)?;
-        return Ok("daemon is not running".to_string());
+    let pid = match daemon_state(cfg)? {
+        DaemonState::NotRunning => {
+            cleanup_stale_pid_file(cfg)?;
+            return Ok("daemon is not running".to_string());
+        }
+        DaemonState::Running { pid, .. } => pid,
     };
 
     let output = Command::new("taskkill")
@@ -291,28 +337,43 @@ fn autostart_stop(cfg: &AutostartConfig) -> Result<String> {
 
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(250));
-        if running_pid_for_config(cfg)?.is_none() {
+        if matches!(daemon_state(cfg)?, DaemonState::NotRunning) {
             cleanup_stale_pid_file(cfg)?;
             return Ok(format!("daemon stopped (pid={pid})"));
         }
     }
 
-    cleanup_stale_pid_file(cfg)?;
-    Ok(format!("stop requested for daemon pid={pid}"))
+    Err(anyhow!(
+        "daemon pid={pid} is still running after taskkill completed"
+    ))
 }
 
 #[cfg(target_os = "windows")]
 fn autostart_status(cfg: &AutostartConfig) -> Result<String> {
-    let installed = is_autostart_installed(cfg)?;
-    let running = running_pid_for_config(cfg)?;
-    let install_state = if installed {
-        "installed"
-    } else {
-        "not installed"
+    let expected_command = build_windows_command_line(&cfg.binary_path, &cfg.args);
+    let registered_command = read_autostart_command(cfg)?;
+    let install_state = match registered_command {
+        Some(ref command) if command == &expected_command => "installed".to_string(),
+        Some(command) => format!(
+            "outdated (registered=`{command}`, expected=`{expected_command}`); run `autostart install`"
+        ),
+        None => "not installed".to_string(),
     };
-    let running_state = match running {
-        Some(pid) => format!("running (pid={pid})"),
-        None => "not running".to_string(),
+    let running_state = match daemon_state(cfg)? {
+        DaemonState::NotRunning => "not running".to_string(),
+        DaemonState::Running {
+            pid,
+            executable_matches: true,
+            ..
+        } => format!("running (pid={pid})"),
+        DaemonState::Running {
+            pid,
+            recorded_executable,
+            executable_matches: false,
+        } => format!(
+            "running from a different executable (pid={pid}, executable={})",
+            recorded_executable.display()
+        ),
     };
     Ok(format!(
         "autostart: {install_state}\ndaemon: {running_state}\npid_file={}",
@@ -422,7 +483,7 @@ fn quote_windows_arg(arg: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn is_autostart_installed(cfg: &AutostartConfig) -> Result<bool> {
+fn read_autostart_command(cfg: &AutostartConfig) -> Result<Option<String>> {
     let output = Command::new("reg")
         .args([
             "query",
@@ -432,11 +493,25 @@ fn is_autostart_installed(cfg: &AutostartConfig) -> Result<bool> {
         ])
         .output()
         .with_context(|| "failed to execute 'reg query'")?;
-    Ok(output.status.success())
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_reg_sz_value(&stdout))
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_detached(cfg: &AutostartConfig) -> Result<()> {
+fn parse_reg_sz_value(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let (_, value) = line.split_once("REG_SZ")?;
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_detached(cfg: &AutostartConfig) -> Result<std::process::Child> {
     #[cfg(target_os = "windows")]
     use std::os::windows::process::CommandExt;
 
@@ -449,31 +524,52 @@ fn spawn_detached(cfg: &AutostartConfig) -> Result<()> {
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
-        .with_context(|| "failed to spawn daemon process")?;
-    Ok(())
+        .with_context(|| "failed to spawn daemon process")
 }
 
 #[cfg(target_os = "windows")]
-fn running_pid_for_config(cfg: &AutostartConfig) -> Result<Option<u32>> {
-    let Some((pid, exe_path)) = read_pid_file(&cfg.pid_file)? else {
-        return Ok(None);
+fn terminate_spawned_child(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaemonState {
+    NotRunning,
+    Running {
+        pid: u32,
+        recorded_executable: PathBuf,
+        executable_matches: bool,
+    },
+}
+
+#[cfg(target_os = "windows")]
+fn daemon_state(cfg: &AutostartConfig) -> Result<DaemonState> {
+    let Some((pid, recorded_executable)) = read_pid_file(&cfg.pid_file)? else {
+        return Ok(DaemonState::NotRunning);
     };
 
-    if !paths_match(&exe_path, &cfg.binary_path) {
-        return Ok(None);
+    if !is_process_running(pid, &recorded_executable)? {
+        return Ok(DaemonState::NotRunning);
     }
 
-    if is_process_running(pid, &cfg.binary_path)? {
-        Ok(Some(pid))
-    } else {
-        Ok(None)
-    }
+    Ok(DaemonState::Running {
+        pid,
+        executable_matches: paths_match(&recorded_executable, &cfg.binary_path),
+        recorded_executable,
+    })
 }
 
 #[cfg(target_os = "windows")]
 fn cleanup_stale_pid_file(cfg: &AutostartConfig) -> Result<()> {
-    if running_pid_for_config(cfg)?.is_none() && cfg.pid_file.exists() {
-        let _ = std::fs::remove_file(&cfg.pid_file);
+    if matches!(daemon_state(cfg)?, DaemonState::NotRunning) && cfg.pid_file.exists() {
+        std::fs::remove_file(&cfg.pid_file).with_context(|| {
+            format!(
+                "failed to remove stale pid file: {}",
+                cfg.pid_file.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -487,18 +583,17 @@ fn read_pid_file(path: &std::path::Path) -> Result<Option<(u32, PathBuf)>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read pid file: {}", path.display()))?;
     let mut lines = raw.lines();
-    let Some(pid_line) = lines.next() else {
+    let Some(pid) = lines
+        .next()
+        .and_then(|line| line.trim().parse::<u32>().ok())
+    else {
         return Ok(None);
     };
-    let Some(exe_line) = lines.next() else {
+    let Some(exe_line) = lines.next().map(str::trim).filter(|line| !line.is_empty()) else {
         return Ok(None);
     };
 
-    let pid = pid_line
-        .trim()
-        .parse::<u32>()
-        .with_context(|| format!("invalid pid file contents: {}", path.display()))?;
-    Ok(Some((pid, PathBuf::from(exe_line.trim()))))
+    Ok(Some((pid, PathBuf::from(exe_line))))
 }
 
 #[cfg(target_os = "windows")]
@@ -517,6 +612,8 @@ if ($p.Path -and $p.Path -ieq '{expected}') {{ exit 0 }} else {{ exit 2 }}"
     );
     let status = Command::new("powershell")
         .args(["-NoProfile", "-Command", &command])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .with_context(|| "failed to execute process probe")?;
     Ok(status.success())
@@ -549,6 +646,139 @@ mod tests {
         );
         assert!(command.contains(r#""C:\Program Files\AfterEffectsMcp\ae-mcp.exe""#));
         assert!(command.contains(r#""C:\Users\foo bar\ae-mcp.toml""#));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_service_actions_are_explicitly_unsupported() {
+        let cfg = ServiceConfig {
+            service_name: "AfterEffectsMcpDaemon".to_string(),
+            display_name: "After Effects MCP Daemon".to_string(),
+            description: "test".to_string(),
+            binary_path: std::env::current_exe().expect("current executable"),
+            args: vec!["serve-daemon".to_string()],
+        };
+
+        let error = run(ServiceAction::Status, &cfg).expect_err("Windows service must fail");
+        let message = error.to_string();
+        assert!(message.contains("not supported on Windows"));
+        assert!(message.contains("autostart"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parses_reg_sz_command_value() {
+        let output = concat!(
+            "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n",
+            "    AfterEffectsMcp    REG_SZ    \"C:\\Program Files\\AfterEffectsMcp\\ae-mcp.exe\" serve-daemon\n"
+        );
+        assert_eq!(
+            parse_reg_sz_value(output).as_deref(),
+            Some(r#""C:\Program Files\AfterEffectsMcp\ae-mcp.exe" serve-daemon"#)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn stale_pid_file_is_removed() {
+        let cfg = test_autostart_config(std::env::current_exe().expect("current executable"));
+        std::fs::write(
+            &cfg.pid_file,
+            format!("{}\n{}\n", u32::MAX, cfg.binary_path.display()),
+        )
+        .expect("write stale pid file");
+
+        assert_eq!(
+            daemon_state(&cfg).expect("daemon state"),
+            DaemonState::NotRunning
+        );
+        cleanup_stale_pid_file(&cfg).expect("remove stale pid file");
+        assert!(!cfg.pid_file.exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn moved_executable_is_reported_without_losing_live_pid() {
+        let running_executable = std::env::current_exe().expect("current executable");
+        let moved_executable = running_executable.with_file_name("moved-ae-mcp.exe");
+        let cfg = test_autostart_config(moved_executable);
+        std::fs::write(
+            &cfg.pid_file,
+            format!("{}\n{}\n", std::process::id(), running_executable.display()),
+        )
+        .expect("write pid file");
+
+        let state = daemon_state(&cfg).expect("daemon state");
+        assert!(matches!(
+            state,
+            DaemonState::Running {
+                executable_matches: false,
+                ..
+            }
+        ));
+        cleanup_stale_pid_file(&cfg).expect("live pid file must be retained");
+        assert!(cfg.pid_file.exists());
+        let error = autostart_start(&cfg).expect_err("old executable prevents duplicate start");
+        assert!(error.to_string().contains("Stop it before starting"));
+
+        std::fs::remove_file(&cfg.pid_file).expect("remove test pid file");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn running_daemon_prevents_duplicate_start() {
+        let executable = std::env::current_exe().expect("current executable");
+        let cfg = test_autostart_config(executable.clone());
+        std::fs::write(
+            &cfg.pid_file,
+            format!("{}\n{}\n", std::process::id(), executable.display()),
+        )
+        .expect("write pid file");
+
+        let result = autostart_start(&cfg).expect("existing process is not an error");
+        assert!(result.contains("already running"));
+
+        std::fs::remove_file(&cfg.pid_file).expect("remove test pid file");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn malformed_pid_file_is_cleaned_before_startup_checks() {
+        let cfg = test_autostart_config(std::env::current_exe().expect("current executable"));
+        std::fs::write(&cfg.pid_file, "not-a-pid\n").expect("write malformed pid file");
+
+        cleanup_stale_pid_file(&cfg).expect("remove malformed pid file");
+        assert!(!cfg.pid_file.exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn child_exit_before_pid_publication_is_an_error() {
+        let command = std::env::var_os("ComSpec").expect("ComSpec");
+        let mut cfg = test_autostart_config(PathBuf::from(command));
+        cfg.args = vec!["/C".to_string(), "exit".to_string(), "7".to_string()];
+
+        let error = autostart_start(&cfg).expect_err("early child exit must fail");
+        assert!(error.to_string().contains("exited before publishing"));
+    }
+
+    #[cfg(target_os = "windows")]
+    fn test_autostart_config(binary_path: PathBuf) -> AutostartConfig {
+        let unique = format!(
+            "adobe-mcp-platform-service-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        );
+        AutostartConfig {
+            app_name: "test".to_string(),
+            entry_name: "test".to_string(),
+            binary_path,
+            args: vec!["serve-daemon".to_string()],
+            pid_file: std::env::temp_dir().join(format!("{unique}.pid")),
+        }
     }
 
     #[cfg(target_os = "windows")]

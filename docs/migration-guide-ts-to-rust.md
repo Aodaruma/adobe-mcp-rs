@@ -1,13 +1,13 @@
 # TS版からRust版への移行ガイド（Stage 7）
 
-- 最終更新: 2026-03-23
+- 最終更新: 2026-07-15
 - 対象: `after-effects-mcp` (Node/TS) から `ae-mcp` (Rust) への移行
 
 ## 1. 変更概要
 
 1. MCPサーバー本体を Node.js から Rust バイナリへ移行
 2. AEブリッジ方式（`ae_command.json` / `ae_mcp_result.json`）は互換維持
-3. サービス化コマンド（`service install/start/...`）を追加
+3. OS別の常駐化コマンド（Windows `autostart` / macOS `service`）を追加
 
 ## 2. コマンド対応表
 
@@ -24,7 +24,7 @@
 2. AEブリッジパネルをシェルスクリプトで導入
 3. CodexのMCP設定を `ae-mcp serve-stdio` に更新
 4. 公開Tool `list-ae-instances` / `run-bridge-test` の最小動作確認
-5. 必要に応じて `service install` で常駐化
+5. 必要に応じて Windows は `autostart install`、macOS は `service install` で常駐化
 
 ## 4. 互換性メモ
 

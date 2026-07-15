@@ -301,7 +301,7 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 
 ## 8. host 別 daemon の常駐化
 
-各 host broker を常駐させる場合、Windows は対象 binary の `autostart`、macOS は `service` を使います。複数 host を利用する場合は binary ごとに登録します。既定 address は AE `127.0.0.1:47655`、Premiere `:47656`、Photoshop `:47657`、Illustrator `:47658` です。
+各 host broker を常駐させる場合、Windows は対象 binary の `autostart`、macOS は launchd を操作する `service` を使います。Windows Service は実装しておらず、Windows 版 CLI は `service` を公開しません。macOS 版 CLI は逆に `autostart` を公開しません。複数 host を利用する場合は binary ごとに登録します。既定 address は AE `127.0.0.1:47655`、Premiere `:47656`、Photoshop `:47657`、Illustrator `:47658` です。
 
 ### 8.1 Windows
 
@@ -313,6 +313,16 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 .\target\release\<host>-mcp.exe autostart uninstall
 ```
 
+- `install`: 現在のユーザーの `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` へ次回ログイン用コマンドを登録または更新する。daemon は起動しない
+- `start`: daemon を即時起動する。同じ実行ファイルの daemon が稼働中なら二重起動せず `already running` を返す
+- `status`: Run key の登録コマンドと PID ファイルを検証する。exe の移動後に登録が古い場合は `outdated` を表示する
+- `stop`: PID ファイルに記録された実行ファイルと実プロセスを照合して停止する。移動前の exe が稼働中でも対象を取り違えない
+- `uninstall`: Run key のみ削除する。稼働中 daemon も止める場合は先に `stop` を実行する
+
+exe を移動・更新した後に旧 daemon が残っている場合、`start` は二重起動を避けるため失敗します。`stop`、`install`、`start` の順に実行してください。stale または壊れた PID ファイルは `start` / `stop` 時に除去されます。
+
+Windows MSI は初回インストール時に autostart を勝手に有効化しません。ユーザーが既に登録済みの場合だけ upgrade 時に新しいインストール先へ Run key を修復し、通常 uninstall 時にはアンインストールを実行した現在ユーザーの daemon を停止して登録を削除します。別ユーザーの HKCU 登録は各ユーザーで `autostart stop` と `autostart uninstall` を実行してください。
+
 ### 8.2 macOS
 
 ```bash
@@ -322,6 +332,8 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 ./target/release/<host>-mcp service stop
 ./target/release/<host>-mcp service uninstall
 ```
+
+`service` はユーザーの `~/Library/LaunchAgents` に launchd plist を配置し、`install|start|status|stop|uninstall` を操作します。
 
 ## 9. よくあるトラブル
 

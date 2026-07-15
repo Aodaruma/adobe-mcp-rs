@@ -1,12 +1,12 @@
 # インストーラ E2E 手順（Stage 5）
 
-- 最終更新: 2026-06-26
-- 対象: Rust版 `ae-mcp` の Windows/macOS インストーラ検証
+- 最終更新: 2026-07-15
+- 対象: Rust版 `ae-mcp` / `pr-mcp` / `ps-mcp` / `ai-mcp` の Windows/macOS インストーラ検証
 
 ## 1. 目的
 
 1. クリーン環境で導入から起動確認までを再現する
-2. インストーラ導入後に `service` サブコマンドが動作することを確認する
+2. インストーラ導入後に Windows は `autostart`、macOS は launchd `service` が動作することを確認する
 3. AEブリッジとMCPの最小往復が成立することを確認する
 
 ## 2. 生成物
@@ -41,23 +41,30 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 2. Windows MSI の場合、Custom Setup 画面で host bridge feature を選択できる
 3. Windows MSI の場合、インストール中に別の PowerShell ウィンドウが表示されない
 4. Windows MSI の場合、`C:\ProgramData\AfterEffectsMcp\install-report.json` で host integration の結果一覧を確認できる
-5. `ae-mcp` バイナリが所定の場所へ配置される
-6. `ae-mcp --help` が実行できる
+5. 4 host の MCP バイナリが所定の場所へ配置される
+6. 4 binary の `--help` が実行できる
+7. Windows help は `autostart` を含み `service` を含まない。macOS help は `service` を含み `autostart` を含まない
 
 ## 3.2 Windows autostart / macOS service
 
-1. Windows: `autostart install`
-2. Windows: `autostart start`
-3. Windows: `autostart status`
-4. Windows: `autostart stop`
-5. Windows: `autostart uninstall`
-6. macOS: `service install`
-7. macOS: `service start`
-8. macOS: `service status`
-9. macOS: `service stop`
-10. macOS: `service uninstall`
+各 host binary で次を確認する。
 
-## 3.3 MCP + AE ブリッジ
+1. Windows: 初期 `autostart status` は `not installed` を返す
+2. Windows: `autostart install` 後、現在ユーザーの Run key が現在の絶対 exe パスと `serve-daemon` を保持する
+3. Windows: `autostart start` を2回実行し、2回目は新規 process を作らず `already running` を返す
+4. Windows: `autostart stop` 後に `not running`、`autostart uninstall` 後に `not installed` になる
+5. Windows: stale PID は除去され、別 exe の生存 PID は勝手に除去・上書きされず `start` が失敗する
+6. macOS: `service install`、`start`、`status`、`stop`、`uninstall` を順に実行する
+
+## 3.3 Windows MSI の install / upgrade / uninstall
+
+1. 初回 install では4 hostとも Run key が新規作成されない
+2. 任意の host で `autostart install` し、MSI upgrade 後も opt-in が維持され、登録値が新しいインストール先を指す
+3. MSI upgrade 中の旧製品削除では Run key が一時削除されない
+4. 通常 uninstall では、アンインストールを実行した現在ユーザーについて登録済み daemon が停止し、4 host の既知 Run key が削除される
+5. installer log に repair / stop / remove の結果が記録される
+
+## 3.4 MCP + AE ブリッジ
 
 1. MSI/pkg で導入した場合、`mcp-bridge-auto.jsx` が検出済み AE に自動配置されることを確認
 2. ポータブル版（zip/tar.gz）の場合は `mcp-bridge-auto.jsx` を手動配置

@@ -337,9 +337,19 @@ try {
                   DllEntry="WixQuietExec"
                   Execute="immediate"
                   Return="ignore" />
+    <SetProperty Id="RemoveUserAutostart"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -RemoveAutostart -NonInteractive"
+                 Before="RemoveUserAutostart"
+                 Sequence="execute" />
+    <CustomAction Id="RemoveUserAutostart"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="immediate"
+                  Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="InstallMachineHostIntegration" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE" />
       <Custom Action="InstallUserHostIntegration" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="RemoveUserAutostart" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
     <Feature Id="MainFeature" Title="Adobe MCP Core" Description="Installs the MCP command-line binaries and installer helper." Level="1" Display="expand">
       <ComponentRef Id="AeMcpExeComponent" />

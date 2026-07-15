@@ -112,21 +112,22 @@
    - サブコマンド:
      - `serve-stdio`
      - `serve-daemon`
-     - `service install|uninstall|start|stop|status`
+     - Windows: `autostart install|uninstall|start|stop|status`
+     - macOS: `service install|uninstall|start|stop|status`
      - `bridge health|tail|clear`
 2. `mcp-core`
    - MCPリソース/ツール/プロンプト定義
 3. `bridge-core`
    - JSONファイル読み書き、ポーリング、タイムアウト、結果検証
 4. `platform-service`
-   - Windows/macOSのサービス抽象化
+   - Windows current-user autostart / PID 管理と macOS launchd の抽象化
 
 ## 7.2 実行モード
 
 1. `stdio`モード:
    - MCPクライアントが都度プロセス起動する互換モード。
 2. `daemon`モード:
-   - OSサービスとして常駐し、ローカルIPCまたはHTTP/SSEで受け付ける拡張モード。
+   - Windows はユーザー別 autostart、macOS は launchd で常駐し、ローカルIPCまたはHTTP/SSEで受け付ける拡張モード。
 
 注: 初期リリースでは`stdio`互換を優先し、daemon公開インターフェースは内部APIとして開始してよい。
 
@@ -135,9 +136,9 @@
 ## 8.1 Windows
 
 1. インストーラが`ae-mcp`バイナリを配置。
-2. サービス名（案）: `AfterEffectsMcpDaemon`
-3. インストーラ完了時にサービス登録と自動起動設定を選択可能にする。
-4. アンインストール時にサービス停止・削除を実施。
+2. Windows Service は実装せず、現在ユーザーの Run key と PID ファイルで管理する。
+3. 初回インストールでは autostart を暗黙に有効化せず、既存 opt-in 登録だけを upgrade 時に修復する。
+4. 通常アンインストール時に登録済み daemon の停止と Run key 削除を実施。
 
 ## 8.2 macOS
 
@@ -170,10 +171,10 @@
 1. プロトコル更新が速いため、導入時点のバージョンを固定
 2. MCP仕様の日付版を明示して互換管理
 
-## 9.3 サービス管理
+## 9.3 常駐管理
 
-- クロスプラットフォーム第一候補: `service-manager`
-- Windowsネイティブ制御の詳細対応候補: `windows-service`
+- Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` と PID / exe パス照合
+- macOS: ユーザー単位 launchd LaunchAgent
 
 ## 9.4 配布/インストーラ
 

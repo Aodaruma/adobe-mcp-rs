@@ -9,6 +9,7 @@ param(
     [switch]$InteractiveInstall,
     [switch]$LaunchInteractiveInstall,
     [string]$CleanupLaunchTaskName,
+    [switch]$RemoveAutostart,
     [switch]$NonInteractive,
     [switch]$SkipHostBridgeInstall,
     [switch]$SkipUserInstall
@@ -1449,6 +1450,93 @@ function Update-CodexMcpConfig {
     Add-InstallReport -Key "codex-config" -Status "installed" -Message "Updated $updated Codex config file(s)."
 }
 
+function Get-McpAutostartEntries {
+    return @(
+        [pscustomobject]@{ Key = "aftereffects"; EntryName = "AfterEffectsMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $AeMcpPath -FileName "ae-mcp.exe") },
+        [pscustomobject]@{ Key = "premiere"; EntryName = "PremiereMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $PrMcpPath -FileName "pr-mcp.exe") },
+        [pscustomobject]@{ Key = "photoshop"; EntryName = "PhotoshopMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $PsMcpPath -FileName "ps-mcp.exe") },
+        [pscustomobject]@{ Key = "illustrator"; EntryName = "IllustratorMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $AiMcpPath -FileName "ai-mcp.exe") }
+    )
+}
+
+function Get-AutostartRegistryValue {
+    param([string]$EntryName)
+
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    try {
+        return Get-ItemPropertyValue -LiteralPath $runKey -Name $EntryName -ErrorAction Stop
+    } catch {
+        return $null
+    }
+}
+
+function Repair-McpAutostartRegistrations {
+    foreach ($entry in Get-McpAutostartEntries) {
+        $registered = Get-AutostartRegistryValue -EntryName $entry.EntryName
+        if ($null -eq $registered) {
+            Add-InstallReport -Key ("autostart-{0}" -f $entry.Key) -Status "skipped" -Message "Current user has not opted in to autostart."
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($entry.BinaryPath) -or -not (Test-Path -LiteralPath $entry.BinaryPath)) {
+            Add-InstallReport -Key ("autostart-{0}" -f $entry.Key) -Status "failed" -Message "Registered autostart could not be repaired because the MCP binary was not found."
+            continue
+        }
+
+        try {
+            $output = & $entry.BinaryPath autostart --entry-name $entry.EntryName install 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "autostart install exited with code $LASTEXITCODE`: $output"
+            }
+            Write-InstallerLog -Message ("Repaired current-user autostart '{0}': {1}" -f $entry.EntryName, $output)
+            Add-InstallReport -Key ("autostart-{0}" -f $entry.Key) -Status "installed" -Message "Existing current-user registration updated for the installed executable."
+        } catch {
+            Write-InstallerLog -Message ("Failed to repair autostart '{0}': {1}" -f $entry.EntryName, $_.Exception.Message)
+            Add-InstallReport -Key ("autostart-{0}" -f $entry.Key) -Status "failed" -Message $_.Exception.Message
+        }
+    }
+}
+
+function Remove-McpAutostartRegistrations {
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    foreach ($entry in Get-McpAutostartEntries) {
+        if ($null -eq (Get-AutostartRegistryValue -EntryName $entry.EntryName)) {
+            continue
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($entry.BinaryPath) -and (Test-Path -LiteralPath $entry.BinaryPath)) {
+            try {
+                $stopOutput = & $entry.BinaryPath autostart --entry-name $entry.EntryName stop 2>&1
+                Write-InstallerLog -Message ("Stopped daemon for '{0}' during uninstall: {1}" -f $entry.EntryName, $stopOutput)
+            } catch {
+                Write-InstallerLog -Message ("Failed to stop daemon for '{0}' during uninstall: {1}" -f $entry.EntryName, $_.Exception.Message)
+            }
+
+            try {
+                $removeOutput = & $entry.BinaryPath autostart --entry-name $entry.EntryName uninstall 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-InstallerLog -Message ("Removed current-user autostart '{0}': {1}" -f $entry.EntryName, $removeOutput)
+                    continue
+                }
+                Write-InstallerLog -Message ("autostart uninstall for '{0}' exited with code {1}: {2}" -f $entry.EntryName, $LASTEXITCODE, $removeOutput)
+            } catch {
+                Write-InstallerLog -Message ("Failed to invoke autostart uninstall for '{0}': {1}" -f $entry.EntryName, $_.Exception.Message)
+            }
+        }
+
+        try {
+            Remove-ItemProperty -LiteralPath $runKey -Name $entry.EntryName -ErrorAction Stop
+            Write-InstallerLog -Message ("Removed current-user autostart '{0}' through registry fallback." -f $entry.EntryName)
+        } catch {
+            Write-InstallerLog -Message ("Failed to remove current-user autostart '{0}': {1}" -f $entry.EntryName, $_.Exception.Message)
+        }
+    }
+}
+
+if ($RemoveAutostart) {
+    Remove-McpAutostartRegistrations
+    exit 0
+}
+
 if ($LaunchInteractiveInstall) {
     try {
         Start-InteractiveInstallerProcess
@@ -1581,6 +1669,7 @@ if (-not $SkipUserInstall) {
     Install-PremiereUxpBridge
     Install-PhotoshopUxpBridge
     Update-CodexMcpConfig
+    Repair-McpAutostartRegistrations
 }
 
 if ($FinalizeInstall -or $InteractiveInstall) {

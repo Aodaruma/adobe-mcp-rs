@@ -23,12 +23,13 @@ enum Commands {
         #[arg(long)]
         once: bool,
     },
-    /// Daemon mode intended for OS service execution.
+    /// Daemon broker process (managed by autostart on Windows or launchd on macOS).
     ServeDaemon {
         #[arg(long)]
         once: bool,
     },
-    /// Service management (Windows Service / macOS launchd).
+    /// macOS launchd service management.
+    #[cfg(target_os = "macos")]
     Service {
         #[arg(long, default_value = "PhotoshopMcpDaemon")]
         service_name: String,
@@ -37,7 +38,8 @@ enum Commands {
         #[command(subcommand)]
         command: ServiceCommands,
     },
-    /// Windows autostart management for the daemon.
+    /// Windows current-user autostart management (HKCU Run key and daemon PID).
+    #[cfg(target_os = "windows")]
     Autostart {
         #[arg(long, default_value = "PhotoshopMcp")]
         entry_name: String,
@@ -70,6 +72,7 @@ enum BridgeCommands {
 }
 
 #[derive(Debug, Subcommand)]
+#[cfg(target_os = "macos")]
 enum ServiceCommands {
     Install,
     Uninstall,
@@ -79,6 +82,7 @@ enum ServiceCommands {
 }
 
 #[derive(Debug, Subcommand)]
+#[cfg(target_os = "windows")]
 enum AutostartCommands {
     Install,
     Uninstall,
@@ -101,6 +105,7 @@ fn init_tracing(level: &str) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let cli_config = cli.config.clone();
 
     let cfg = AppConfig::load_for_host(cli.config.as_deref(), PHOTOSHOP_HOST)?;
@@ -111,11 +116,13 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::ServeStdio { once } => serve_stdio(cfg, once).await,
         Commands::ServeDaemon { once } => serve_daemon(cfg, once).await,
+        #[cfg(target_os = "macos")]
         Commands::Service {
             service_name,
             display_name,
             command,
         } => run_service_command(cli_config, service_name, display_name, command),
+        #[cfg(target_os = "windows")]
         Commands::Autostart {
             entry_name,
             command,
@@ -146,6 +153,7 @@ async fn serve_daemon(cfg: AppConfig, once: bool) -> Result<()> {
     daemon_core::run_daemon_server(cfg)
 }
 
+#[cfg(target_os = "macos")]
 fn run_service_command(
     cli_config: Option<PathBuf>,
     service_name: String,
@@ -180,6 +188,7 @@ fn run_service_command(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn run_autostart_command(
     cli_config: Option<PathBuf>,
     cfg: AppConfig,
@@ -239,5 +248,23 @@ fn run_bridge_command(cfg: AppConfig, command: BridgeCommands) -> Result<()> {
             println!("{raw}");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn platform_management_commands_match_the_target_os() {
+        let command = Cli::command();
+        let names = command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names.contains(&"service"), cfg!(target_os = "macos"));
+        assert_eq!(names.contains(&"autostart"), cfg!(target_os = "windows"));
     }
 }

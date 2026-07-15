@@ -33,7 +33,7 @@ The workspace is split into reusable Rust crates and host-specific binaries:
 | `crates/mcp-core` | Shared config, MCP tool/prompt specs, bridge path defaults |
 | `crates/bridge-core` | File bridge client, instance discovery, request registry, result retention |
 | `crates/daemon-core` | Shared TCP broker/client, per-instance scheduler, global-exclusive gate |
-| `crates/platform-service` | Windows/macOS service and autostart helpers |
+| `crates/platform-service` | Windows current-user autostart and macOS launchd helpers |
 | `crates/pr-core` | Premiere Pro tool specs, prompts, and allowlisted script names |
 | `crates/ps-core` | Photoshop tool specs, help text, and allowlisted script names |
 | `src/scripts` | After Effects JSX bridge and helper scripts |

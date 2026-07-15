@@ -17,7 +17,7 @@
 | 1 | Rust土台構築 | Rustプロジェクト骨格を作る | Cargo workspace、CLI、ログ、設定読み込み | `serve-stdio`が起動しヘルス応答 |
 | 2 | ブリッジ層移植 | JSONファイル連携をRust化 | command/result I/O、ポーリング、タイムアウト | `run-script` + `get-results`が動作 |
 | 3 | MCP互換移植 | 現行機能をRustに寄せる | resource/prompt/tool一式 | 主要ツール互換テストが通過 |
-| 4 | サービス化 | 常駐運用を実装 | daemonモード、service制御CLI | Win/macで手動サービス起動成功 |
+| 4 | 常駐化 | OS別の常駐運用を実装 | daemonモード、Windows autostart / macOS launchd制御CLI | Win/macで手動起動成功 |
 | 5 | インストーラ化 | 配布/導入を自動化 | Win/macインストーラ、アンインストーラ | 1コマンド導入・解除が成功 |
 | 6 | 署名/公証とRC | 配布品質を上げる | 署名・公証パイプライン、RC版 | セキュリティ警告なしで配布可能 |
 | 7 | GAリリース | 本番移行完了 | v1.0.0、移行ガイド、運用Runbook | TS版代替として運用可能 |
@@ -80,12 +80,12 @@
 ### 完了条件
 1. Stage 0のゴールデンレスポンス比較で重大差分なし。
 
-## Stage 4: サービス化（2週間）
+## Stage 4: OS別常駐化（2週間）
 
 ### タスク
 1. daemon実行モード追加。
-2. `service install|uninstall|start|stop|status`実装。
-3. Windows Service / launchdの最小登録動作検証。
+2. Windows `autostart install|uninstall|start|stop|status` と macOS `service install|uninstall|start|stop|status` を実装。
+3. Windows current-user Run key / PID管理と macOS launchd の最小登録動作検証。
 
 ### 成果物
 1. サービス制御CLI
@@ -159,4 +159,3 @@
 2. `setLayerKeyframe` / `setLayerExpression`
 3. `apply-effect` / `apply-effect-template`
 4. 補助ツール（`test-animation`, `run-bridge-test`, ヘルプ系）
-
