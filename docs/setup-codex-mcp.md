@@ -1,15 +1,17 @@
 # adobe-mcp-rs セットアップ手順（Codex MCP設定込み）
 
-- 最終更新: 2026-06-25
+- 最終更新: 2026-07-15
 - 対象OS: Windows / macOS
 - 対象: Rust版 `ae-mcp` / `pr-mcp` / `ps-mcp` / `ai-mcp` を Codex のカスタムMCPサーバーとして使う
 
 ## 1. 前提
 
-1. Adobe After Effects（2022以降推奨）、Premiere Pro、Photoshop、Illustrator のうち操作対象のアプリ
+1. 操作対象の Adobe host。repository の manifest 上の最小 version は Premiere Pro UXP 25.6、Premiere Pro CEP fallback 24.0、Photoshop UXP 23.3、Illustrator CEP 24.0。After Effects は 2022 以降を推奨
 2. Rust（stable）と Cargo
-3. After Effects は `mcp-bridge-auto.jsx`、Premiere Pro / Photoshop は UXP bridge panel、Illustrator は CEP bridge panel を開けること
+3. After Effects は ScriptUI / ExtendScript の `mcp-bridge-auto.jsx`、Premiere Pro は UXP（CEP fallback あり）、Photoshop は UXP、Illustrator は CEP / ExtendScript の bridge panel を開けること
 4. Codex CLI もしくは Codex IDE Extension が利用可能であること
+
+現在の状態は After Effects が **Primary**、Premiere Pro / Photoshop / Illustrator が **Experimental** です。Experimental host は binary と最小 MCP surface を実装済みですが、実機 E2E、配布、runtime compatibility、broker / service の同等性が未完成です。詳しい基準と制約は [Adobe host support status and roadmap](adobe-host-roadmap.md) を参照してください。
 
 ## 2. Rustバイナリをビルド
 
@@ -76,6 +78,14 @@ After Effects 側で:
 2. 再起動
 3. `Window > mcp-bridge-auto.jsx` を開く
 4. `Auto-run commands` を ON
+
+別 terminal で AE broker を起動します。`serve-stdio` からの instance routing、待機、retained result 取得にはこの process が必要です。
+
+```powershell
+.\target\release\ae-mcp.exe serve-daemon
+```
+
+常駐化する場合は「7. After Effects daemon の常駐化」を参照してください。
 
 ## 4. CodexにMCPサーバーを登録（推奨: CLI）
 
@@ -187,9 +197,12 @@ enabled = true
 
 1. After Effects を起動
 2. `Window > mcp-bridge-auto.jsx` を開き、`Auto-run commands` を ON
-3. Codex 側で `aftereffects` サーバーが有効であることを確認
-4. Codex から `run-script` (`script=listCompositions`) を実行
-5. 続けて `get-results` を実行し、JSON結果が返ることを確認
+3. `ae-mcp serve-daemon` を起動
+4. Codex 側で `aftereffects` サーバーが有効であることを確認
+5. Codex から `list-ae-instances` を実行し、対象 instance と version を確認
+6. `run-bridge-test` を実行し、bridge 結果が返ることを確認
+
+`health` は binary 起動と bridge root の表示だけを確認し、Adobe host 内での実行成功までは確認しません。
 
 補足:
 - ブリッジファイルは `~/Documents/ae-mcp-bridge/` に作成されます
@@ -205,6 +218,8 @@ enabled = true
   - `ai_command.json`
   - `ai_mcp_result.json`
 
+root 直下の command / result は compatibility 用です。複数 instance の routing では `instances/<instanceId>/heartbeat.json` と host 別 command / result、retained result では `registry/<requestId>.json` も使います。
+
 ### 6.1 Premiere Pro / Photoshop の UXP bridge と Illustrator CEP bridge
 
 Windows installer を使う場合は、MSI の Custom Setup 画面で After Effects / Premiere Pro / Photoshop / Illustrator の bridge component を選択できます。MSI 本体のファイル配置後、選択された host integration と Codex config の更新は非表示の custom action として実行されるため、通常は別の PowerShell ウィンドウは表示されません。
@@ -213,21 +228,23 @@ host integration の結果を確認したい場合は、`C:\ProgramData\AfterEff
 
 Premiere Pro:
 
-1. Adobe UXP Developer Tool で `src/premiere/uxp/mcp-bridge-premiere/manifest.json` を読み込む
+1. Premiere Pro 25.6+ では Developer Mode を有効にし、Adobe UXP Developer Tool で `src/premiere/uxp/mcp-bridge-premiere/manifest.json` を読み込む。24.x の CEP は fallback として扱う
 2. Premiere Pro で `Window > UXP Plugins > Premiere MCP Bridge` を開く
 3. `Auto-run commands` を ON
 
 Photoshop:
 
-1. Adobe UXP Developer Tool で `src/photoshop/uxp/mcp-bridge-photoshop/manifest.json` を読み込む
+1. Photoshop 23.3+ で Adobe UXP Developer Tool から `src/photoshop/uxp/mcp-bridge-photoshop/manifest.json` を読み込む
 2. Photoshop の Plugins menu から `Photoshop MCP Bridge` を開く
 3. `Auto-run commands` を ON
 
 Illustrator:
 
-1. `src/illustrator/cep/mcp-bridge-illustrator` を CEP extensions directory に配置
+1. Illustrator 24.0+ で `src/illustrator/cep/mcp-bridge-illustrator` を CEP extensions directory に配置。unsigned local extension は CEP debug mode が必要な場合がある
 2. Illustrator で `Window > Extensions > Illustrator MCP Bridge` を開く
 3. `Auto-run commands` を ON
+
+Premiere Pro / Photoshop / Illustrator は MCP stdio server が file bridge を直接操作します。各 `serve-daemon` は現在 request broker ではなく、通常の MCP 操作には起動不要です。
 
 ### 6.2 LLM運用時の推奨プロンプト（重要）
 
@@ -254,9 +271,9 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 ユーザー操作に引き継ぐときだけ interactive=true を使ってダイアログ表示を許可する。
 ```
 
-## 7. daemon 常駐化を使う場合
+## 7. After Effects daemon の常駐化
 
-Windows は `autostart`、macOS は `service` を使います。
+After Effects broker を常駐させる場合、Windows は `autostart`、macOS は `service` を使います。Premiere Pro / Photoshop / Illustrator の同名 command は現在 heartbeat process の管理に留まるため、この手順の対象外です。
 
 ### 7.1 Windows
 

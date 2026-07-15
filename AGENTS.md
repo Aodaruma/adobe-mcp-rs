@@ -2,12 +2,16 @@
 
 このファイルは、`adobe-mcp-rs` の現状と運用注意点を、作業エージェント向けに簡潔にまとめたものです。
 
-## 現状サマリ（2026-06-25）
+## 現状サマリ（2026-07-15）
 
 - repository 名は Adobe アプリ横断の `adobe-mcp-rs` へ変更済み。
-- 主要実装は Rust バイナリ `ae-mcp`（`serve-stdio` / `serve-daemon` / `service` / `bridge`）で稼働。
-- Premiere Pro 向けに `pr-mcp` と UXP bridge（CEP fallback あり）が追加済み。ただし `pr-mcp serve-daemon` は AE broker と同等ではないため実験的扱い。
-- Photoshop / Illustrator は未実装。`docs/adobe-host-roadmap.md` に今後の方針を記載。
+- **Primary** は After Effects。Rust バイナリ `ae-mcp`、ScriptUI / ExtendScript bridge、TCP daemon broker、instance routing / retained result が実装済み。
+- **Experimental** は Premiere Pro / Photoshop / Illustrator。各 host の Rust バイナリと bridge の初期実装はあるが、実機 E2E、配布、daemon broker の同等性が未完了。
+  - Premiere Pro: `pr-mcp` + UXP（25.6+）。CEP / ExtendScript（24.0+）は fallback。
+  - Photoshop: `ps-mcp` + UXP（23.3+）。読み取り中心の小さな allowlist と任意 UXP code 実行。
+  - Illustrator: `ai-mcp` + CEP / ExtendScript（24.0+）。document / artboard / layer 読み取りと export の初期実装。
+- `pr-mcp` / `ps-mcp` / `ai-mcp` の `serve-daemon` は PID file と heartbeat log を維持するだけで、AE の request broker とは同等ではない。MCP stdio server が file bridge を直接操作する。
+- 状態区分の基準、host 別 runtime / 最小機能 / 制約の source of truth は `docs/adobe-host-roadmap.md`。
 - npm/TypeScript サーバー実装は削除済み（`package.json` / `src/index.ts` 等は廃止）。
 - AE 連携は `mcp-bridge-auto.jsx` 経由（`~/Documents/ae-mcp-bridge` の command/result ファイル）。
 - `applyEffect` / `applyEffectTemplate` は ExtendScript 互換化済み（`Object.keys` 非依存）。
@@ -37,11 +41,14 @@
 ## 推奨の確認コマンド
 
 ```powershell
-cargo build --release -p ae-mcp
+cargo test --workspace
+cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp
 .\target\release\ae-mcp.exe health
 .\target\release\ae-mcp.exe bridge run-script --script listCompositions --parameters '{}'
 .\target\release\ae-mcp.exe bridge get-results
 ```
+
+`health` は binary と bridge root の確認に留まり、Adobe host 内の実行確認にはならない。host panel の `Auto-run commands` を有効にし、`list-*-instances` と `run-bridge-test` まで確認する。AE の MCP 経路では `ae-mcp serve-daemon` も必要。
 
 ## ドキュメント
 

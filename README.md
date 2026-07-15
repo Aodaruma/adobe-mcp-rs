@@ -8,12 +8,16 @@ This repository was renamed from `after-effects-mcp-rs` to `adobe-mcp-rs` so the
 
 ## Status
 
-| Host app | Binary | Bridge | Status |
-|---|---|---|---|
-| After Effects | `ae-mcp` | ScriptUI / JSX panel | Primary supported path |
-| Premiere Pro | `pr-mcp` | UXP panel, CEP fallback | Experimental; API surface exists, install/release path still needs hardening |
-| Photoshop | `ps-mcp` | UXP panel | Experimental; small generic execution and read-only script surface |
-| Illustrator | `ai-mcp` | CEP / ExtendScript panel | Experimental; small generic execution and document/artboard/layer script surface |
+Last synchronized with the code on 2026-07-15.
+
+| Host app | Binary | Bridge runtime | Status | Current boundary |
+|---|---|---|---|---|
+| After Effects | `ae-mcp` | ScriptUI / ExtendScript JSX | **Primary** | Requires the panel, Auto-run, and the `serve-daemon` broker |
+| Premiere Pro | `pr-mcp` | UXP 25.6+, CEP / ExtendScript 24.0+ fallback | **Experimental** | Initial sequence/export surface; daemon is not a request broker |
+| Photoshop | `ps-mcp` | UXP 23.3+ (API v2) | **Experimental** | Initial generic execution and read-only document/layer surface |
+| Illustrator | `ai-mcp` | CEP / ExtendScript 24.0+ (CSXS 10) | **Experimental** | Initial document/artboard/layer/export surface; runtime packaging needs validation |
+
+**Primary** means the default operational path is implemented. **Experimental** means a binary, bridge, and minimal MCP surface exist, but real-host E2E, packaging, runtime compatibility, or broker/service parity still needs hardening. **Planned** is reserved for hosts without a usable binary-and-bridge pair. See [the host status source of truth](docs/adobe-host-roadmap.md) for the full criteria, runtime constraints, and verification procedure.
 
 ## Current Architecture
 
@@ -39,11 +43,11 @@ The workspace is split into reusable Rust crates and host-specific binaries:
 
 After Effects uses `ae-mcp serve-daemon` as a local broker. Bridge panels register under `~/Documents/ae-mcp-bridge/instances/<instanceId>/`, and MCP calls are routed to a target instance with retained `requestId` results.
 
-Premiere Pro currently reuses the same file-bridge pattern under `~/Documents/pr-mcp-bridge`. The UXP bridge is the intended path, while the CEP bridge remains a fallback. `pr-mcp serve-daemon` is not yet equivalent to the After Effects broker, so Premiere should still be treated as experimental.
+Premiere Pro currently reuses the same file-bridge pattern under `~/Documents/pr-mcp-bridge`. The UXP bridge is the intended path, while the CEP bridge remains a fallback. MCP stdio accesses the file bridge directly.
 
-Photoshop currently reuses the same file-bridge pattern under `~/Documents/ps-mcp-bridge`. The UXP bridge exposes a small tool surface for arbitrary UXP code plus allowlisted read-only document/layer inspection scripts. `ps-mcp serve-daemon` is a heartbeat daemon only, matching the current Premiere shape rather than the After Effects broker.
+Photoshop currently reuses the same file-bridge pattern under `~/Documents/ps-mcp-bridge`. The UXP bridge exposes a small tool surface for arbitrary UXP code plus allowlisted read-only document/layer inspection scripts. MCP stdio also accesses this file bridge directly.
 
-Illustrator currently uses a CEP panel backed by ExtendScript under `~/Documents/ai-mcp-bridge`. It shares the same `instances/` heartbeat and `registry/` retained-result pattern as Premiere and Photoshop. The Windows MSI exposes host bridges as selectable features in the standard Custom Setup screen, then deploys the selected After Effects, Premiere, Photoshop, Illustrator, and Codex config integration steps without opening a separate PowerShell window.
+Illustrator currently uses a CEP panel backed by ExtendScript under `~/Documents/ai-mcp-bridge`. It shares the same `instances/` heartbeat and `registry/` retained-result pattern as Premiere and Photoshop. For Premiere Pro, Photoshop, and Illustrator, `serve-daemon` only maintains a PID file and heartbeat log; it does not broker requests and is not required for normal MCP calls. The Windows MSI exposes host bridges as selectable features in the standard Custom Setup screen, then deploys the selected After Effects, Premiere, Photoshop, Illustrator, and Codex config integration steps without opening a separate PowerShell window.
 
 ## Setup
 
@@ -239,8 +243,8 @@ The next step is to make host support a first-class concept instead of cloning t
 1. Extract a small host adapter layer for host names, bridge root names, tool names, executable names, help text, and installer behavior.
 2. Normalize the bridge protocol across hosts: `heartbeat.json`, command files, result files, instance metadata, capabilities, and retained request records.
 3. Harden Premiere Pro to match the After Effects broker model or explicitly document it as direct file-bridge only.
-4. Harden the initial Photoshop UXP bridge with write operations, modal execution policies, and installer support.
-5. Harden the initial Illustrator CEP bridge with export coverage and current-version runtime validation. Keep UXP optional until public host support is clear enough for third-party automation.
+4. Harden the initial Photoshop UXP bridge with write operations, modal execution policies, and installer E2E coverage.
+5. Harden the initial Illustrator CEP bridge with export coverage, current-version runtime validation, signing, and installer E2E coverage. Keep UXP optional until public host support is clear enough for third-party automation.
 
 Detailed notes are in [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md).
 
