@@ -22,6 +22,8 @@
 .\scripts\package-windows.ps1 -OutputDir .\dist\windows -RequireMsi
 ```
 
+packagerは`~/.dotnet/tools/wix.exe`をmachine-wide PATHより優先する。repositoryで検証するWiX 5.0.2 extensionsと異なるWiX 7がPATHにあっても、別EULAやextension互換性へ意図せず切り替えない。
+
 ## 2.2 macOS
 
 - `adobe-mcp-rs-macos-universal.tar.gz`

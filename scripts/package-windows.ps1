@@ -13,13 +13,21 @@ function Ensure-Directory {
 }
 
 function Find-WixCommand {
+    # Prefer the repository-tested global .NET tool (currently WiX 5.x) over
+    # an unrelated machine-wide WiX found earlier on PATH. Newer WiX releases
+    # can require a separate EULA and are not guaranteed to load the pinned
+    # 5.0.2 extensions used below.
+    $dotnetTool = Join-Path $env:USERPROFILE ".dotnet\tools\wix.exe"
+    if (Test-Path -LiteralPath $dotnetTool) {
+        return (Resolve-Path -LiteralPath $dotnetTool).Path
+    }
+
     $wix = Get-Command wix -ErrorAction SilentlyContinue
     if ($wix) {
         return $wix.Source
     }
 
     $candidates = @(
-        (Join-Path $env:USERPROFILE ".dotnet\tools\wix.exe"),
         "C:\Program Files\WiX Toolset v7.0\bin\wix.exe",
         "C:\Program Files\WiX Toolset v6.0\bin\wix.exe",
         "C:\Program Files\WiX Toolset v5.0\bin\wix.exe"

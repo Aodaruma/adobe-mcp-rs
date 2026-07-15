@@ -32,6 +32,24 @@
             .replace(/\n/g, "\\n") + "\"";
     }
 
+    function quoteOptionalBoolean(value) {
+        if (typeof value === "boolean") {
+            return value ? "true" : "false";
+        }
+        // ExtendScript may expose a value returned across evalFile scopes as a
+        // Boolean wrapper instead of a primitive. Unwrap it before falling
+        // back to null so `new Boolean(false)` is not treated as truthy.
+        try {
+            if (value !== null && typeof value === "object" && value.valueOf) {
+                var primitive = value.valueOf();
+                if (typeof primitive === "boolean") {
+                    return primitive ? "true" : "false";
+                }
+            }
+        } catch (_booleanUnwrapError) {}
+        return "null";
+    }
+
     function writeBootstrapDiagnostic(state) {
         try {
             var bridgeFolder = new Folder(Folder.myDocuments.fsName + "/ae-mcp-bridge");
@@ -57,7 +75,7 @@
                 "  \"lifecycleMode\": " + quoteJson(details.lifecycleMode || "") + ",\n" +
                 "  \"runtimeId\": " + quoteJson(details.runtimeId || "") + ",\n" +
                 "  \"instanceId\": " + quoteJson(details.instanceId || "") + ",\n" +
-                "  \"running\": " + (details.running === true ? "true" : details.running === false ? "false" : "null") + "\n" +
+                "  \"running\": " + quoteOptionalBoolean(details.running) + "\n" +
                 "}\n");
             diagnosticFile.close();
         } catch (_diagnosticError) {}

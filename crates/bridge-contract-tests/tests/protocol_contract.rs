@@ -34,6 +34,12 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
     assert!(startup.contains("delete $.global.__adobeMcpBridgeBootstrapConfig"));
     assert!(startup.contains("ae_mcp_bootstrap.json"));
     assert!(startup.contains("writeBootstrapDiagnostic(state)"));
+    assert!(startup.contains("typeof value === \"boolean\""));
+    assert!(startup.contains("typeof value === \"object\" && value.valueOf"));
+    assert!(startup.contains("var primitive = value.valueOf()"));
+    assert!(startup.contains("typeof primitive === \"boolean\""));
+    assert!(startup.contains("quoteOptionalBoolean(details.running)"));
+    assert!(!startup.contains("details.running === true"));
     assert!(!startup.contains("findMenuCommandId"));
     assert!(!startup.contains("executeCommand"));
     assert!(!startup.contains("new Window"));
@@ -118,6 +124,16 @@ fn installers_package_ae_and_indesign_and_only_add_missing_codex_tables() {
         );
     }
     assert!(windows_package.contains("IndesignStartupFeature"));
+    let pinned_wix = windows_package
+        .find(".dotnet\\tools\\wix.exe")
+        .expect("Windows package should probe the pinned .NET WiX tool");
+    let path_wix = windows_package
+        .find("Get-Command wix")
+        .expect("Windows package should retain the PATH fallback");
+    assert!(
+        pinned_wix < path_wix,
+        "the pinned WiX tool must be preferred over an unrelated PATH version"
+    );
 
     for installer in [windows_repo_installer, windows_msi_installer] {
         assert!(installer.contains("Test-TomlTableExists"));
