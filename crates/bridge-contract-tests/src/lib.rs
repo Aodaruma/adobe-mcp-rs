@@ -73,9 +73,11 @@ impl ProtocolFixture {
             result_timeout_ms: 500,
             result_retention_seconds: 60,
             result_retention_max_seconds: 3_600,
-            // Keep ordinary contract scenarios tolerant of a busy CI host. Tests
-            // that exercise stale-heartbeat behavior opt into a shorter window.
-            instance_heartbeat_stale_ms: 1_000,
+            // Hosted Windows runners can starve the mock heartbeat thread for
+            // several seconds while contract tests execute in parallel. Keep
+            // ordinary scenarios tolerant of that scheduler delay; tests that
+            // exercise stale-heartbeat behavior opt into a shorter window.
+            instance_heartbeat_stale_ms: 10_000,
             daemon_addr: "127.0.0.1:0".to_string(),
             log_level: "error".to_string(),
             script_files: Default::default(),
