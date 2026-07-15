@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, ptr};
 
+mod script_contract;
+pub use script_contract::*;
+
 pub const ALLOWED_SCRIPTS: &[&str] = &[
     "listCompositions",
     "getProjectInfo",
@@ -59,6 +62,11 @@ pub const PUBLIC_TOOL_NAMES: &[&str] = &[
     "save-frame-png",
     "cleanup-preview-folder",
     "run-bridge-test",
+    "run-script",
+    "run-script-file",
+    "get-script-result",
+    "get-capabilities",
+    "cancel-script-request",
 ];
 
 /// Names accepted only so older MCP clients receive a migration path.
@@ -271,6 +279,15 @@ fn default_script_file_max_bytes() -> u64 {
 pub struct ScriptFileAudit {
     pub host_id: String,
     pub mode: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub runtime: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub risk_policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<RiskReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_effects: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_path: String,
     pub source_sha256: String,
     pub source_size_bytes: u64,
@@ -303,6 +320,8 @@ pub struct AppConfig {
     pub log_level: String,
     #[serde(default)]
     pub script_files: ScriptFilePolicyConfig,
+    #[serde(default)]
+    pub script_contract: ScriptContractConfig,
 }
 
 impl Default for AppConfig {
@@ -320,6 +339,7 @@ impl Default for AppConfig {
             daemon_addr: default_daemon_addr(),
             log_level: default_log_level(),
             script_files: ScriptFilePolicyConfig::default(),
+            script_contract: ScriptContractConfig::default(),
         }
     }
 }
@@ -410,6 +430,10 @@ pub fn validate_and_read_script_file(
         audit: ScriptFileAudit {
             host_id: cfg.host_id.clone(),
             mode: mode.to_string(),
+            runtime: String::new(),
+            risk_policy: String::new(),
+            risk: None,
+            declared_effects: Vec::new(),
             source_path: canonical_path.display().to_string(),
             source_sha256,
             source_size_bytes: code.len() as u64,
@@ -692,7 +716,7 @@ pub struct PromptArgument {
 }
 
 pub fn tool_specs() -> Vec<ToolSpec> {
-    vec![
+    let mut tools = vec![
         ToolSpec {
             name: "run-jsx",
             description: "Run unsafe JSX code in After Effects and wait for a result",
@@ -815,7 +839,9 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "properties": {}
             }),
         },
-    ]
+    ];
+    merge_canonical_script_tools(&mut tools, AFTER_EFFECTS_HOST);
+    tools
 }
 
 pub fn prompt_specs() -> Vec<PromptSpec> {
@@ -1026,6 +1052,11 @@ Public tools (the exact `tools/list` contract):
 - save-frame-png
 - cleanup-preview-folder
 - run-bridge-test
+- run-script
+- run-script-file
+- get-script-result
+- get-capabilities
+- cancel-script-request
 
 Best practices:
 - Use list-ae-instances when multiple After Effects versions are open
@@ -1042,9 +1073,10 @@ Best practices:
 - If a workflow deliberately needs user dialogs, treat it as an explicit unsafe run-jsx handoff rather than relying on a hidden compatibility-tool argument.
 
 Compatibility boundary:
-- Historical host-specific tool names and `run-script` are accepted only as hidden legacy dispatch entries and are not advertised by `tools/list`.
+- `run-script` with `code` is the canonical raw-script contract. The historical `run-script` form with `script` remains accepted as a legacy allowlist dispatch during migration.
 - A legacy call returns a deprecation notice naming the public replacement. New prompts and setup instructions never depend on those names.
-- `run-script` remains hidden because its allowlist is useful for compatibility, but its historical asynchronous direct-file semantics do not match the synchronous daemon-backed public contract. The trusted path/SHA-256 policy applies to public run-jsx-file and does not change that legacy transport.
+- `run-jsx`, `run-jsx-file`, and `get-jsx-result` remain compatibility aliases with their existing payload size behavior; new clients should use the canonical script names.
+- `riskPolicy=analyze` reports lexical findings but does not block. No risk policy is a sandbox or proof of safety. Cancellation is guaranteed only before dispatch; running host code is cooperative and may still complete.
 - MCP resources that query After Effects use the daemon broker. MCP prompts only return instructions; every operation named by those instructions uses a public daemon-backed tool or resource.
 
 Bridge script allowlist (compatibility/diagnostics, not public MCP tools):
@@ -1400,7 +1432,7 @@ result_file = "bridge/result.json"
             .contains(&json!("trusted")));
         let names = specs.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
         assert_eq!(names, PUBLIC_TOOL_NAMES);
-        assert!(!names.contains(&"run-script"));
+        assert!(names.contains(&"run-script"));
         assert!(!names.contains(&"render-queue-add"));
     }
 
@@ -1465,8 +1497,9 @@ result_file = "bridge/result.json"
                 "help is missing {tool}"
             );
         }
-        assert!(help.contains("hidden legacy dispatch"));
-        assert!(help.contains("`run-script` remains hidden"));
+        assert!(help.contains("historical `run-script` form"));
+        assert!(help.contains("compatibility aliases"));
+        assert!(help.contains("No risk policy is a sandbox"));
         assert!(!help.contains("Use render-queue-start"));
     }
 

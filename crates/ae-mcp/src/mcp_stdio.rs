@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use bridge_core::BridgeClient;
 use mcp_core::{
-    effects_help_text, general_help_text, legacy_tool_replacement, prompt_messages, prompt_specs,
-    tool_specs, validate_and_read_script_file, AppConfig,
+    capabilities_value, effects_help_text, general_help_text, legacy_tool_replacement,
+    prepare_script, prompt_messages, prompt_specs, tool_specs, validate_and_read_script_file,
+    AppConfig, AFTER_EFFECTS_HOST,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -214,13 +215,18 @@ fn tools_call_result(cfg: &AppConfig, bridge: &BridgeClient, params: &Value) -> 
 }
 
 fn dispatch_tool(cfg: &AppConfig, bridge: &BridgeClient, name: &str, args: Value) -> Value {
+    let canonical_run_script = name == "run-script" && args.get("code").is_some();
     let result = dispatch_tool_inner(cfg, bridge, name, args);
     let value = match result {
         Ok(value) => value,
         Err(e) => tool_error(format!("Error: {e}")),
     };
 
-    match legacy_tool_replacement(name) {
+    match if canonical_run_script {
+        None
+    } else {
+        legacy_tool_replacement(name)
+    } {
         Some(replacement) => with_legacy_tool_notice(value, name, replacement),
         None => value,
     }
@@ -259,10 +265,13 @@ fn dispatch_tool_inner(
     args: Value,
 ) -> Result<Value> {
     match name {
-        "run-jsx" => run_jsx_tool(cfg, bridge, args),
-        "run-jsx-file" => run_jsx_file_tool(cfg, bridge, args),
-        "get-jsx-result" => get_jsx_result_tool(cfg, args),
+        "run-jsx" => run_jsx_tool(cfg, bridge, args, true),
+        "run-jsx-file" | "run-script-file" => run_jsx_file_tool(cfg, bridge, args),
+        "get-jsx-result" | "get-script-result" => get_jsx_result_tool(cfg, args),
+        "get-capabilities" => get_capabilities_tool(cfg),
+        "cancel-script-request" => cancel_script_request_tool(cfg, args),
         "list-ae-instances" => list_ae_instances_tool(cfg),
+        "run-script" if args.get("code").is_some() => run_jsx_tool(cfg, bridge, args, false),
         "run-script" => {
             let script = args
                 .get("script")
@@ -679,19 +688,32 @@ fn run_direct_bridge_call_with_timeout(
     )
 }
 
-fn run_jsx_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Result<Value> {
-    let code = required_non_empty_string(&args, "code")?;
+fn run_jsx_tool(
+    cfg: &AppConfig,
+    _bridge: &BridgeClient,
+    args: Value,
+    legacy: bool,
+) -> Result<Value> {
+    let code = required_non_empty_string(&args, "code")?.to_string();
     validate_unsafe_mode(&args)?;
-    let description = required_non_empty_string(&args, "description")?;
-    validate_jsx_size(code)?;
+    let limit = if legacy {
+        MAX_JSX_BYTES as u64
+    } else {
+        cfg.script_contract.max_inline_bytes
+    };
+    let prepared = prepare_script(cfg, AFTER_EFFECTS_HOST, &args, code, "unsafe", None, limit)?;
+    if prepared.preflight_only {
+        return tool_json(prepared.preflight_envelope(AFTER_EFFECTS_HOST));
+    }
 
     let payload = json!({
-        "code": code,
-        "args": args.get("args").cloned().unwrap_or_else(|| json!({})),
+        "code": prepared.code,
+        "args": prepared.input,
         "mode": "unsafe",
-        "description": description,
+        "description": prepared.description,
     });
-    let timeout_ms = timeout_ms_from_args(cfg, &args);
+    let timeout_ms = prepared.timeout_ms;
+    let audit = serde_json::to_value(&prepared.audit)?;
 
     run_daemon_command(
         cfg,
@@ -700,7 +722,7 @@ fn run_jsx_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Result<
         &args,
         timeout_ms,
         false,
-        None,
+        Some(audit),
         "Error running JSX",
     )
 }
@@ -708,20 +730,31 @@ fn run_jsx_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Result<
 fn run_jsx_file_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Result<Value> {
     let path = required_non_empty_string(&args, "path")?;
     let mode = required_non_empty_string(&args, "mode")?;
-    let description = required_non_empty_string(&args, "description")?;
     let validated = validate_and_read_script_file(cfg, path, mode)?;
-    let audit = serde_json::to_value(&validated.audit)?;
+    let prepared = prepare_script(
+        cfg,
+        AFTER_EFFECTS_HOST,
+        &args,
+        validated.code,
+        mode,
+        Some(validated.audit.source_path),
+        cfg.script_files.max_bytes,
+    )?;
+    if prepared.preflight_only {
+        return tool_json(prepared.preflight_envelope(AFTER_EFFECTS_HOST));
+    }
+    let audit = serde_json::to_value(&prepared.audit)?;
 
     let payload = json!({
-        "code": validated.code,
-        "args": args.get("args").cloned().unwrap_or_else(|| json!({})),
+        "code": prepared.code,
+        "args": prepared.input,
         "mode": mode,
-        "description": description,
-        "sourcePath": validated.audit.source_path,
-        "sourceSha256": validated.audit.source_sha256,
-        "sourceSizeBytes": validated.audit.source_size_bytes,
+        "description": prepared.description,
+        "sourcePath": prepared.audit.source_path,
+        "sourceSha256": prepared.audit.source_sha256,
+        "sourceSizeBytes": prepared.audit.source_size_bytes,
     });
-    let timeout_ms = timeout_ms_from_args(cfg, &args);
+    let timeout_ms = prepared.timeout_ms;
 
     run_daemon_command(
         cfg,
@@ -733,6 +766,22 @@ fn run_jsx_file_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Re
         Some(audit),
         "Error running JSX file",
     )
+}
+
+fn get_capabilities_tool(cfg: &AppConfig) -> Result<Value> {
+    let instances =
+        daemon_core::call_daemon(cfg, json!({ "op": "listInstances" }), cfg.result_timeout_ms)
+            .unwrap_or_else(|error| json!({ "status": "offline", "error": error.to_string() }));
+    tool_json(capabilities_value(cfg, AFTER_EFFECTS_HOST, instances))
+}
+
+fn cancel_script_request_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
+    let request_id = required_non_empty_string(&args, "requestId")?;
+    tool_json(daemon_core::call_daemon(
+        cfg,
+        json!({ "op": "cancelRequest", "requestId": request_id }),
+        cfg.result_timeout_ms,
+    )?)
 }
 
 fn get_jsx_result_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
@@ -819,17 +868,6 @@ fn validate_unsafe_mode(args: &Value) -> Result<()> {
     let mode = required_non_empty_string(args, "mode")?;
     if mode != "unsafe" {
         anyhow::bail!("only mode='unsafe' is currently supported for JSX execution");
-    }
-    Ok(())
-}
-
-fn validate_jsx_size(code: &str) -> Result<()> {
-    if code.len() > MAX_JSX_BYTES {
-        anyhow::bail!(
-            "JSX code is too large: {} bytes > {} bytes",
-            code.len(),
-            MAX_JSX_BYTES
-        );
     }
     Ok(())
 }
@@ -1085,7 +1123,7 @@ mod tests {
             .filter_map(|tool| tool.get("name").and_then(Value::as_str))
             .collect::<Vec<_>>();
         assert_eq!(names, mcp_core::PUBLIC_TOOL_NAMES);
-        assert!(!names.contains(&"run-script"));
+        assert!(names.contains(&"run-script"));
         assert!(!names.contains(&"render-queue-add"));
     }
 
@@ -1117,6 +1155,42 @@ mod tests {
             .unwrap_or(false));
 
         let _ = fs::remove_dir_all(PathBuf::from(root));
+    }
+
+    #[test]
+    fn canonical_run_script_does_not_break_legacy_allowlist_dispatch() {
+        let root = std::env::temp_dir().join(format!("ae-mcp-run-script-{}", std::process::id()));
+        let mut cfg = AppConfig::default();
+        cfg.bridge.root_dir = root.clone();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let canonical = dispatch_tool(
+            &cfg,
+            &bridge,
+            "run-script",
+            json!({
+                "code": "return 1;",
+                "mode": "unsafe",
+                "description": "preflight",
+                "preflightOnly": true
+            }),
+        );
+        let text = canonical["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("Deprecated compatibility tool"));
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap()["state"],
+            "preflight"
+        );
+
+        let legacy = dispatch_tool(
+            &cfg,
+            &bridge,
+            "run-script",
+            json!({ "script": "notAllowlisted" }),
+        );
+        let legacy_text = legacy["content"][0]["text"].as_str().unwrap();
+        assert!(legacy_text.contains("Deprecated compatibility tool"));
+        assert!(legacy_text.contains("is not allowed"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

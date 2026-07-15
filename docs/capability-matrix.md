@@ -302,11 +302,12 @@ Structured Tool を追加するときは、以下を checklist にします。
 
 ### Phase 1 — 共通 script contract
 
-- 5 host の schema / result envelope を揃える。
-- `get-capabilities` に runtime、inline/file、permission、payload、guard support を追加する。
-- inline 256 KiB、input/result 1 MiB の暫定上限と oversized artifact 方針を実装・計測する。
-- `preflightOnly` と `riskPolicy: raw | analyze` を先に実装し、検知結果を監査へ残す。
-- `run-script` canonical 名への移行方法を決め、AE の旧 allowlist `run-script` と衝突しない migration を行う。
+- **実装済み:** 5 host のcanonical schemaと後方互換fieldを追加したresult envelopeを共通化。
+- **実装済み:** `get-capabilities` にruntime、inline/file、permission、payload、guard supportを追加。
+- **実装済み:** inline 256 KiB、input/result 1 MiB、timeout 600秒の暫定上限とoversized artifact方針を実装。
+- **実装済み:** `preflightOnly`、4種の`riskPolicy`、best-effort scannerと監査metadataを実装。`analyze`は非blocking。
+- **実装済み:** `run-script`をcanonical化し、`run-jsx` aliasと旧allowlist `run-script` payloadを互換維持。
+- 詳細は[共通 raw script 契約](script-contract.md)を参照。
 
 ### Phase 2 — InDesign と AE lifecycle のrepository PoC（実装済み）
 
@@ -316,9 +317,9 @@ Structured Tool を追加するときは、以下を checklist にします。
 
 ### Phase 3 — Guard policy
 
-- host 別 static scanner と risk report を追加する。
-- `block-destructive` を opt-in で提供し、UI と docs に非 sandbox であることを表示する。
-- 外部 approval token の署名者、hash binding、TTL、replay 防止を定義してから `confirm-destructive` を実装する。
+- **prototype実装済み:** host横断static scannerとrisk reportを追加。host固有parserの精度改善は継続。
+- **prototype実装済み:** `block-destructive`をdeployment opt-inで提供し、非sandboxであることをschema/docsへ表示。
+- **prototype実装済み:** source/host instance/risk/TTL/nonceへ束縛した外部HMAC approval tokenとreplay markerを追加。productionでは外部署名service、secret store、ACL hardeningが残る。
 - OS user / ACL、UXP manifest、AE preference、daemon bind / authentication の hardening を行う。
 
 ### Phase 4 — 実機 parity と配布

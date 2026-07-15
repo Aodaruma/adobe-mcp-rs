@@ -41,8 +41,11 @@ pub const INDESIGN_HOST: HostSpec = HostSpec {
 - `runCommand`
 - `getResult`
 - `latestResult`
+- `cancelRequest`
 
 同一 `instanceId` は FIFO、別 instance は並列です。`runCommand.globalExclusive=true` はその host daemon の全 instance に対する排他を取得します。client timeout 後も worker は継続し、`requestId` を `getResult` へ渡すと完了結果を回収できます。詳細は [ADR 0001](adr/0001-host-neutral-daemon-broker.md) を参照してください。
+
+`cancelRequest`はqueue中のrequestを`cancelled`にできます。dispatch済みhost codeは強制停止せず`cancelRequested`となり、協調的に停止しないcodeは最終結果を返す場合があります。共通payload、risk、audit契約は[共通 raw script 契約](script-contract.md)を参照してください。
 
 ## ディレクトリ
 

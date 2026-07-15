@@ -1,4 +1,6 @@
-use mcp_core::{PromptArgument, PromptSpec, ToolSpec};
+use mcp_core::{
+    merge_canonical_script_tools, PromptArgument, PromptSpec, ToolSpec, ILLUSTRATOR_HOST,
+};
 use serde_json::{json, Value};
 
 pub const ALLOWED_SCRIPTS: &[&str] = &[
@@ -16,7 +18,7 @@ pub fn is_allowed_script(script: &str) -> bool {
 }
 
 pub fn tool_specs() -> Vec<ToolSpec> {
-    vec![
+    let mut tools = vec![
         ToolSpec {
             name: "run-jsx",
             description: "Run unsafe JSX/ExtendScript code in Illustrator and wait for a result",
@@ -117,7 +119,9 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "properties": {}
             }),
         },
-    ]
+    ];
+    merge_canonical_script_tools(&mut tools, ILLUSTRATOR_HOST);
+    tools
 }
 
 pub fn prompt_specs() -> Vec<PromptSpec> {

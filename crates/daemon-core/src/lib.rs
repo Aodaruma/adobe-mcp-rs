@@ -236,6 +236,13 @@ fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Va
             .unwrap_or_else(
                 || json!({ "status": "empty", "message": "No retained request result." }),
             )),
+        "cancelRequest" => {
+            let request_id = request
+                .request_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("requestId is required"))?;
+            Ok(state.bridge.request_cancellation(request_id)?.to_value())
+        }
         "runCommand" => handle_run_command(state, request),
         other => Err(anyhow!("unknown daemon op: {other}")),
     }
@@ -256,10 +263,25 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
     if timeout_ms == 0 {
         return Err(anyhow!("timeoutMs must be greater than 0"));
     }
+    if timeout_ms > state.cfg.script_contract.max_timeout_ms {
+        return Err(anyhow!(
+            "timeoutMs exceeds the configured maximum: {} > {}",
+            timeout_ms,
+            state.cfg.script_contract.max_timeout_ms
+        ));
+    }
     if poll_interval_ms == 0 {
         return Err(anyhow!("pollIntervalMs must be greater than 0"));
     }
     validate_retention(&state.cfg, retention_seconds)?;
+    let input_size = serde_json::to_vec(&request.args)?.len() as u64;
+    if input_size > state.cfg.script_contract.max_input_bytes {
+        return Err(anyhow!(
+            "command payload exceeds the configured maximum: {} > {} bytes",
+            input_size,
+            state.cfg.script_contract.max_input_bytes
+        ));
+    }
 
     let target = BridgeTarget {
         instance_id: request.target_instance_id.clone(),
@@ -288,6 +310,19 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
         request.audit.clone(),
     )?;
     let request_id = prepared.record.request_id.clone();
+    info!(
+        "script audit queued host={} requestId={} command={} instance={} retentionSeconds={} sourceSha256={}",
+        state.cfg.host_id,
+        request_id,
+        command,
+        instance.instance_id,
+        retention_seconds,
+        request
+            .audit
+            .as_ref()
+            .map(|audit| audit.source_sha256.as_str())
+            .unwrap_or("not-provided")
+    );
     let instance_id = instance.instance_id.clone();
     let options = BridgeRunOptions {
         target,

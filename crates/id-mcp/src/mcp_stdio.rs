@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Context, Result};
 use bridge_core::BridgeClient;
 use id_core::{general_help_text, prompt_messages, prompt_specs, tool_specs};
-use mcp_core::{validate_and_read_script_file, AppConfig};
+use mcp_core::{
+    capabilities_value, prepare_script, validate_and_read_script_file, AppConfig, INDESIGN_HOST,
+};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
 use tracing::{debug, error, info};
-
-const MAX_SCRIPT_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, Copy)]
 enum MessageFormat {
@@ -220,6 +220,8 @@ fn dispatch_tool_inner(
         "run-script" => run_script_tool(cfg, bridge, args),
         "run-script-file" => run_script_file_tool(cfg, bridge, args),
         "get-script-result" => get_script_result_tool(cfg, args),
+        "get-capabilities" => get_capabilities_tool(cfg),
+        "cancel-script-request" => cancel_script_request_tool(cfg, args),
         "list-indesign-instances" => list_indesign_instances_tool(cfg, bridge),
         "run-template" => run_template_tool(cfg, bridge, args),
         "get-results" => {
@@ -275,18 +277,29 @@ fn run_template_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Res
 }
 
 fn run_script_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Result<Value> {
-    let code = required_non_empty_string(&args, "code")?;
+    let code = required_non_empty_string(&args, "code")?.to_string();
     validate_unsafe_mode(&args)?;
-    let description = required_non_empty_string(&args, "description")?;
-    validate_script_size(code)?;
+    let prepared = prepare_script(
+        cfg,
+        INDESIGN_HOST,
+        &args,
+        code,
+        "unsafe",
+        None,
+        cfg.script_contract.max_inline_bytes,
+    )?;
+    if prepared.preflight_only {
+        return tool_json(prepared.preflight_envelope(INDESIGN_HOST));
+    }
 
     let payload = json!({
-        "code": code,
-        "args": args.get("args").cloned().unwrap_or_else(|| json!({})),
+        "code": prepared.code,
+        "args": prepared.input,
         "mode": "unsafe",
-        "description": description,
+        "description": prepared.description,
     });
-    let timeout_ms = timeout_ms_from_args(cfg, &args);
+    let timeout_ms = prepared.timeout_ms;
+    let audit = serde_json::to_value(&prepared.audit)?;
 
     run_bridge_command(
         cfg,
@@ -295,7 +308,7 @@ fn run_script_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Resul
         payload,
         &args,
         timeout_ms,
-        None,
+        Some(audit),
         "Error running InDesign UXP code",
     )
 }
@@ -303,20 +316,31 @@ fn run_script_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Resul
 fn run_script_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Result<Value> {
     let path = required_non_empty_string(&args, "path")?;
     let mode = required_non_empty_string(&args, "mode")?;
-    let description = required_non_empty_string(&args, "description")?;
     let validated = validate_and_read_script_file(cfg, path, mode)?;
-    let audit = serde_json::to_value(&validated.audit)?;
+    let prepared = prepare_script(
+        cfg,
+        INDESIGN_HOST,
+        &args,
+        validated.code,
+        mode,
+        Some(validated.audit.source_path),
+        cfg.script_files.max_bytes,
+    )?;
+    if prepared.preflight_only {
+        return tool_json(prepared.preflight_envelope(INDESIGN_HOST));
+    }
+    let audit = serde_json::to_value(&prepared.audit)?;
 
     let payload = json!({
-        "code": validated.code,
-        "args": args.get("args").cloned().unwrap_or_else(|| json!({})),
+        "code": prepared.code,
+        "args": prepared.input,
         "mode": mode,
-        "description": description,
-        "sourcePath": validated.audit.source_path,
-        "sourceSha256": validated.audit.source_sha256,
-        "sourceSizeBytes": validated.audit.source_size_bytes,
+        "description": prepared.description,
+        "sourcePath": prepared.audit.source_path,
+        "sourceSha256": prepared.audit.source_sha256,
+        "sourceSizeBytes": prepared.audit.source_size_bytes,
     });
-    let timeout_ms = timeout_ms_from_args(cfg, &args);
+    let timeout_ms = prepared.timeout_ms;
 
     run_bridge_command(
         cfg,
@@ -328,6 +352,22 @@ fn run_script_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> 
         Some(audit),
         "Error running InDesign UXP file",
     )
+}
+
+fn get_capabilities_tool(cfg: &AppConfig) -> Result<Value> {
+    let instances =
+        daemon_core::call_daemon(cfg, json!({ "op": "listInstances" }), cfg.result_timeout_ms)
+            .unwrap_or_else(|error| json!({ "status": "offline", "error": error.to_string() }));
+    tool_json(capabilities_value(cfg, INDESIGN_HOST, instances))
+}
+
+fn cancel_script_request_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
+    let request_id = required_non_empty_string(&args, "requestId")?;
+    tool_json(daemon_core::call_daemon(
+        cfg,
+        json!({ "op": "cancelRequest", "requestId": request_id }),
+        cfg.result_timeout_ms,
+    )?)
 }
 
 fn get_script_result_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
@@ -444,17 +484,6 @@ fn validate_unsafe_mode(args: &Value) -> Result<()> {
     let mode = required_non_empty_string(args, "mode")?;
     if mode != "unsafe" {
         anyhow::bail!("only mode='unsafe' is supported for InDesign UXP raw script execution");
-    }
-    Ok(())
-}
-
-fn validate_script_size(code: &str) -> Result<()> {
-    if code.len() > MAX_SCRIPT_BYTES {
-        anyhow::bail!(
-            "InDesign UXP script is too large: {} bytes > {} bytes",
-            code.len(),
-            MAX_SCRIPT_BYTES
-        );
     }
     Ok(())
 }

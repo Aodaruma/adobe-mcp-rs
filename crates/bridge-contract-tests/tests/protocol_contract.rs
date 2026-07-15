@@ -388,3 +388,57 @@ fn multiple_instances_require_targeting_and_route_independently() -> Result<()> 
     }
     Ok(())
 }
+
+#[test]
+fn five_hosts_publish_the_same_canonical_script_and_capability_contract() -> Result<()> {
+    let hosts = vec![
+        (mcp_core::AFTER_EFFECTS_HOST, mcp_core::tool_specs()),
+        (mcp_core::PREMIERE_PRO_HOST, pr_core::tool_specs()),
+        (mcp_core::PHOTOSHOP_HOST, ps_core::tool_specs()),
+        (mcp_core::ILLUSTRATOR_HOST, ai_core::tool_specs()),
+        (mcp_core::INDESIGN_HOST, id_core::tool_specs()),
+    ];
+    let canonical = [
+        "run-script",
+        "run-script-file",
+        "get-script-result",
+        "get-capabilities",
+        "cancel-script-request",
+    ];
+    for (host, tools) in hosts {
+        for name in canonical {
+            assert!(
+                tools.iter().any(|tool| tool.name == name),
+                "{} missing {name}",
+                host.id
+            );
+        }
+        let inline = tools.iter().find(|tool| tool.name == "run-script").unwrap();
+        assert_eq!(
+            inline.input_schema["properties"]["riskPolicy"]["default"], "analyze",
+            "{} risk default",
+            host.id
+        );
+        assert_eq!(
+            inline.input_schema["properties"]["timeoutMs"]["maximum"],
+            mcp_core::DEFAULT_SCRIPT_TIMEOUT_MAX_MS,
+            "{} timeout contract",
+            host.id
+        );
+        let cfg = mcp_core::AppConfig::load_for_host(None, host)?;
+        let capabilities = mcp_core::capabilities_value(&cfg, host, json!({ "instances": [] }));
+        assert_eq!(capabilities["schemaVersion"], 1);
+        assert_eq!(capabilities["hostId"], host.id);
+        assert_eq!(capabilities["guard"]["securityBoundary"], false);
+        assert_eq!(capabilities["guard"]["defaultRiskPolicy"], "analyze");
+        assert_eq!(capabilities["execution"]["timeoutStopsHostCode"], false);
+        if host.id != "indesign" {
+            assert!(tools.iter().any(|tool| tool.name == "run-jsx"));
+            assert!(capabilities["tools"]["compatibilityAliases"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("run-jsx")));
+        }
+    }
+    Ok(())
+}

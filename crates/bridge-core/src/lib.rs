@@ -162,13 +162,47 @@ pub struct RequestRecord {
 
 impl RequestRecord {
     pub fn to_value(&self) -> Value {
-        serde_json::to_value(self).unwrap_or_else(|_| {
+        let mut value = serde_json::to_value(self).unwrap_or_else(|_| {
             json!({
                 "requestId": self.request_id,
                 "status": self.status,
                 "message": "failed to serialize request record"
             })
-        })
+        });
+        if let Some(object) = value.as_object_mut() {
+            object.insert("state".to_string(), Value::String(self.status.clone()));
+            let host_id = self
+                .host_instance
+                .as_ref()
+                .map(|instance| instance.host_id.clone())
+                .filter(|value| !value.is_empty())
+                .or_else(|| self.audit.as_ref().map(|audit| audit.host_id.clone()));
+            if let Some(host_id) = host_id {
+                object.insert("hostId".to_string(), Value::String(host_id));
+            }
+            if let Some(instance) = self.host_instance.as_ref() {
+                object.insert(
+                    "instanceId".to_string(),
+                    Value::String(instance.instance_id.clone()),
+                );
+                let runtime = self
+                    .audit
+                    .as_ref()
+                    .map(|audit| audit.runtime.clone())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| instance.bridge_runtime.clone());
+                if !runtime.is_empty() {
+                    object.insert("runtime".to_string(), Value::String(runtime));
+                }
+            }
+            if let Some(risk) = self.audit.as_ref().and_then(|audit| audit.risk.clone()) {
+                object.insert(
+                    "risk".to_string(),
+                    serde_json::to_value(risk).unwrap_or(Value::Null),
+                );
+            }
+        }
+        value
     }
 }
 
@@ -577,6 +611,24 @@ impl BridgeClient {
         })
     }
 
+    /// Request cancellation without implying that already-running host code was stopped.
+    /// A queued worker observes this marker and transitions to `cancelled`; dispatched host
+    /// code is cooperative and may still publish a terminal result.
+    pub fn request_cancellation(&self, request_id: &str) -> Result<RequestRecord> {
+        self.update_request_record(request_id, |record| {
+            if is_terminal_request_status(&record.status) {
+                return false;
+            }
+            record.status = "cancelRequested".to_string();
+            record.updated_at = chrono_like_timestamp();
+            record.message = Some(
+                "Cancellation requested. Queued work will stop; running host code may continue and publish a result."
+                    .to_string(),
+            );
+            true
+        })
+    }
+
     pub fn resolve_target(&self, target: &BridgeTarget) -> Result<HostInstance> {
         let active = self
             .list_active_instances(Duration::from_millis(self.cfg.instance_heartbeat_stale_ms))?;
@@ -629,12 +681,32 @@ impl BridgeClient {
     ) -> Result<BridgeRunOutcome> {
         let registry_path = self.registry_path(request_id);
         let mut record = self.read_request_record(request_id)?;
+        if record.status == "cancelRequested" {
+            record.status = "cancelled".to_string();
+            record.updated_at = chrono_like_timestamp();
+            record.message = Some("Cancelled before dispatch.".to_string());
+            self.write_request_record(&record)?;
+            return Ok(BridgeRunOutcome {
+                record: self.read_request_record(request_id)?,
+                registry_path,
+            });
+        }
         let started = started_at.unwrap_or_else(Instant::now);
         record.host_instance = Some(instance.clone());
         record.updated_at = chrono_like_timestamp();
         self.write_request_record(&record)?;
 
         while self.is_instance_busy(&instance)? {
+            if self.read_request_record(request_id)?.status == "cancelRequested" {
+                record.status = "cancelled".to_string();
+                record.updated_at = chrono_like_timestamp();
+                record.message = Some("Cancelled while queued for the host instance.".to_string());
+                self.write_request_record(&record)?;
+                return Ok(BridgeRunOutcome {
+                    record: self.read_request_record(request_id)?,
+                    registry_path,
+                });
+            }
             if started.elapsed() >= options.timeout {
                 record.status = "timeout".to_string();
                 record.updated_at = chrono_like_timestamp();
@@ -988,6 +1060,20 @@ impl BridgeClient {
             if !command_matches {
                 return Ok(None);
             }
+        }
+        if raw.len() as u64 > self.cfg.script_contract.max_result_bytes {
+            return Ok(Some((
+                String::new(),
+                json!({
+                    "status": "error",
+                    "error": format!(
+                        "JSON result is too large: {} bytes > {} bytes; return artifact metadata instead",
+                        raw.len(), self.cfg.script_contract.max_result_bytes
+                    ),
+                    "_requestId": request_id,
+                    "_commandExecuted": expected_command
+                }),
+            )));
         }
         Ok(Some((raw, parsed)))
     }
@@ -1658,6 +1744,10 @@ mod tests {
         let audit = ScriptFileAudit {
             host_id: "aftereffects".to_string(),
             mode: "unsafe".to_string(),
+            runtime: "extendscript-startup".to_string(),
+            risk_policy: "analyze".to_string(),
+            risk: None,
+            declared_effects: Vec::new(),
             source_path: "C:/scripts/test.jsx".to_string(),
             source_sha256: "a".repeat(64),
             source_size_bytes: 12,
@@ -1669,6 +1759,72 @@ mod tests {
         let raw = fs::read_to_string(&prepared.registry_path).expect("registry file");
         let record: RequestRecord = serde_json::from_str(&raw).expect("registry record");
         assert_eq!(record.audit, Some(audit));
+    }
+
+    #[test]
+    fn oversized_json_result_is_replaced_with_artifact_guidance() {
+        let (mut cfg, _guard) = test_config();
+        cfg.script_contract.max_result_bytes = 128;
+        let instance = write_test_instance(&cfg, "ae-result-limit");
+        fs::write(
+            &instance.result_file,
+            serde_json::to_vec(&json!({
+                "_requestId": "req-result-limit",
+                "_commandExecuted": "executeJsx",
+                "status": "success",
+                "payload": "x".repeat(512)
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let bridge = BridgeClient::new(cfg).unwrap();
+        let (_, result) = bridge
+            .try_read_instance_result(&instance, "req-result-limit", Some("executeJsx"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["status"], "error");
+        assert!(result["error"]
+            .as_str()
+            .unwrap()
+            .contains("return artifact metadata"));
+    }
+
+    #[test]
+    fn queued_cancellation_stops_dispatch_and_terminal_state_wins() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let instance = write_test_instance(&cfg, "ae-cancel");
+        let prepared = bridge
+            .prepare_request("executeJsx", 60, Some(instance.clone()))
+            .unwrap();
+        bridge
+            .request_cancellation(&prepared.record.request_id)
+            .unwrap();
+        let outcome = bridge
+            .run_prepared_request_on_instance(
+                &prepared.record.request_id,
+                "executeJsx",
+                json!({ "code": "return 1" }),
+                instance,
+                BridgeRunOptions {
+                    target: BridgeTarget::default(),
+                    timeout: Duration::from_secs(1),
+                    poll_interval: Duration::from_millis(5),
+                    retention_seconds: 60,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(outcome.record.status, "cancelled");
+
+        let terminal = bridge.prepare_request("executeJsx", 60, None).unwrap();
+        bridge
+            .mark_request_failed(&terminal.record.request_id, "failed first".to_string())
+            .unwrap();
+        let after_cancel = bridge
+            .request_cancellation(&terminal.record.request_id)
+            .unwrap();
+        assert_eq!(after_cancel.status, "failed");
     }
 
     #[test]

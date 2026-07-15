@@ -146,11 +146,15 @@ dependencies = [
 name = "bridge-contract-tests"
 version = "0.4.4"
 dependencies = [
+ "ai-core",
  "anyhow",
  "bridge-core",
  "chrono",
  "daemon-core",
+ "id-core",
  "mcp-core",
+ "pr-core",
+ "ps-core",
  "serde_json",
  "tempfile",
 ]

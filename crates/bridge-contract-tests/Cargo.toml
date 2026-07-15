@@ -13,3 +13,7 @@ daemon-core = { path = "../daemon-core" }
 mcp-core = { path = "../mcp-core" }
 serde_json.workspace = true
 tempfile = "3.20"
+pr-core = { path = "../pr-core" }
+ps-core = { path = "../ps-core" }
+ai-core = { path = "../ai-core" }
+id-core = { path = "../id-core" }

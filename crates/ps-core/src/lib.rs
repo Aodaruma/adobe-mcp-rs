@@ -1,4 +1,4 @@
-use mcp_core::{PromptSpec, ToolSpec};
+use mcp_core::{merge_canonical_script_tools, PromptSpec, ToolSpec, PHOTOSHOP_HOST};
 use serde_json::{json, Value};
 
 pub const ALLOWED_SCRIPTS: &[&str] = &[
@@ -14,7 +14,7 @@ pub fn is_allowed_script(script: &str) -> bool {
 }
 
 pub fn tool_specs() -> Vec<ToolSpec> {
-    vec![
+    let mut tools = vec![
         ToolSpec {
             name: "run-jsx",
             description: "Run unsafe JavaScript/JSX-style code in Photoshop UXP and wait for a result",
@@ -115,7 +115,9 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "properties": {}
             }),
         },
-    ]
+    ];
+    merge_canonical_script_tools(&mut tools, PHOTOSHOP_HOST);
+    tools
 }
 
 pub fn prompt_specs() -> Vec<PromptSpec> {
@@ -192,6 +194,10 @@ mod tests {
         assert!(names.contains(&"get-help"));
         assert!(names.contains(&"list-photoshop-instances"));
         assert!(names.contains(&"run-bridge-test"));
-        assert_eq!(names.len(), 8);
+        assert!(names.contains(&"run-script-file"));
+        assert!(names.contains(&"get-script-result"));
+        assert!(names.contains(&"get-capabilities"));
+        assert!(names.contains(&"cancel-script-request"));
+        assert_eq!(names.len(), 12);
     }
 }

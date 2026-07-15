@@ -79,6 +79,7 @@ impl ProtocolFixture {
             daemon_addr: "127.0.0.1:0".to_string(),
             log_level: "error".to_string(),
             script_files: Default::default(),
+            script_contract: Default::default(),
         };
         Ok(Self {
             _temp_dir: temp_dir,
