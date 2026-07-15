@@ -64,7 +64,7 @@ if (-not $output) {
 Push-Location $repoRoot
 try {
     Write-Host "Building release binaries..."
-    Invoke-NativeChecked -FilePath "cargo" -ArgumentList @("build", "--release", "-p", "ae-mcp", "-p", "pr-mcp", "-p", "ps-mcp", "-p", "ai-mcp")
+    Invoke-NativeChecked -FilePath "cargo" -ArgumentList @("build", "--release", "-p", "ae-mcp", "-p", "pr-mcp", "-p", "ps-mcp", "-p", "ai-mcp", "-p", "id-mcp")
 
     $exePath = Join-Path $repoRoot "target\release\ae-mcp.exe"
     if (!(Test-Path $exePath)) {
@@ -81,6 +81,10 @@ try {
     $aiExePath = Join-Path $repoRoot "target\release\ai-mcp.exe"
     if (!(Test-Path $aiExePath)) {
         throw "Release binary not found: $aiExePath"
+    }
+    $idExePath = Join-Path $repoRoot "target\release\id-mcp.exe"
+    if (!(Test-Path $idExePath)) {
+        throw "Release binary not found: $idExePath"
     }
     $bridgePanelPath = Join-Path $repoRoot "src\scripts\mcp-bridge-auto.jsx"
     if (!(Test-Path $bridgePanelPath)) {
@@ -110,9 +114,17 @@ try {
     if (!(Test-Path $illustratorCepPath)) {
         throw "Illustrator CEP bridge not found: $illustratorCepPath"
     }
+    $indesignBridgePath = Join-Path $repoRoot "src\indesign\uxp\mcp-bridge-indesign.idjs"
+    if (!(Test-Path $indesignBridgePath -PathType Leaf)) {
+        throw "InDesign Startup Script bridge not found: $indesignBridgePath"
+    }
     $installerBridgeScriptPath = Join-Path $repoRoot "scripts\install-bridge-installer.ps1"
     if (!(Test-Path $installerBridgeScriptPath)) {
         throw "Installer bridge deployment script not found: $installerBridgeScriptPath"
+    }
+    $indesignInstallerScriptPath = Join-Path $repoRoot "scripts\install-indesign-bridge.ps1"
+    if (!(Test-Path $indesignInstallerScriptPath -PathType Leaf)) {
+        throw "InDesign bridge installer not found: $indesignInstallerScriptPath"
     }
 
     $stageDir = Join-Path $output "stage"
@@ -124,6 +136,7 @@ try {
     Copy-Item $prExePath (Join-Path $stageDir "pr-mcp.exe") -Force
     Copy-Item $psExePath (Join-Path $stageDir "ps-mcp.exe") -Force
     Copy-Item $aiExePath (Join-Path $stageDir "ai-mcp.exe") -Force
+    Copy-Item $idExePath (Join-Path $stageDir "id-mcp.exe") -Force
     Copy-Item $bridgePanelPath (Join-Path $stageDir "mcp-bridge-auto.jsx") -Force
     Copy-Item $bridgeStartupPath (Join-Path $stageDir "mcp-bridge-startup.jsx") -Force
     Copy-Item $bridgeShutdownPath (Join-Path $stageDir "mcp-bridge-shutdown.jsx") -Force
@@ -139,7 +152,9 @@ try {
     $illustratorCepStageDir = Join-Path $stageDir "illustrator-cep"
     Ensure-Directory $illustratorCepStageDir
     Copy-Item $illustratorCepPath (Join-Path $illustratorCepStageDir "mcp-bridge-illustrator") -Recurse -Force
+    Copy-Item $indesignBridgePath (Join-Path $stageDir "mcp-bridge-indesign.idjs") -Force
     Copy-Item $installerBridgeScriptPath (Join-Path $stageDir "install-bridge-installer.ps1") -Force
+    Copy-Item $indesignInstallerScriptPath (Join-Path $stageDir "install-indesign-bridge.ps1") -Force
 
     $zipPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
@@ -166,10 +181,13 @@ try {
     $escapedPrExe = (Join-Path $stageDir "pr-mcp.exe").Replace("\", "\\")
     $escapedPsExe = (Join-Path $stageDir "ps-mcp.exe").Replace("\", "\\")
     $escapedAiExe = (Join-Path $stageDir "ai-mcp.exe").Replace("\", "\\")
+    $escapedIdExe = (Join-Path $stageDir "id-mcp.exe").Replace("\", "\\")
     $escapedBridgePanel = (Join-Path $stageDir "mcp-bridge-auto.jsx").Replace("\", "\\")
     $escapedBridgeStartup = (Join-Path $stageDir "mcp-bridge-startup.jsx").Replace("\", "\\")
     $escapedBridgeShutdown = (Join-Path $stageDir "mcp-bridge-shutdown.jsx").Replace("\", "\\")
     $escapedBridgeInstallerPs1 = (Join-Path $stageDir "install-bridge-installer.ps1").Replace("\", "\\")
+    $escapedIndesignBridge = (Join-Path $stageDir "mcp-bridge-indesign.idjs").Replace("\", "\\")
+    $escapedIndesignInstallerPs1 = (Join-Path $stageDir "install-indesign-bridge.ps1").Replace("\", "\\")
     $escapedLicenseRtf = $licenseRtfPath.Replace("\", "\\")
     $premiereRoot = Join-Path $stageDir "premiere-cep\mcp-bridge-premiere"
     $escapedPremiereManifest = (Join-Path $premiereRoot "CSXS\manifest.xml").Replace("\", "\\")
@@ -222,6 +240,9 @@ try {
         <Component Id="AiMcpExeComponent" Guid="B9E58B92-1F55-4C5F-9699-4AF70DE7012A">
           <File Id="AiMcpExeFile" Source="$escapedAiExe" KeyPath="yes" />
         </Component>
+        <Component Id="IdMcpExeComponent" Guid="EB8DA936-FE23-4FD6-9208-2E763D8C86E1">
+          <File Id="IdMcpExeFile" Source="$escapedIdExe" KeyPath="yes" />
+        </Component>
         <Component Id="BridgePanelComponent" Guid="6EFCE0CF-7EFD-4A28-9DF9-9A4B1A16F9D4">
           <File Id="BridgePanelFile" Source="$escapedBridgePanel" KeyPath="yes" />
         </Component>
@@ -233,6 +254,12 @@ try {
         </Component>
         <Component Id="BridgeInstallerScriptComponent" Guid="6D25E6A8-A7F3-4C42-AEF9-A1756BC85701">
           <File Id="BridgeInstallerScriptFile" Source="$escapedBridgeInstallerPs1" KeyPath="yes" />
+        </Component>
+        <Component Id="IndesignBridgeComponent" Guid="4E0A0835-F9FD-43E1-A390-7D4ABAD7E883">
+          <File Id="IndesignBridgeFile" Source="$escapedIndesignBridge" KeyPath="yes" />
+        </Component>
+        <Component Id="IndesignInstallerScriptComponent" Guid="3C801C64-9AAC-4F96-B079-8E8677ED52D8">
+          <File Id="IndesignInstallerScriptFile" Source="$escapedIndesignInstallerPs1" KeyPath="yes" />
         </Component>
         <Directory Id="PremiereCepRoot" Name="premiere-cep">
           <Directory Id="PremiereCepExtension" Name="mcp-bridge-premiere">
@@ -337,7 +364,7 @@ try {
       </Directory>
     </StandardDirectory>
     <SetProperty Id="InstallMachineHostIntegration"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -BridgeStartupScriptPath &quot;[INSTALLFOLDER]mcp-bridge-startup.jsx&quot; -BridgeShutdownScriptPath &quot;[INSTALLFOLDER]mcp-bridge-shutdown.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -NonInteractive -SkipUserInstall"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -BridgeStartupScriptPath &quot;[INSTALLFOLDER]mcp-bridge-startup.jsx&quot; -BridgeShutdownScriptPath &quot;[INSTALLFOLDER]mcp-bridge-shutdown.jsx&quot; -InDesignBridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-indesign.idjs&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -IdMcpPath &quot;[INSTALLFOLDER]id-mcp.exe&quot; -NonInteractive -SkipUserInstall"
                  Before="InstallMachineHostIntegration"
                  Sequence="execute" />
     <CustomAction Id="InstallMachineHostIntegration"
@@ -347,7 +374,7 @@ try {
                   Impersonate="no"
                   Return="ignore" />
     <SetProperty Id="WixQuietExecCmdLine"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -BridgeStartupScriptPath &quot;[INSTALLFOLDER]mcp-bridge-startup.jsx&quot; -BridgeShutdownScriptPath &quot;[INSTALLFOLDER]mcp-bridge-shutdown.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -NonInteractive -SkipHostBridgeInstall"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -BridgeStartupScriptPath &quot;[INSTALLFOLDER]mcp-bridge-startup.jsx&quot; -BridgeShutdownScriptPath &quot;[INSTALLFOLDER]mcp-bridge-shutdown.jsx&quot; -InDesignBridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-indesign.idjs&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -IdMcpPath &quot;[INSTALLFOLDER]id-mcp.exe&quot; -NonInteractive -SkipHostBridgeInstall"
                  Before="InstallUserHostIntegration"
                  Sequence="execute" />
     <CustomAction Id="InstallUserHostIntegration"
@@ -356,7 +383,7 @@ try {
                   Execute="immediate"
                   Return="ignore" />
     <SetProperty Id="RemoveUserAutostart"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -RemoveAutostart -NonInteractive"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -IdMcpPath &quot;[INSTALLFOLDER]id-mcp.exe&quot; -RemoveAutostart -NonInteractive"
                  Before="RemoveUserAutostart"
                  Sequence="execute" />
     <CustomAction Id="RemoveUserAutostart"
@@ -374,7 +401,9 @@ try {
       <ComponentRef Id="PrMcpExeComponent" />
       <ComponentRef Id="PsMcpExeComponent" />
       <ComponentRef Id="AiMcpExeComponent" />
+      <ComponentRef Id="IdMcpExeComponent" />
       <ComponentRef Id="BridgeInstallerScriptComponent" />
+      <ComponentRef Id="IndesignInstallerScriptComponent" />
       <Feature Id="AfterEffectsPanelFeature" Title="After Effects headless bridge" Description="Deploys the ExtendScript runtime and startup bootstrap to detected After Effects installations." Level="1">
         <ComponentRef Id="BridgePanelComponent" />
         <ComponentRef Id="BridgeStartupComponent" />
@@ -407,6 +436,9 @@ try {
         <ComponentRef Id="IllustratorBridgeJsComponent" />
         <ComponentRef Id="IllustratorBridgeJsxComponent" />
         <ComponentRef Id="IllustratorBridgeIndexComponent" />
+      </Feature>
+      <Feature Id="IndesignStartupFeature" Title="InDesign UXP Startup Script" Description="Bundles the InDesign Startup Script and installs it into detected current-user preference profiles." Level="1">
+        <ComponentRef Id="IndesignBridgeComponent" />
       </Feature>
     </Feature>
   </Package>

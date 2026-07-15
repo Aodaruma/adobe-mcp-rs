@@ -18,7 +18,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "run-script",
-            description: "Run unsafe UXP script code in InDesign UXP and wait for a result",
+            description: "Run unsafe synchronous UXP function-body code in InDesign with an args object; return a JSON-serializable value (top-level await and script.setResult are unavailable)",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -36,8 +36,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "run-script-file",
-            description:
-                "Run a validated local UXP script file in InDesign UXP and wait for a result",
+            description: "Run a validated local file as a synchronous UXP function body with an args object; this is not a general top-level .idjs file, so return a JSON-serializable value and do not use top-level await or script.setResult",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -145,6 +144,7 @@ UXP bridge source:
 
 Best practices:
 - Prefer run-script or run-script-file for general automation. Raw code is passed to InDesign `app.doScript` as `ScriptLanguage.UXPSCRIPT`; it does not use eval/Function.
+- Both tools accept a synchronous function body whose single input is `args`; use `return` for a JSON-serializable result. The body is wrapped by the bridge, so it is not a general top-level `.idjs` program and cannot use top-level `await` or call `require("uxp").script.setResult` itself.
 - Pass mode="unsafe" and a short description for custom code so the call is explicit.
 - run-script-file mode="unsafe" is limited to configured allowed roots; mode="trusted" requires an exact configured path/SHA-256 entry.
 - "unsafe" is not a sandbox; code runs with the Adobe host's authority. InDesign UXP scripts have fixed full filesystem/network permissions.
@@ -188,6 +188,9 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("trusted")));
+        assert!(file_tool
+            .description
+            .contains("not a general top-level .idjs"));
         let names = specs.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
         assert!(names.contains(&"run-script"));
         assert!(names.contains(&"run-script-file"));

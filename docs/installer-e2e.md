@@ -1,7 +1,7 @@
 # インストーラ E2E 手順（Stage 5）
 
 - 最終更新: 2026-07-15
-- 対象: Rust版 `ae-mcp` / `pr-mcp` / `ps-mcp` / `ai-mcp` の Windows/macOS インストーラ検証
+- 対象: Rust版 `ae-mcp` / `pr-mcp` / `ps-mcp` / `ai-mcp` / `id-mcp` の Windows/macOS インストーラ検証
 
 ## 1. 目的
 
@@ -38,12 +38,14 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 ## 3.1 インストール
 
 1. インストーラ実行（MSI/pkg）
-2. Windows MSI の場合、Custom Setup 画面で host bridge feature を選択できる
+2. Windows MSI の場合、Custom Setup 画面で5 hostのbridge featureを選択できる
 3. Windows MSI の場合、インストール中に別の PowerShell ウィンドウが表示されない
 4. Windows MSI の場合、`C:\ProgramData\AfterEffectsMcp\install-report.json` で host integration の結果一覧を確認できる
-5. 4 host の MCP バイナリが所定の場所へ配置される
-6. 4 binary の `--help` が実行できる
-7. Windows help は `autostart` を含み `service` を含まない。macOS help は `service` を含み `autostart` を含まない
+5. Windows ZIP/MSIに`id-mcp.exe`、`mcp-bridge-indesign.idjs`、`install-indesign-bridge.ps1`が収録される
+6. macOS archive/pkgに`id-mcp`と`indesign/mcp-bridge-indesign.idjs`、専用installerが収録され、root postinstallがユーザーprofileへ推測配置しない
+7. 5 host の MCP バイナリが所定の場所へ配置される
+8. 5 binary の `--help` が実行できる
+9. Windows help は `autostart` を含み `service` を含まない。macOS help は `service` を含み `autostart` を含まない
 
 ## 3.2 Windows autostart / macOS service
 
@@ -58,13 +60,22 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 
 ## 3.3 Windows MSI の install / upgrade / uninstall
 
-1. 初回 install では4 hostとも Run key が新規作成されない
+1. 初回 install では5 hostとも Run key が新規作成されない
 2. 任意の host で `autostart install` し、MSI upgrade 後も opt-in が維持され、登録値が新しいインストール先を指す
 3. MSI upgrade 中の旧製品削除では Run key が一時削除されない
-4. 通常 uninstall では、アンインストールを実行した現在ユーザーについて登録済み daemon が停止し、4 host の既知 Run key が削除される
-5. installer log に repair / stop / remove の結果が記録される
+4. `InDesignMcp`も初回installで暗黙登録されず、opt-in済みRun keyだけがupgradeで修復される
+5. 通常 uninstall では、アンインストールを実行した現在ユーザーについて登録済み daemon が停止し、5 host の既知 Run key が削除される
+6. installer log に repair / stop / remove の結果が記録される
 
-## 3.4 MCP + AE ブリッジ
+## 3.4 InDesign Startup Script
+
+1. 専用installerのdry-runが検出済みprofileまたは明示した`Scripts/Startup Scripts`だけを列挙する
+2. install後に固定名`mcp-bridge-indesign.idjs`だけが追加・更新される
+3. `-Remove` / `--remove`のdry-run後に削除を実行し、固定ファイルだけが消えて他のscriptと親directoryが残る
+4. Windows generic installerは現在ユーザーの既存profileだけへ配置し、未検出時はskipをreportする
+5. macOS pkgのroot postinstallは`~/Library/Preferences`へ書かず、共有bundleと明示手順だけを残す
+6. InDesign実機での起動・heartbeat・MCP commandは別途manual E2E gateを通す。package生成成功だけで実機対応済みとはしない
+## 3.5 MCP + AE ブリッジ
 
 1. MSI/pkgで導入した場合、runtimeが`ScriptUI Panels`、bootstrapが`Scripts/Startup`、cleanupが`Scripts/Shutdown`へ自動配置されることを確認
 2. ポータブル版（zip/tar.gz）の場合は3つのJSXを手動配置

@@ -1,18 +1,27 @@
 param(
     [string]$Source,
     [string[]]$Destination,
+    [Alias("Uninstall")]
+    [switch]$Remove,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
 
-if ([string]::IsNullOrWhiteSpace($Source)) {
-    $Source = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")) "src\indesign\uxp\mcp-bridge-indesign.idjs"
+if (-not $Remove) {
+    if ([string]::IsNullOrWhiteSpace($Source)) {
+        $bundledSource = Join-Path $PSScriptRoot "mcp-bridge-indesign.idjs"
+        if (Test-Path -LiteralPath $bundledSource -PathType Leaf) {
+            $Source = $bundledSource
+        } else {
+            $Source = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")) "src\indesign\uxp\mcp-bridge-indesign.idjs"
+        }
+    }
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "InDesign bridge source not found: $Source"
+    }
+    $Source = (Resolve-Path -LiteralPath $Source).Path
 }
-if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
-    throw "InDesign bridge source not found: $Source"
-}
-$Source = (Resolve-Path -LiteralPath $Source).Path
 
 $targets = @()
 foreach ($item in @($Destination)) {
@@ -42,7 +51,22 @@ if ($targets.Count -eq 0) {
 }
 
 foreach ($target in $targets) {
+    $target = [IO.Path]::GetFullPath($target).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    if ((Split-Path -Leaf $target) -ne "Startup Scripts" -or (Split-Path -Leaf (Split-Path -Parent $target)) -ne "Scripts") {
+        throw "Destination must be an explicit InDesign Scripts\Startup Scripts directory: $target"
+    }
     $destinationFile = Join-Path $target "mcp-bridge-indesign.idjs"
+    if ($Remove) {
+        if ($DryRun) {
+            Write-Host "Would remove fixed bridge file: $destinationFile"
+        } elseif (Test-Path -LiteralPath $destinationFile -PathType Leaf) {
+            Remove-Item -LiteralPath $destinationFile -Force
+            Write-Host "Removed: $destinationFile"
+        } else {
+            Write-Host "Not installed: $destinationFile"
+        }
+        continue
+    }
     if ($DryRun) {
         Write-Host "Would install: $destinationFile"
         continue
@@ -52,4 +76,8 @@ foreach ($target in $targets) {
     Write-Host "Installed: $destinationFile"
 }
 
-Write-Host "Restart InDesign, then verify list-indesign-instances and run-bridge-test."
+if ($Remove) {
+    Write-Host "Restart InDesign to unload the removed Startup Script."
+} else {
+    Write-Host "Restart InDesign, then verify list-indesign-instances and run-bridge-test."
+}

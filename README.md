@@ -163,7 +163,7 @@ codex mcp add illustrator -- "<ABSOLUTE_PATH>\target\release\ai-mcp.exe" serve-s
 
 Build `id-mcp`, copy `src/indesign/uxp/mcp-bridge-indesign.idjs` into the installed InDesign version's `Scripts/Startup Scripts` folder, restart InDesign, and start `id-mcp serve-daemon`. The repository design has no panel or Auto-run toggle, but Startup Script persistence remains a real-host PoC gate.
 
-The raw-first `run-script` surface uses InDesign's documented `app.doScript` String input instead of `eval`/`Function`. This is a real-host-unverified PoC; see [InDesign MCP PoC and E2E gate](docs/indesign-mcp.md) before relying on it for production documents.
+The raw-first `run-script` surface uses InDesign's documented `app.doScript` String input instead of `eval`/`Function`. Inline and file sources are synchronous function bodies that receive `args` and return a value, not general top-level `.idjs` programs; top-level `await` and caller-owned `script.setResult` are unsupported. This is a real-host-unverified PoC; see [InDesign MCP PoC and E2E gate](docs/indesign-mcp.md) before relying on it for production documents.
 
 ```powershell
 codex mcp add indesign -- "<ABSOLUTE_PATH>\target\release\id-mcp.exe" serve-stdio

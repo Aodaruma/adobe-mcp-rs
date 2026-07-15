@@ -163,7 +163,7 @@ codex mcp add illustrator -- "<ABSOLUTE_PATH>\target\release\ai-mcp.exe" serve-s
 
 `id-mcp`をbuildし、`src/indesign/uxp/mcp-bridge-indesign.idjs`を対象versionの`Scripts/Startup Scripts`へ配置してInDesignを再起動し、`id-mcp serve-daemon`を起動します。repository上はpanelやAuto-run toggleを使わない設計ですが、Startup Scriptの常駐は実機PoC gateです。
 
-raw-firstの`run-script`は`eval`/`Function`ではなく、InDesignが公開する`app.doScript`のString入力を使います。現時点では実機未検証のPoCなので、運用前に[InDesign MCP PoCとE2E gate](docs/indesign-mcp.md)を確認してください。
+raw-firstの`run-script`は`eval`/`Function`ではなく、InDesignが公開する`app.doScript`のString入力を使います。inline/fileともに`args`を受け取って値を`return`する同期function bodyであり、一般的なtop-level `.idjs`、top-level `await`、呼び出し側の`script.setResult`には対応しません。現時点では実機未検証のPoCなので、運用前に[InDesign MCP PoCとE2E gate](docs/indesign-mcp.md)を確認してください。
 
 ```powershell
 codex mcp add indesign -- "<ABSOLUTE_PATH>\target\release\id-mcp.exe" serve-stdio

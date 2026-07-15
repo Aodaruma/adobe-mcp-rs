@@ -2,10 +2,12 @@ param(
     [string]$BridgeScriptPath,
     [string]$BridgeStartupScriptPath,
     [string]$BridgeShutdownScriptPath,
+    [string]$InDesignBridgeScriptPath,
     [string]$AeMcpPath,
     [string]$PrMcpPath,
     [string]$PsMcpPath,
     [string]$AiMcpPath,
+    [string]$IdMcpPath,
     [switch]$PlanInstall,
     [switch]$FinalizeInstall,
     [switch]$InteractiveInstall,
@@ -152,10 +154,14 @@ function New-InteractiveInstallerArguments {
     $argumentList.Add("-File") | Out-Null
     $argumentList.Add((ConvertTo-QuotedProcessArgument -Value $scriptPath)) | Out-Null
     Add-PathArgument -Arguments $argumentList -Name "-BridgeScriptPath" -Value $BridgeScriptPath
+    Add-PathArgument -Arguments $argumentList -Name "-BridgeStartupScriptPath" -Value $BridgeStartupScriptPath
+    Add-PathArgument -Arguments $argumentList -Name "-BridgeShutdownScriptPath" -Value $BridgeShutdownScriptPath
+    Add-PathArgument -Arguments $argumentList -Name "-InDesignBridgeScriptPath" -Value $InDesignBridgeScriptPath
     Add-PathArgument -Arguments $argumentList -Name "-AeMcpPath" -Value $AeMcpPath
     Add-PathArgument -Arguments $argumentList -Name "-PrMcpPath" -Value $PrMcpPath
     Add-PathArgument -Arguments $argumentList -Name "-PsMcpPath" -Value $PsMcpPath
     Add-PathArgument -Arguments $argumentList -Name "-AiMcpPath" -Value $AiMcpPath
+    Add-PathArgument -Arguments $argumentList -Name "-IdMcpPath" -Value $IdMcpPath
     $argumentList.Add("-InteractiveInstall") | Out-Null
     return @($argumentList.ToArray())
 }
@@ -170,10 +176,14 @@ function New-InstallWorkerArguments {
     $argumentList.Add("-File") | Out-Null
     $argumentList.Add((ConvertTo-QuotedProcessArgument -Value $scriptPath)) | Out-Null
     Add-PathArgument -Arguments $argumentList -Name "-BridgeScriptPath" -Value $BridgeScriptPath
+    Add-PathArgument -Arguments $argumentList -Name "-BridgeStartupScriptPath" -Value $BridgeStartupScriptPath
+    Add-PathArgument -Arguments $argumentList -Name "-BridgeShutdownScriptPath" -Value $BridgeShutdownScriptPath
+    Add-PathArgument -Arguments $argumentList -Name "-InDesignBridgeScriptPath" -Value $InDesignBridgeScriptPath
     Add-PathArgument -Arguments $argumentList -Name "-AeMcpPath" -Value $AeMcpPath
     Add-PathArgument -Arguments $argumentList -Name "-PrMcpPath" -Value $PrMcpPath
     Add-PathArgument -Arguments $argumentList -Name "-PsMcpPath" -Value $PsMcpPath
     Add-PathArgument -Arguments $argumentList -Name "-AiMcpPath" -Value $AiMcpPath
+    Add-PathArgument -Arguments $argumentList -Name "-IdMcpPath" -Value $IdMcpPath
     return @($argumentList.ToArray())
 }
 
@@ -489,6 +499,108 @@ function Resolve-BridgeShutdownScriptPath {
     throw "Bridge shutdown script not found. Provide -BridgeShutdownScriptPath or place mcp-bridge-shutdown.jsx beside this script."
 }
 
+function Resolve-InDesignBridgeScriptPath {
+    param([string]$InputPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($InputPath) -and (Test-Path -LiteralPath $InputPath -PathType Leaf)) {
+        return (Resolve-Path -LiteralPath $InputPath).Path
+    }
+
+    $fallback = Join-Path $PSScriptRoot "mcp-bridge-indesign.idjs"
+    if (Test-Path -LiteralPath $fallback -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $fallback).Path
+    }
+
+    return $null
+}
+
+function Get-InDesignStartupScriptPaths {
+    $preferenceRoot = Join-Path $env:APPDATA "Adobe\InDesign"
+    if (-not (Test-Path -LiteralPath $preferenceRoot -PathType Container)) {
+        return @()
+    }
+
+    $targets = @()
+    foreach ($versionFolder in @(Get-ChildItem -LiteralPath $preferenceRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^Version\s+' })) {
+        foreach ($localeFolder in @(Get-ChildItem -LiteralPath $versionFolder.FullName -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^[a-z]{2}_[A-Z]{2}$' })) {
+            $targets += Join-Path $localeFolder.FullName "Scripts\Startup Scripts"
+        }
+    }
+    return @($targets | Sort-Object -Unique)
+}
+
+function Get-InDesignBridgeVersion {
+    param([string]$ScriptPath)
+
+    try {
+        if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
+            return $null
+        }
+        $match = Select-String -LiteralPath $ScriptPath -Pattern 'BRIDGE_VERSION\s*=\s*"([^"]+)"' -List
+        if ($match -and $match.Matches.Count -gt 0) {
+            return $match.Matches[0].Groups[1].Value
+        }
+    } catch {}
+    return $null
+}
+
+function Get-InstalledInDesignBridgeVersion {
+    $versions = @()
+    foreach ($startupPath in Get-InDesignStartupScriptPaths) {
+        $scriptPath = Join-Path $startupPath "mcp-bridge-indesign.idjs"
+        $version = Get-InDesignBridgeVersion -ScriptPath $scriptPath
+        if ($version) {
+            $versions += $version
+        } elseif (Test-Path -LiteralPath $scriptPath -PathType Leaf) {
+            $versions += "unknown"
+        }
+    }
+    $versions = @($versions | Sort-Object -Unique)
+    if ($versions.Count -eq 0) {
+        return $null
+    }
+    return ($versions -join ", ")
+}
+
+function Install-InDesignStartupBridge {
+    if (-not (Test-InstallComponentSelected -Key "indesign-startup")) {
+        Add-InstallReport -Key "indesign-startup" -Status "skipped" -Message "Not selected or not available."
+        return
+    }
+
+    $source = Resolve-InDesignBridgeScriptPath -InputPath $InDesignBridgeScriptPath
+    if (-not $source) {
+        Write-Warning "InDesign Startup Script source was not found."
+        Add-InstallReport -Key "indesign-startup" -Status "skipped" -Message "InDesign Startup Script source not found."
+        return
+    }
+
+    $targets = @(Get-InDesignStartupScriptPaths)
+    if ($targets.Count -eq 0) {
+        Write-Host "No current-user InDesign preference profile was detected. The bridge remains bundled beside the installer."
+        Add-InstallReport -Key "indesign-startup" -Status "skipped" -Message "No current-user InDesign preference profile detected; use install-indesign-bridge.ps1 with -Destination."
+        return
+    }
+
+    $installed = 0
+    foreach ($target in $targets) {
+        $destination = Join-Path $target "mcp-bridge-indesign.idjs"
+        try {
+            if (-not (Test-Path -LiteralPath $target -PathType Container)) {
+                New-Item -ItemType Directory -Path $target -Force | Out-Null
+            }
+            Copy-Item -LiteralPath $source -Destination $destination -Force
+            Write-Host "InDesign Startup Script installed: $destination"
+            $installed++
+        } catch {
+            Write-Warning "Failed to install InDesign Startup Script to '$target': $($_.Exception.Message)"
+        }
+    }
+    Add-InstallReport -Key "indesign-startup" -Status "installed" -Message "Installed to $installed detected current-user InDesign profile(s)."
+}
+
 function Get-AeInstallPaths {
     $adobeRoot = "C:\Program Files\Adobe"
     if (-not (Test-Path -LiteralPath $adobeRoot)) {
@@ -656,7 +768,8 @@ function Get-InstallPlan {
     $premiereUxpTargets = Get-UxpCapablePremierePaths -PremierePaths $premiereTargets
     $photoshopTargets = Get-PhotoshopInstallPaths
     $illustratorTargets = Get-IllustratorInstallPaths
-    Write-InstallerLog -Message ("Get-InstallPlan: detected AE={0}, Premiere={1}, PremiereUXP={2}, Photoshop={3}, Illustrator={4}" -f $aeTargets.Count, $premiereTargets.Count, $premiereUxpTargets.Count, $photoshopTargets.Count, $illustratorTargets.Count)
+    $indesignStartupTargets = @(Get-InDesignStartupScriptPaths)
+    Write-InstallerLog -Message ("Get-InstallPlan: detected AE={0}, Premiere={1}, PremiereUXP={2}, Photoshop={3}, Illustrator={4}, InDesignProfiles={5}" -f $aeTargets.Count, $premiereTargets.Count, $premiereUxpTargets.Count, $photoshopTargets.Count, $illustratorTargets.Count, $indesignStartupTargets.Count)
 
     Write-InstallerLog -Message "Get-InstallPlan: resolving UnifiedPluginInstallerAgent."
     $upia = Find-UpiaCommand
@@ -667,7 +780,8 @@ function Get-InstallPlan {
     $photoshopUxpSource = Resolve-PhotoshopUxpSource
     $premiereCepSource = Resolve-PremiereExtensionSource
     $illustratorCepSource = Resolve-IllustratorCepSource
-    Write-InstallerLog -Message ("Get-InstallPlan: sources PremiereUXP='{0}', PhotoshopUXP='{1}', PremiereCEP='{2}', IllustratorCEP='{3}'" -f (Get-DisplayVersion $premiereUxpSource), (Get-DisplayVersion $photoshopUxpSource), (Get-DisplayVersion $premiereCepSource), (Get-DisplayVersion $illustratorCepSource))
+    $indesignSource = Resolve-InDesignBridgeScriptPath -InputPath $InDesignBridgeScriptPath
+    Write-InstallerLog -Message ("Get-InstallPlan: sources PremiereUXP='{0}', PhotoshopUXP='{1}', PremiereCEP='{2}', IllustratorCEP='{3}', InDesign='{4}'" -f (Get-DisplayVersion $premiereUxpSource), (Get-DisplayVersion $photoshopUxpSource), (Get-DisplayVersion $premiereCepSource), (Get-DisplayVersion $illustratorCepSource), (Get-DisplayVersion $indesignSource))
 
     $items = @()
     Write-InstallerLog -Message "Get-InstallPlan: building After Effects item."
@@ -719,6 +833,16 @@ function Get-InstallPlan {
         -OldVersion (Get-CepManifestVersion -ManifestPath "C:\Program Files (x86)\Common Files\Adobe\CEP\extensions\mcp-bridge-illustrator\CSXS\manifest.xml") `
         -NewVersion (Get-CepManifestVersion -ManifestPath (Join-OptionalPath -Path $illustratorCepSource -ChildPath "CSXS\manifest.xml")) `
         -Note "Installs the CEP panel under Window > Extensions."
+
+    Write-InstallerLog -Message "Get-InstallPlan: building InDesign Startup Script item."
+    $items += New-InstallPlanItem `
+        -Key "indesign-startup" `
+        -Label "InDesign UXP Startup Script" `
+        -Available ([bool]$indesignSource) `
+        -Selected $true `
+        -OldVersion (Get-InstalledInDesignBridgeVersion) `
+        -NewVersion (Get-InDesignBridgeVersion -ScriptPath $indesignSource) `
+        -Note ("Installs only into detected current-user preference profiles ({0} detected); otherwise use the bundled dedicated installer with an explicit destination." -f $indesignStartupTargets.Count)
 
     Write-InstallerLog -Message "Get-InstallPlan: resolving Codex config paths."
     $codexConfigPaths = @(Get-CodexConfigPaths)
@@ -1398,7 +1522,8 @@ function Update-CodexMcpConfig {
     $prPath = Resolve-McpBinaryPath -ProvidedPath $PrMcpPath -FileName "pr-mcp.exe"
     $psPath = Resolve-McpBinaryPath -ProvidedPath $PsMcpPath -FileName "ps-mcp.exe"
     $aiPath = Resolve-McpBinaryPath -ProvidedPath $AiMcpPath -FileName "ai-mcp.exe"
-    if (-not $aePath -and -not $prPath -and -not $psPath -and -not $aiPath) {
+    $idPath = Resolve-McpBinaryPath -ProvidedPath $IdMcpPath -FileName "id-mcp.exe"
+    if (-not $aePath -and -not $prPath -and -not $psPath -and -not $aiPath -and -not $idPath) {
         Write-Warning "MCP binaries were not found. Skipped Codex config update."
         Add-InstallReport -Key "codex-config" -Status "skipped" -Message "MCP binaries were not found."
         return
@@ -1445,6 +1570,13 @@ function Update-CodexMcpConfig {
                 $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.illustrator" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
             }
 
+            if ($idPath) {
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $idPath))
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "args" -ValueLine 'args = ["serve-stdio"]'
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
+                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            }
+
             Set-Content -LiteralPath $config -Value ($lines -join "`r`n") -Encoding UTF8
             Write-Host "Codex MCP server config updated: $config"
             $updated++
@@ -1460,7 +1592,8 @@ function Get-McpAutostartEntries {
         [pscustomobject]@{ Key = "aftereffects"; EntryName = "AfterEffectsMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $AeMcpPath -FileName "ae-mcp.exe") },
         [pscustomobject]@{ Key = "premiere"; EntryName = "PremiereMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $PrMcpPath -FileName "pr-mcp.exe") },
         [pscustomobject]@{ Key = "photoshop"; EntryName = "PhotoshopMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $PsMcpPath -FileName "ps-mcp.exe") },
-        [pscustomobject]@{ Key = "illustrator"; EntryName = "IllustratorMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $AiMcpPath -FileName "ai-mcp.exe") }
+        [pscustomobject]@{ Key = "illustrator"; EntryName = "IllustratorMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $AiMcpPath -FileName "ai-mcp.exe") },
+        [pscustomobject]@{ Key = "indesign"; EntryName = "InDesignMcp"; BinaryPath = (Resolve-McpBinaryPath -ProvidedPath $IdMcpPath -FileName "id-mcp.exe") }
     )
 }
 
@@ -1684,6 +1817,7 @@ if (-not $SkipUserInstall) {
     }
     Install-PremiereUxpBridge
     Install-PhotoshopUxpBridge
+    Install-InDesignStartupBridge
     Update-CodexMcpConfig
     Repair-McpAutostartRegistrations
 }

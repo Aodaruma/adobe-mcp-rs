@@ -35,8 +35,8 @@ Therefore run-script does **not** call eval or the Function constructor. It send
 
 | Name | Purpose |
 |---|---|
-| run-script | Submit raw UXP code through app.doScript; requires mode: "unsafe" and description |
-| run-script-file | Validate an .idjs file in Rust, then submit its contents; supports unsafe and exact path/SHA-256 trusted modes |
+| run-script | Submit a synchronous UXP function body through app.doScript; requires mode: "unsafe" and description |
+| run-script-file | Validate a local function-body source file in Rust, then submit its contents; supports unsafe and exact path/SHA-256 trusted modes |
 | run-template | Run ping, app/document/page/story read templates |
 | get-script-result | Read a retained result by requestId |
 | get-results | Read a retained result by ID or the latest retained result |
@@ -44,7 +44,7 @@ Therefore run-script does **not** call eval or the Function constructor. It send
 | list-indesign-instances | List protocol-v1 Startup Script instances |
 | run-bridge-test | Execute ping through the daemon and file bridge |
 
-The indesign://documents resource executes the read-only listDocuments template. Raw code receives a single args object and should synchronously return a JSON-serializable value. The wrapper reports it with UXP script.setResult:
+The indesign://documents resource executes the read-only listDocuments template. Raw code receives a single args object and must synchronously return a JSON-serializable value. `run-script-file` does **not** execute a general top-level `.idjs` program: the file contents are inserted into the same function body as inline code. Therefore top-level `await`, module-style top-level control flow, and calling `require("uxp").script.setResult` from submitted code are unsupported. The bridge owns `script.setResult` after the function returns:
 
 ~~~javascript
 const { app } = require("indesign");
@@ -74,6 +74,26 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-indesign-bridge.ps1
 ~~~bash
 bash ./scripts/install-indesign-bridge.sh
 ~~~
+
+Preview destinations before installation, or remove only the fixed bridge filename from detected/explicit Startup Scripts directories:
+
+~~~powershell
+.\scripts\install-indesign-bridge.ps1 -DryRun
+.\scripts\install-indesign-bridge.ps1 -Remove -DryRun
+.\scripts\install-indesign-bridge.ps1 -Remove
+~~~
+
+~~~bash
+bash ./scripts/install-indesign-bridge.sh --dry-run
+bash ./scripts/install-indesign-bridge.sh --remove --dry-run
+bash ./scripts/install-indesign-bridge.sh --remove
+~~~
+
+Both dedicated installers accept only a directory ending in `Scripts/Startup Scripts` and only install or remove `mcp-bridge-indesign.idjs`; they never remove the directory or unrelated scripts. Pass `-Destination` / `--destination` when auto-detection cannot identify the verified profile.
+
+Windows release ZIP/MSI artifacts include `id-mcp.exe`, the Startup Script, and `install-indesign-bridge.ps1`. The generic MSI helper updates an existing Codex config and repairs an already opted-in `InDesignMcp` current-user autostart entry. It copies the Startup Script only into current-user InDesign preference profiles that actually exist.
+
+macOS release archives/pkg include `id-mcp` and an InDesign bundle under `/usr/local/share/ae-mcp/indesign`. The root pkg postinstall does not guess or modify a user preference profile. Run the bundled `install-indesign-bridge.sh --dry-run` as the target user, then pass an explicit verified destination if detection finds none.
 
 Manual Windows destination:
 
@@ -107,7 +127,7 @@ Record OS, InDesign version, UXP version, locale, commit, and bridge version.
 4. With no document open, read indesign://documents; expect an empty list.
 5. Open two documents and verify names, IDs, page/story counts, and the active-document template.
 6. Run a non-mutating raw script through run-script; verify the returned value and corresponding requestId.
-7. Run an allowed .idjs file through run-script-file; verify path/hash/size audit metadata in the retained registry.
+7. Run an allowed synchronous function-body file through run-script-file; verify path/hash/size audit metadata in the retained registry. Do not use a general top-level `.idjs`, top-level await, or script.setResult in this file.
 8. Run a small mutation with a recognizable undo name. Confirm one undo restores the document.
 9. Submit a delayed request with a short client timeout; recover it using get-script-result.
 10. Start the daemon before InDesign and repeat discovery. Then restart InDesign and verify stale-instance reporting and rediscovery.

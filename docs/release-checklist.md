@@ -8,7 +8,7 @@
 2. `cargo test` が成功
 3. AEの公開MCP操作を手動確認（`list-ae-instances`, `run-bridge-test`, `run-jsx`, `get-results`）
 4. Windows/macOS のインストーラ生成確認
-5. 4 binary の OS 別 help を確認（Windows は `autostart` のみ、macOS は `service` のみ）
+5. 5 binary の OS 別 help を確認（Windows は `autostart` のみ、macOS は `service` のみ）
 6. Windows は各 binary で `autostart install|start|status|stop|uninstall`、macOS は `service install|start|status|stop|uninstall` を確認
 7. unsupported なサブコマンドと起動・停止未完了が成功終了しないことを確認
 
@@ -33,6 +33,8 @@
 3. アーティファクト公開
 4. リリースノート公開
 5. Windows MSI の初回 install が autostart を暗黙に有効化しないこと、upgrade が既存 Run key を修復すること、通常 uninstall が daemon と Run key を除去することを確認
+6. Windows/macOS artifactに`id-mcp`、InDesign Startup Script、専用installerが含まれ、macOS root postinstallがユーザーprofileを推測更新しないことを確認
+7. 専用InDesign installerのinstall/remove dry-runを確認し、固定bridge file以外を削除しないことを確認
 
 ## 5. リリース後
 
