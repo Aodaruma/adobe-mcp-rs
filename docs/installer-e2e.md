@@ -63,7 +63,9 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 
 ## 3.3 Windows MSI の install / upgrade / uninstall
 
-2026-07-15のWindows実機では、WiX 5.0.2で0.4.4 ZIP/MSIを生成し、MSI Property/File/Feature tableとZIP entryを検査した。`ProductVersion=0.4.4.0`、全bridge featureのdefault `Level=1`、`id-mcp.exe`、`mcp-bridge-indesign.idjs`、`install-indesign-bridge.ps1`の収録は確認済み。別hostの実機検証と競合させないため、install/upgrade/uninstall matrix自体はmain統合後に実施する。
+2026-07-15〜16のWindows実機では、main統合後のsourceからWiX 5.0.2で0.4.4 ZIP/MSIを再生成し、MSI Property/File/Feature tableとZIP entryを検査した。`ProductVersion=0.4.4.0`、全bridge featureのdefault `Level=1`、`id-mcp.exe`、`mcp-bridge-indesign.idjs`、`install-indesign-bridge.ps1`の収録を確認済み。`msiexec /a`で展開した5 binaryの`health`、AE 3 JSX・InDesign bridge・専用installerのsource hash一致も成功した。実ユーザーconfigのcopyに対してuser custom actionを2回実行し、既存byte列の保持、不足する`mcp_servers.indesign`だけの追加、2回目の無変更、実configの非変更を確認した。
+
+このsessionは非昇格で、旧0.4.2のbinaryを複数のCodex MCP sessionが使用中だった。実machine upgradeを強行すると他taskのMCP接続を中断し、UAC承認も必要になるため、登録済み0.4.2からの実upgrade/uninstallだけは専用の管理者release sessionへ留保する。
 
 1. 初回 install では5 hostとも Run key が新規作成されない
 2. 任意の host で `autostart install` し、MSI upgrade 後も opt-in が維持され、登録値が新しいインストール先を指す
