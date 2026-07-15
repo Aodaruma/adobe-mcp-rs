@@ -12,7 +12,7 @@
 | Tool | 用途 |
 |---|---|
 | `run-jsx` | `mode: "unsafe"`を明示して文字列JSXを同期実行 |
-| `run-jsx-file` | `mode: "unsafe"`を明示してローカルJSXファイルを同期実行 |
+| `run-jsx-file` | allowed root内の`unsafe`、またはpath/SHA-256 allowlist済みの`trusted`ローカルJSXファイルを同期実行 |
 | `get-jsx-result` | `requestId`でretained resultを回収 |
 | `list-ae-instances` | daemonが認識するAE instanceを列挙 |
 | `get-results` | 最新または指定`requestId`のretained resultを回収 |

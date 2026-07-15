@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use mcp_core::{host_spec_by_id, AppConfig, HostSpec};
+use mcp_core::{host_spec_by_id, AppConfig, HostSpec, ScriptFileAudit};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -150,6 +150,8 @@ pub struct RequestRecord {
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_raw: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<ScriptFileAudit>,
 }
 
 impl RequestRecord {
@@ -511,6 +513,16 @@ impl BridgeClient {
         retention_seconds: u64,
         host_instance: Option<HostInstance>,
     ) -> Result<BridgeRunOutcome> {
+        self.prepare_request_with_audit(command, retention_seconds, host_instance, None)
+    }
+
+    pub fn prepare_request_with_audit(
+        &self,
+        command: &str,
+        retention_seconds: u64,
+        host_instance: Option<HostInstance>,
+        audit: Option<ScriptFileAudit>,
+    ) -> Result<BridgeRunOutcome> {
         self.cleanup_registry()?;
         let request_id = generate_request_id();
         let created_at = chrono_like_timestamp();
@@ -526,6 +538,7 @@ impl BridgeClient {
             message: None,
             result: None,
             result_raw: None,
+            audit,
         };
         self.write_request_record(&record)?;
         Ok(BridgeRunOutcome {
@@ -1627,6 +1640,26 @@ mod tests {
         };
         write_json_file(&dir.join("heartbeat.json"), &instance).expect("heartbeat");
         instance
+    }
+
+    #[test]
+    fn request_registry_retains_script_audit_metadata() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg).expect("client");
+        let audit = ScriptFileAudit {
+            host_id: "aftereffects".to_string(),
+            mode: "unsafe".to_string(),
+            source_path: "C:/scripts/test.jsx".to_string(),
+            source_sha256: "a".repeat(64),
+            source_size_bytes: 12,
+        };
+        let prepared = bridge
+            .prepare_request_with_audit("executeJsx", 60, None, Some(audit.clone()))
+            .expect("prepare request");
+
+        let raw = fs::read_to_string(&prepared.registry_path).expect("registry file");
+        let record: RequestRecord = serde_json::from_str(&raw).expect("registry record");
+        assert_eq!(record.audit, Some(audit));
     }
 
     #[test]

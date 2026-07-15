@@ -213,6 +213,8 @@ enabled = true
 
 全Tool / Prompt / Resourceと非公開互換名の対応は [After Effects MCP public surface](after-effects-mcp-surface.md) を参照してください。
 
+`run-jsx-file` は絶対パス、canonical allowed root、host別拡張子、UTF-8、サイズを検証します。`mode = "trusted"` は設定した path と SHA-256 の一致が必須です。設定例と旧configからの移行方法は [run-jsx-file の信頼ポリシー](script-file-security.md) を参照してください。`mode = "unsafe"` は sandbox を意味しません。
+
 ## 7. 動作確認（最短）
 
 1. After Effects を起動

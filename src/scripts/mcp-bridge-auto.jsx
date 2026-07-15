@@ -3183,8 +3183,8 @@ function executeJsx(args) {
         var code = args.code;
         var mode = args.mode;
         description = args.description || "";
-        if (mode !== "unsafe") {
-            throw new Error("executeJsx requires mode='unsafe'");
+        if (mode !== "unsafe" && mode !== "trusted") {
+            throw new Error("executeJsx requires mode='unsafe' or mode='trusted'");
         }
         if (!description) {
             throw new Error("executeJsx requires a non-empty description");
@@ -3219,7 +3219,10 @@ function executeJsx(args) {
         return JSON.stringify({
             status: "success",
             description: description,
+            mode: mode,
             sourcePath: sourcePath,
+            sourceSha256: args.sourceSha256 || "",
+            sourceSizeBytes: args.sourceSizeBytes,
             result: fxMakeJsonSafe(result)
         }, null, 2);
     } catch (error) {

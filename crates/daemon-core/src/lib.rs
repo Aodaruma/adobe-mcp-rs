@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use bridge_core::{BridgeClient, BridgeRunOptions, BridgeTarget};
-use mcp_core::{host_spec_by_id, AppConfig};
+use mcp_core::{host_spec_by_id, AppConfig, ScriptFileAudit};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -35,6 +35,8 @@ struct DaemonRequest {
     retention_seconds: Option<u64>,
     #[serde(default)]
     global_exclusive: bool,
+    #[serde(default)]
+    audit: Option<ScriptFileAudit>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -266,9 +268,12 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
     let instance = match state.bridge.resolve_target(&target) {
         Ok(instance) => instance,
         Err(error) => {
-            let prepared = state
-                .bridge
-                .prepare_request(&command, retention_seconds, None)?;
+            let prepared = state.bridge.prepare_request_with_audit(
+                &command,
+                retention_seconds,
+                None,
+                request.audit.clone(),
+            )?;
             return Ok(state
                 .bridge
                 .mark_request_failed(&prepared.record.request_id, error.to_string())?
@@ -276,10 +281,12 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
         }
     };
 
-    let prepared =
-        state
-            .bridge
-            .prepare_request(&command, retention_seconds, Some(instance.clone()))?;
+    let prepared = state.bridge.prepare_request_with_audit(
+        &command,
+        retention_seconds,
+        Some(instance.clone()),
+        request.audit.clone(),
+    )?;
     let request_id = prepared.record.request_id.clone();
     let instance_id = instance.instance_id.clone();
     let options = BridgeRunOptions {
@@ -705,7 +712,14 @@ mod tests {
                 "args": {},
                 "timeoutMs": 20,
                 "pollIntervalMs": 5,
-                "retentionSeconds": 60
+                "retentionSeconds": 60,
+                "audit": {
+                    "hostId": "aftereffects",
+                    "mode": "unsafe",
+                    "sourcePath": "C:/scripts/test.jsx",
+                    "sourceSha256": "a".repeat(64),
+                    "sourceSizeBytes": 12
+                }
             }),
             100,
         )
@@ -713,6 +727,12 @@ mod tests {
         assert_eq!(
             timed_out.get("status").and_then(Value::as_str),
             Some("timeout")
+        );
+        assert_eq!(
+            timed_out
+                .pointer("/audit/sourcePath")
+                .and_then(Value::as_str),
+            Some("C:/scripts/test.jsx")
         );
         let request_id = timed_out
             .get("requestId")
@@ -747,6 +767,12 @@ mod tests {
         assert_eq!(
             recovered.get("status").and_then(Value::as_str),
             Some("completed")
+        );
+        assert_eq!(
+            recovered
+                .pointer("/audit/sourceSha256")
+                .and_then(Value::as_str),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         let latest = call_daemon(&cfg, json!({ "op": "latestResult" }), 100).unwrap();
         assert_eq!(latest.get("requestId"), recovered.get("requestId"));

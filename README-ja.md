@@ -224,7 +224,7 @@ After Effects:
 
 この9 Toolが `tools/list` に返る After Effects の公開契約すべてです。`run-script`、`create-composition`、effect / render queue / project lifecycle の旧Tool名は、非公開の互換dispatchとしてのみ受理します。旧Tool呼出時は非推奨の案内と公開置換先を返し、Promptとセットアップ手順は非公開名へ依存しません。
 
-`run-script` は意図的に再公開しません。allowlist は旧clientとの互換に有用ですが、非同期direct-file動作が同期daemon brokerの公開契約と一致せず、独立したtrusted script境界も未定義だからです。新規のhost固有操作は、その境界を設計するまで `mode: "unsafe"` を明示した `run-jsx` を使います。`aftereffects://compositions` ResourceとAfter Effects Promptが案内する全操作はdaemon broker経路を使い、Prompt自体は再利用可能な手順だけを返します。
+`run-script` は意図的に再公開しません。allowlist は旧clientとの互換に有用ですが、非同期direct-file動作が同期daemon brokerの公開契約と一致しないためです。新規のhost固有操作は `mode: "unsafe"` を明示した `run-jsx` を使います。`aftereffects://compositions` ResourceとAfter Effects Promptが案内する全操作はdaemon broker経路を使い、Prompt自体は再利用可能な手順だけを返します。
 
 Premiere Pro:
 
@@ -259,7 +259,7 @@ Illustrator:
 - `list-illustrator-instances`
 - `run-bridge-test`
 
-任意 code 実行では `mode: "unsafe"` と短い `description` を明示します。host 側 JavaScript/JSX は強い権限を持つため、MCP 呼び出し上も明示的に扱う方針です。
+任意 code 実行では `mode: "unsafe"` と短い `description` を明示します。`unsafe` は sandbox を意味せず、host 側 JavaScript/JSX は Adobe host と同じ強い権限で動作します。`run-jsx-file` の allowed root、trusted path/hash、拡張子、監査情報は [run-jsx-file の信頼ポリシー](docs/script-file-security.md) を参照してください。
 
 ## 今後の拡張方針
 

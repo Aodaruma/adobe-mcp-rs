@@ -76,6 +76,7 @@ impl ProtocolFixture {
             instance_heartbeat_stale_ms: 120,
             daemon_addr: "127.0.0.1:0".to_string(),
             log_level: "error".to_string(),
+            script_files: Default::default(),
         };
         Ok(Self {
             _temp_dir: temp_dir,

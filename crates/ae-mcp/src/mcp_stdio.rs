@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use bridge_core::BridgeClient;
 use mcp_core::{
     effects_help_text, general_help_text, legacy_tool_replacement, prompt_messages, prompt_specs,
-    tool_specs, AppConfig,
+    tool_specs, validate_and_read_script_file, AppConfig,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -483,6 +483,7 @@ fn dispatch_tool_inner(
                 &args,
                 timeout_ms,
                 true,
+                None,
                 "Error cleaning up preview folder",
             )
         }
@@ -673,6 +674,7 @@ fn run_direct_bridge_call_with_timeout(
         &args,
         timeout_ms,
         false,
+        None,
         error_prefix,
     )
 }
@@ -698,24 +700,26 @@ fn run_jsx_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Result<
         &args,
         timeout_ms,
         false,
+        None,
         "Error running JSX",
     )
 }
 
 fn run_jsx_file_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Result<Value> {
     let path = required_non_empty_string(&args, "path")?;
-    validate_unsafe_mode(&args)?;
+    let mode = required_non_empty_string(&args, "mode")?;
     let description = required_non_empty_string(&args, "description")?;
-    let code =
-        fs::read_to_string(path).with_context(|| format!("failed to read JSX file: {path}"))?;
-    validate_jsx_size(&code)?;
+    let validated = validate_and_read_script_file(cfg, path, mode)?;
+    let audit = serde_json::to_value(&validated.audit)?;
 
     let payload = json!({
-        "code": code,
+        "code": validated.code,
         "args": args.get("args").cloned().unwrap_or_else(|| json!({})),
-        "mode": "unsafe",
+        "mode": mode,
         "description": description,
-        "sourcePath": path,
+        "sourcePath": validated.audit.source_path,
+        "sourceSha256": validated.audit.source_sha256,
+        "sourceSizeBytes": validated.audit.source_size_bytes,
     });
     let timeout_ms = timeout_ms_from_args(cfg, &args);
 
@@ -726,6 +730,7 @@ fn run_jsx_file_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Re
         &args,
         timeout_ms,
         false,
+        Some(audit),
         "Error running JSX file",
     )
 }
@@ -761,6 +766,7 @@ fn run_daemon_command(
     option_args: &Value,
     timeout_ms: u64,
     global_exclusive: bool,
+    audit: Option<Value>,
     error_prefix: &str,
 ) -> Result<Value> {
     let retention_seconds = option_args
@@ -789,7 +795,8 @@ fn run_daemon_command(
             "timeoutMs": timeout_ms,
             "pollIntervalMs": cfg.poll_interval_ms,
             "retentionSeconds": retention_seconds,
-            "globalExclusive": global_exclusive
+            "globalExclusive": global_exclusive,
+            "audit": audit
         }),
         timeout_ms,
     );

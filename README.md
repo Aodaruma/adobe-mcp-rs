@@ -224,7 +224,7 @@ After Effects currently exposes:
 
 This nine-tool list is the complete After Effects public contract returned by `tools/list`. Historical names such as `run-script`, `create-composition`, effect helpers, render-queue helpers, and project lifecycle helpers remain accepted only by hidden compatibility dispatch. A legacy call includes a deprecation notice and its public replacement; prompts and setup instructions do not depend on hidden names.
 
-`run-script` is intentionally not republished. Its allowlist remains useful for old clients, but its asynchronous direct-file behavior does not match the synchronous daemon-backed public contract, and it does not yet define a distinct trusted-script boundary. New host-specific operations should use explicit `run-jsx` calls (`mode: "unsafe"`) until such a boundary is designed. The `aftereffects://compositions` resource and every operation named by an After Effects prompt use the daemon broker; prompts themselves only return reusable instructions.
+`run-script` is intentionally not republished. Its allowlist remains useful for old clients, but its asynchronous direct-file behavior does not match the synchronous daemon-backed public contract. New host-specific operations should use explicit `run-jsx` calls (`mode: "unsafe"`). The `aftereffects://compositions` resource and every operation named by an After Effects prompt use the daemon broker; prompts themselves only return reusable instructions.
 
 Premiere Pro currently exposes:
 
@@ -259,7 +259,7 @@ Illustrator currently exposes:
 - `list-illustrator-instances`
 - `run-bridge-test`
 
-For arbitrary code execution, pass `mode: "unsafe"` and a short `description`. This is intentional: host-side JavaScript/JSX execution is powerful and should be explicit in MCP calls.
+For arbitrary code execution, pass `mode: "unsafe"` and a short `description`. `unsafe` does not mean sandboxed: host-side JavaScript/JSX runs with the Adobe host's authority. See the [run-jsx-file trust policy](docs/script-file-security.md) for allowed roots, trusted path/hash entries, extensions, migration behavior, and retained audit metadata.
 
 ## Expansion Plan
 

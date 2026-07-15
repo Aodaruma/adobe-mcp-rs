@@ -37,13 +37,13 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "run-jsx-file",
-            description: "Run an unsafe local JavaScript/JSX-style file in Premiere Pro UXP and wait for a result",
+            description: "Run a validated local JavaScript/JSX-style file in Premiere Pro UXP and wait for a result",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "minLength": 1 },
                     "args": { "type": "object" },
-                    "mode": { "type": "string", "enum": ["unsafe"] },
+                    "mode": { "type": "string", "enum": ["unsafe", "trusted"] },
                     "description": { "type": "string", "minLength": 1 },
                     "timeoutMs": { "type": "integer", "minimum": 1 },
                     "resultRetentionSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
@@ -248,6 +248,8 @@ Legacy CEP bridge is kept as a fallback only.
 Best practices:
 - Prefer run-jsx or run-jsx-file for general automation. The code runs inside the Premiere UXP panel.
 - Pass mode="unsafe" and a short description for custom code so the call is explicit.
+- run-jsx-file mode="unsafe" is limited to configured allowed roots; mode="trusted" requires an exact configured path/SHA-256 entry.
+- "unsafe" is not a sandbox; code runs with the Adobe host's authority.
 - Use run-script only for allowlisted template operations listed below.
 - Use get-jsx-result with requestId when a command times out or needs later inspection.
 - Prefer sequenceName/sequenceIndex to target the right sequence
@@ -279,10 +281,16 @@ mod tests {
 
     #[test]
     fn public_tools_use_generic_execution_surface() {
-        let names = tool_specs()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>();
+        let specs = tool_specs();
+        let file_tool = specs
+            .iter()
+            .find(|tool| tool.name == "run-jsx-file")
+            .unwrap();
+        assert!(file_tool.input_schema["properties"]["mode"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("trusted")));
+        let names = specs.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
         assert!(names.contains(&"run-jsx"));
         assert!(names.contains(&"run-jsx-file"));
         assert!(names.contains(&"get-jsx-result"));

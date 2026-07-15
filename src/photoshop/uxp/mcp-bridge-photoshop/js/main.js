@@ -824,8 +824,8 @@
 
   async function executeJsx(args) {
     args = args || {};
-    if (args.mode !== "unsafe") {
-      throw new Error("executeJsx requires mode='unsafe'");
+    if (args.mode !== "unsafe" && args.mode !== "trusted") {
+      throw new Error("executeJsx requires mode='unsafe' or mode='trusted'");
     }
     var description = String(args.description || "").trim();
     if (!description) {
@@ -871,7 +871,10 @@
     return {
       status: "success",
       description: description,
+      mode: args.mode,
       sourcePath: sourcePath,
+      sourceSha256: args.sourceSha256 || null,
+      sourceSizeBytes: args.sourceSizeBytes || null,
       result: toSerializable(result, 0, [])
     };
   }

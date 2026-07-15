@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, ptr};
@@ -209,6 +211,62 @@ pub struct BridgePaths {
     pub result_file: PathBuf,
 }
 
+pub const DEFAULT_SCRIPT_FILE_MAX_BYTES: u64 = 1_048_576;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedScriptFile {
+    /// Absolute path of a bundled/deployment-managed script.
+    pub path: PathBuf,
+    /// Lower- or upper-case SHA-256 hex is accepted; comparisons are case-insensitive.
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptFilePolicyConfig {
+    /// Canonical roots from which user-provided `mode = "unsafe"` files may run.
+    #[serde(default)]
+    pub allowed_roots: Vec<PathBuf>,
+    /// Exact path and digest allowlist for deployment-managed `mode = "trusted"` files.
+    #[serde(default)]
+    pub trusted_scripts: Vec<TrustedScriptFile>,
+    #[serde(default = "default_script_file_max_bytes")]
+    pub max_bytes: u64,
+}
+
+impl Default for ScriptFilePolicyConfig {
+    fn default() -> Self {
+        // Migration default for configurations created before this policy existed. It keeps
+        // workspace-local file execution working, while no longer allowing arbitrary paths.
+        let allowed_roots = std::env::current_dir().into_iter().collect();
+        Self {
+            allowed_roots,
+            trusted_scripts: Vec::new(),
+            max_bytes: DEFAULT_SCRIPT_FILE_MAX_BYTES,
+        }
+    }
+}
+
+fn default_script_file_max_bytes() -> u64 {
+    DEFAULT_SCRIPT_FILE_MAX_BYTES
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptFileAudit {
+    pub host_id: String,
+    pub mode: String,
+    pub source_path: String,
+    pub source_sha256: String,
+    pub source_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedScriptFile {
+    pub code: String,
+    pub audit: ScriptFileAudit,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
     #[serde(default = "default_host_id")]
@@ -228,6 +286,8 @@ pub struct AppConfig {
     pub daemon_addr: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    #[serde(default)]
+    pub script_files: ScriptFilePolicyConfig,
 }
 
 impl Default for AppConfig {
@@ -244,8 +304,194 @@ impl Default for AppConfig {
             instance_heartbeat_stale_ms: default_instance_heartbeat_stale_ms(),
             daemon_addr: default_daemon_addr(),
             log_level: default_log_level(),
+            script_files: ScriptFilePolicyConfig::default(),
         }
     }
+}
+
+/// Validate and read a host-side script file before it is sent to an Adobe host.
+///
+/// This is a path/trust guard and audit mechanism. In particular, `mode = "unsafe"` does
+/// **not** sandbox the script; it still executes with the Adobe host's authority.
+pub fn validate_and_read_script_file(
+    cfg: &AppConfig,
+    requested_path: &str,
+    mode: &str,
+) -> Result<ValidatedScriptFile> {
+    if mode != "unsafe" && mode != "trusted" {
+        anyhow::bail!("mode must be either 'unsafe' or 'trusted' for script file execution");
+    }
+    if cfg.script_files.max_bytes == 0 {
+        anyhow::bail!("script_files.max_bytes must be greater than 0");
+    }
+
+    let path = Path::new(requested_path);
+    if !path.is_absolute() {
+        anyhow::bail!("script file path must be absolute: {requested_path}");
+    }
+    let canonical_path = fs::canonicalize(path)
+        .with_context(|| format!("failed to canonicalize script file: {requested_path}"))?;
+    let metadata = fs::metadata(&canonical_path).with_context(|| {
+        format!(
+            "failed to read script file metadata: {}",
+            canonical_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "script path is not a regular file: {}",
+            canonical_path.display()
+        );
+    }
+
+    validate_script_extension(&cfg.host_id, &canonical_path)?;
+    if metadata.len() > cfg.script_files.max_bytes {
+        anyhow::bail!(
+            "script file is too large: {} bytes > {} bytes",
+            metadata.len(),
+            cfg.script_files.max_bytes
+        );
+    }
+
+    let trusted_sha256 = match mode {
+        "unsafe" => {
+            validate_unsafe_script_root(cfg, &canonical_path)?;
+            None
+        }
+        "trusted" => Some(trusted_script_expected_sha256(cfg, &canonical_path)?),
+        _ => unreachable!("mode was validated above"),
+    };
+
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(&canonical_path)
+        .with_context(|| format!("failed to open script file: {}", canonical_path.display()))?
+        .take(cfg.script_files.max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read script file: {}", canonical_path.display()))?;
+    if bytes.len() as u64 > cfg.script_files.max_bytes {
+        anyhow::bail!(
+            "script file is too large: {} bytes > {} bytes",
+            bytes.len(),
+            cfg.script_files.max_bytes
+        );
+    }
+    let code = String::from_utf8(bytes).with_context(|| {
+        format!(
+            "script file is not valid UTF-8: {}",
+            canonical_path.display()
+        )
+    })?;
+    let source_sha256 = sha256_hex(code.as_bytes());
+    if let Some(expected) = trusted_sha256 {
+        if !expected.eq_ignore_ascii_case(&source_sha256) {
+            anyhow::bail!(
+                "trusted script SHA-256 mismatch for {}",
+                canonical_path.display()
+            );
+        }
+    }
+
+    Ok(ValidatedScriptFile {
+        audit: ScriptFileAudit {
+            host_id: cfg.host_id.clone(),
+            mode: mode.to_string(),
+            source_path: canonical_path.display().to_string(),
+            source_sha256,
+            source_size_bytes: code.len() as u64,
+        },
+        code,
+    })
+}
+
+fn validate_script_extension(host_id: &str, path: &Path) -> Result<()> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| anyhow::anyhow!("script file must have a supported extension"))?;
+    let allowed = match host_id {
+        "aftereffects" | "illustrator" => &["jsx"][..],
+        "premiere" | "photoshop" => &["js", "jsx"][..],
+        other => anyhow::bail!("unsupported hostId for script file policy: {other}"),
+    };
+    if !allowed.contains(&extension.as_str()) {
+        anyhow::bail!(
+            "unsupported script extension '.{}' for {} (allowed: {})",
+            extension,
+            host_id,
+            allowed
+                .iter()
+                .map(|value| format!(".{value}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn validate_unsafe_script_root(cfg: &AppConfig, canonical_path: &Path) -> Result<()> {
+    let mut invalid_roots = Vec::new();
+    for root in &cfg.script_files.allowed_roots {
+        if !root.is_absolute() {
+            invalid_roots.push(format!("{} (not absolute)", root.display()));
+            continue;
+        }
+        match fs::canonicalize(root) {
+            Ok(canonical_root)
+                if canonical_root.is_dir() && canonical_path.starts_with(&canonical_root) =>
+            {
+                return Ok(())
+            }
+            Ok(canonical_root) if !canonical_root.is_dir() => {
+                invalid_roots.push(format!("{} (not a directory)", root.display()))
+            }
+            Ok(_) => {}
+            Err(error) => invalid_roots.push(format!("{} ({error})", root.display())),
+        }
+    }
+    let suffix = if invalid_roots.is_empty() {
+        String::new()
+    } else {
+        format!(" Invalid configured roots: {}.", invalid_roots.join("; "))
+    };
+    anyhow::bail!(
+        "unsafe script file is outside configured script_files.allowed_roots: {}.{}",
+        canonical_path.display(),
+        suffix
+    )
+}
+
+fn trusted_script_expected_sha256(cfg: &AppConfig, canonical_path: &Path) -> Result<String> {
+    for trusted in &cfg.script_files.trusted_scripts {
+        if !trusted.path.is_absolute() {
+            continue;
+        }
+        let Ok(trusted_path) = fs::canonicalize(&trusted.path) else {
+            continue;
+        };
+        if trusted_path == canonical_path {
+            if !is_sha256_hex(&trusted.sha256) {
+                anyhow::bail!(
+                    "trusted script has an invalid configured SHA-256 digest: {}",
+                    trusted.path.display()
+                );
+            }
+            return Ok(trusted.sha256.clone());
+        }
+    }
+    anyhow::bail!(
+        "trusted script is not present in script_files.trusted_scripts: {}",
+        canonical_path.display()
+    )
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn default_host_id() -> String {
@@ -451,13 +697,13 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "run-jsx-file",
-            description: "Run an unsafe local JSX file in After Effects and wait for a result",
+            description: "Run a validated local JSX file in After Effects and wait for a result",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "minLength": 1 },
                     "args": { "type": "object" },
-                    "mode": { "type": "string", "enum": ["unsafe"] },
+                    "mode": { "type": "string", "enum": ["unsafe", "trusted"] },
                     "description": { "type": "string", "minLength": 1 },
                     "timeoutMs": { "type": "integer", "minimum": 1 },
                     "resultRetentionSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
@@ -773,6 +1019,8 @@ Best practices:
 - Use get-jsx-result with requestId after a timeout
 - save-frame-png is optimized for fast previews (single PNG only)
 - Use run-jsx for render-queue and other host-specific operations that do not have a public intent tool
+- run-jsx-file requires an absolute path. Use mode="unsafe" only inside configured allowed roots, or mode="trusted" for an exact configured path/SHA-256 entry.
+- "unsafe" is explicit host-authority execution, not a sandbox.
 - For save-frame-png, keep suppressDialogs at its default true to avoid blocking dialogs
 - Ensure outputPath points to a writable location
 - Public JSX execution has no interactive flag. Write non-interactive JSX, pass explicit paths in code/args, and avoid prompt-based project lifecycle operations.
@@ -781,7 +1029,7 @@ Best practices:
 Compatibility boundary:
 - Historical host-specific tool names and `run-script` are accepted only as hidden legacy dispatch entries and are not advertised by `tools/list`.
 - A legacy call returns a deprecation notice naming the public replacement. New prompts and setup instructions never depend on those names.
-- `run-script` remains hidden because its allowlist is useful for compatibility, but its historical asynchronous direct-file semantics do not match the synchronous daemon-backed public contract. It should not be republished until a distinct trusted-script safety boundary and broker semantics are defined.
+- `run-script` remains hidden because its allowlist is useful for compatibility, but its historical asynchronous direct-file semantics do not match the synchronous daemon-backed public contract. The trusted path/SHA-256 policy applies to public run-jsx-file and does not change that legacy transport.
 - MCP resources that query After Effects use the daemon broker. MCP prompts only return instructions; every operation named by those instructions uses a public daemon-backed tool or resource.
 
 Bridge script allowlist (compatibility/diagnostics, not public MCP tools):
@@ -855,6 +1103,13 @@ Public access:
 mod tests {
     use super::*;
 
+    fn script_test_config(host: HostSpec, allowed_root: &Path) -> AppConfig {
+        let mut cfg = AppConfig::load_for_host(None, host).unwrap();
+        cfg.script_files.allowed_roots = vec![allowed_root.to_path_buf()];
+        cfg.script_files.trusted_scripts.clear();
+        cfg
+    }
+
     #[test]
     fn default_config_has_expected_files() {
         let cfg = AppConfig::default();
@@ -862,6 +1117,151 @@ mod tests {
         assert!(cfg.bridge.command_file.ends_with("ae_command.json"));
         assert!(cfg.bridge.result_file.ends_with("ae_mcp_result.json"));
         assert_eq!(cfg.poll_interval_ms, 250);
+        assert!(!cfg.script_files.allowed_roots.is_empty());
+    }
+
+    #[test]
+    fn unsafe_script_records_canonical_audit_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = dir.path().join("allowed");
+        fs::create_dir(&allowed).unwrap();
+        let script = allowed.join("hello.jsx");
+        fs::write(&script, "return 'hello';\n").unwrap();
+        let cfg = script_test_config(AFTER_EFFECTS_HOST, &allowed);
+
+        let validated =
+            validate_and_read_script_file(&cfg, script.to_str().unwrap(), "unsafe").unwrap();
+        assert_eq!(validated.code, "return 'hello';\n");
+        assert_eq!(validated.audit.mode, "unsafe");
+        assert_eq!(validated.audit.host_id, "aftereffects");
+        assert_eq!(validated.audit.source_size_bytes, 16);
+        assert_eq!(validated.audit.source_sha256.len(), 64);
+        assert_eq!(
+            PathBuf::from(validated.audit.source_path),
+            fs::canonicalize(script).unwrap()
+        );
+    }
+
+    #[test]
+    fn relative_and_canonical_parent_bypass_paths_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = dir.path().join("allowed");
+        let outside = dir.path().join("outside");
+        fs::create_dir(&allowed).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("escape.jsx"), "return 1;").unwrap();
+        let cfg = script_test_config(AFTER_EFFECTS_HOST, &allowed);
+
+        let relative = validate_and_read_script_file(&cfg, "escape.jsx", "unsafe")
+            .unwrap_err()
+            .to_string();
+        assert!(relative.contains("must be absolute"));
+
+        let bypass = allowed.join("..").join("outside").join("escape.jsx");
+        let error = validate_and_read_script_file(&cfg, bypass.to_str().unwrap(), "unsafe")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("outside configured"));
+    }
+
+    #[test]
+    fn host_specific_extension_and_utf8_rules_are_enforced() {
+        let dir = tempfile::tempdir().unwrap();
+        let js = dir.path().join("script.js");
+        let binary = dir.path().join("binary.jsx");
+        fs::write(&js, "return 1;").unwrap();
+        fs::write(&binary, [0xff, 0xfe]).unwrap();
+
+        let ae = script_test_config(AFTER_EFFECTS_HOST, dir.path());
+        let error = validate_and_read_script_file(&ae, js.to_str().unwrap(), "unsafe")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported script extension"));
+
+        let premiere = script_test_config(PREMIERE_PRO_HOST, dir.path());
+        assert!(validate_and_read_script_file(&premiere, js.to_str().unwrap(), "unsafe").is_ok());
+        let error = validate_and_read_script_file(&ae, binary.to_str().unwrap(), "unsafe")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not valid UTF-8"));
+    }
+
+    #[test]
+    fn script_file_size_limit_is_enforced_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("large.jsx");
+        fs::write(&script, "12345").unwrap();
+        let mut cfg = script_test_config(AFTER_EFFECTS_HOST, dir.path());
+        cfg.script_files.max_bytes = 4;
+
+        let error = validate_and_read_script_file(&cfg, script.to_str().unwrap(), "unsafe")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("too large"));
+    }
+
+    #[test]
+    fn trusted_scripts_require_exact_canonical_path_and_sha256() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("bundled.jsx");
+        fs::write(&script, "return 42;").unwrap();
+        let mut cfg = script_test_config(AFTER_EFFECTS_HOST, dir.path());
+        cfg.script_files.allowed_roots.clear();
+        cfg.script_files.trusted_scripts = vec![TrustedScriptFile {
+            path: script.clone(),
+            sha256: sha256_hex(b"return 42;"),
+        }];
+
+        assert!(validate_and_read_script_file(&cfg, script.to_str().unwrap(), "trusted").is_ok());
+        fs::write(&script, "return 43;").unwrap();
+        let error = validate_and_read_script_file(&cfg, script.to_str().unwrap(), "trusted")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("SHA-256 mismatch"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_file_outside_allowed_root_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = dir.path().join("allowed");
+        let outside = dir.path().join("outside.jsx");
+        fs::create_dir(&allowed).unwrap();
+        fs::write(&outside, "return 1;").unwrap();
+        let link = allowed.join("link.jsx");
+        symlink(&outside, &link).unwrap();
+        let cfg = script_test_config(AFTER_EFFECTS_HOST, &allowed);
+
+        let error = validate_and_read_script_file(&cfg, link.to_str().unwrap(), "unsafe")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("outside configured"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_symlink_or_junction_target_outside_allowed_root_is_rejected() {
+        use std::os::windows::fs::symlink_dir;
+
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = dir.path().join("allowed");
+        let outside = dir.path().join("outside");
+        fs::create_dir(&allowed).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("escape.jsx"), "return 1;").unwrap();
+        let link = allowed.join("link");
+        if symlink_dir(&outside, &link).is_err() {
+            // Creating a directory link needs Developer Mode or elevation on older Windows.
+            return;
+        }
+        let cfg = script_test_config(AFTER_EFFECTS_HOST, &allowed);
+        let linked_script = link.join("escape.jsx");
+        let error = validate_and_read_script_file(&cfg, linked_script.to_str().unwrap(), "unsafe")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("outside configured"));
     }
 
     #[test]
@@ -916,6 +1316,7 @@ result_file = "bridge/result.json"
         .unwrap();
         let cfg = AppConfig::load_for_host(Some(&path), PREMIERE_PRO_HOST).unwrap();
         assert_eq!(cfg.daemon_addr, PREMIERE_PRO_HOST.daemon_addr());
+        assert!(!cfg.script_files.allowed_roots.is_empty());
 
         let raw = fs::read_to_string(&path).unwrap();
         fs::write(&path, format!("daemon_addr = \"127.0.0.1:49000\"\n{raw}")).unwrap();
@@ -966,10 +1367,16 @@ result_file = "bridge/result.json"
 
     #[test]
     fn public_tool_names_match_advertised_specs() {
-        let names = tool_specs()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>();
+        let specs = tool_specs();
+        let file_tool = specs
+            .iter()
+            .find(|tool| tool.name == "run-jsx-file")
+            .unwrap();
+        assert!(file_tool.input_schema["properties"]["mode"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("trusted")));
+        let names = specs.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
         assert_eq!(names, PUBLIC_TOOL_NAMES);
         assert!(!names.contains(&"run-script"));
         assert!(!names.contains(&"render-queue-add"));

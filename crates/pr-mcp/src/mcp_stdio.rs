@@ -1,10 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use bridge_core::BridgeClient;
-use mcp_core::AppConfig;
+use mcp_core::{validate_and_read_script_file, AppConfig};
 use pr_core::{general_help_text, prompt_messages, prompt_specs, tool_specs};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::fs;
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
@@ -174,6 +173,7 @@ fn resources_read_result(cfg: &AppConfig, bridge: &BridgeClient, params: &Value)
         json!({}),
         &json!({}),
         cfg.result_timeout_ms + 1_000,
+        None,
     )?;
     let text = serde_json::to_string_pretty(&value)
         .with_context(|| "failed to serialize resource result")?;
@@ -269,6 +269,7 @@ fn run_script_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Resul
         parameters,
         &args,
         timeout_ms,
+        None,
         "Error running Premiere script",
     )
 }
@@ -294,24 +295,26 @@ fn run_jsx_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Result<V
         payload,
         &args,
         timeout_ms,
+        None,
         "Error running Premiere UXP code",
     )
 }
 
 fn run_jsx_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Result<Value> {
     let path = required_non_empty_string(&args, "path")?;
-    validate_unsafe_mode(&args)?;
+    let mode = required_non_empty_string(&args, "mode")?;
     let description = required_non_empty_string(&args, "description")?;
-    let code = fs::read_to_string(path)
-        .with_context(|| format!("failed to read Premiere UXP code file: {path}"))?;
-    validate_jsx_size(&code)?;
+    let validated = validate_and_read_script_file(cfg, path, mode)?;
+    let audit = serde_json::to_value(&validated.audit)?;
 
     let payload = json!({
-        "code": code,
+        "code": validated.code,
         "args": args.get("args").cloned().unwrap_or_else(|| json!({})),
-        "mode": "unsafe",
+        "mode": mode,
         "description": description,
-        "sourcePath": path,
+        "sourcePath": validated.audit.source_path,
+        "sourceSha256": validated.audit.source_sha256,
+        "sourceSizeBytes": validated.audit.source_size_bytes,
     });
     let timeout_ms = timeout_ms_from_args(cfg, &args);
 
@@ -322,6 +325,7 @@ fn run_jsx_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Res
         payload,
         &args,
         timeout_ms,
+        Some(audit),
         "Error running Premiere UXP file",
     )
 }
@@ -357,6 +361,7 @@ fn run_direct_bridge_call(
         args.clone(),
         &args,
         timeout_ms,
+        None,
         error_prefix,
     )
 }
@@ -368,9 +373,18 @@ fn run_bridge_command(
     command_args: Value,
     option_args: &Value,
     timeout_ms: u64,
+    audit: Option<Value>,
     error_prefix: &str,
 ) -> Result<Value> {
-    match run_bridge_command_value(cfg, bridge, command, command_args, option_args, timeout_ms) {
+    match run_bridge_command_value(
+        cfg,
+        bridge,
+        command,
+        command_args,
+        option_args,
+        timeout_ms,
+        audit,
+    ) {
         Ok(value) => Ok(tool_json(value)?),
         Err(error) => Ok(tool_error(format!("{error_prefix}: {error}"))),
     }
@@ -383,6 +397,7 @@ fn run_bridge_command_value(
     command_args: Value,
     option_args: &Value,
     timeout_ms: u64,
+    audit: Option<Value>,
 ) -> Result<Value> {
     let retention_seconds = option_args
         .get("resultRetentionSeconds")
@@ -410,7 +425,8 @@ fn run_bridge_command_value(
             "timeoutMs": timeout_ms,
             "pollIntervalMs": cfg.poll_interval_ms,
             "retentionSeconds": retention_seconds,
-            "globalExclusive": option_args.get("globalExclusive").and_then(Value::as_bool).unwrap_or(false)
+            "globalExclusive": option_args.get("globalExclusive").and_then(Value::as_bool).unwrap_or(false),
+            "audit": audit
         }),
         timeout_ms,
     )
