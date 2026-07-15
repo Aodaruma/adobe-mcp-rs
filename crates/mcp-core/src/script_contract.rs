@@ -198,12 +198,18 @@ pub fn prepare_script(
         &input,
         cfg.script_contract.max_input_bytes,
     )?;
-    let runtime = args
-        .get("runtime")
-        .and_then(Value::as_str)
-        .filter(|value| *value == "auto" || *value == host.bridge_runtime)
-        .unwrap_or(host.bridge_runtime)
-        .to_string();
+    let runtime = match args.get("runtime") {
+        None => host.bridge_runtime,
+        Some(Value::String(value)) if value == "auto" => host.bridge_runtime,
+        Some(Value::String(value)) if value == host.bridge_runtime => host.bridge_runtime,
+        Some(Value::String(value)) => bail!(
+            "unsupported runtime '{value}' for {}; expected 'auto' or '{}'",
+            host.id,
+            host.bridge_runtime
+        ),
+        Some(_) => bail!("runtime must be a string"),
+    }
+    .to_string();
     let risk_policy: RiskPolicy = match args.get("riskPolicy").and_then(Value::as_str) {
         None | Some("analyze") => RiskPolicy::Analyze,
         Some("raw") => RiskPolicy::Raw,
@@ -228,17 +234,30 @@ pub fn prepare_script(
     let timeout_ms = validated_timeout_ms(cfg, args)?;
     let retention_seconds = validated_retention_seconds(cfg, args)?;
     let source_sha256 = sha256_hex(code.as_bytes());
-    let declared_effects = args
-        .get("declaredEffects")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    let declared_effects = match args.get("declaredEffects") {
+        None => Vec::new(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                let effect = value
+                    .as_str()
+                    .ok_or_else(|| anyhow!("declaredEffects entries must be strings"))?;
+                if !matches!(
+                    effect,
+                    "read"
+                        | "reversible-write"
+                        | "persistent-write"
+                        | "destructive"
+                        | "external"
+                        | "opaque"
+                ) {
+                    bail!("unsupported declared effect: {effect}");
+                }
+                Ok(effect.to_string())
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(_) => bail!("declaredEffects must be an array"),
+    };
     Ok(PreparedScript {
         code,
         input,
@@ -732,6 +751,48 @@ mod tests {
         )
         .unwrap();
         assert!(!prepared.audit.risk.unwrap().analyzed);
+    }
+
+    #[test]
+    fn runtime_auto_is_normalized_and_unknown_contract_values_are_rejected() {
+        let cfg = AppConfig::default();
+        let prepared = prepare_script(
+            &cfg,
+            super::super::AFTER_EFFECTS_HOST,
+            &json!({
+                "mode": "unsafe",
+                "description": "runtime",
+                "runtime": "auto",
+                "declaredEffects": ["read", "reversible-write"]
+            }),
+            "return 1;".to_string(),
+            "unsafe",
+            None,
+            cfg.script_contract.max_inline_bytes,
+        )
+        .unwrap();
+        assert_eq!(prepared.runtime, "extendscript-startup");
+        assert_eq!(prepared.audit.runtime, "extendscript-startup");
+        assert_eq!(
+            prepared.audit.declared_effects,
+            vec!["read", "reversible-write"]
+        );
+
+        for args in [
+            json!({ "mode": "unsafe", "description": "runtime", "runtime": "uxp" }),
+            json!({ "mode": "unsafe", "description": "effects", "declaredEffects": ["unknown"] }),
+        ] {
+            assert!(prepare_script(
+                &cfg,
+                super::super::AFTER_EFFECTS_HOST,
+                &args,
+                "return 1;".to_string(),
+                "unsafe",
+                None,
+                cfg.script_contract.max_inline_bytes,
+            )
+            .is_err());
+        }
     }
 
     #[test]
