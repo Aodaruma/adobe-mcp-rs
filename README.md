@@ -246,21 +246,22 @@ Detailed notes are in [docs/adobe-host-roadmap.md](docs/adobe-host-roadmap.md).
 
 ## Worktree Workflow
 
-This checkout has been prepared as a linked worktree. The central bare repository is expected next to it:
+The repository container keeps the bare Git data, the main checkout, and issue worktrees separate:
 
 ```text
-Documents/GitHub/
-  adobe-mcp-rs.git/   # bare repository
-  adobe-mcp-rs/       # main worktree
+Documents/GitHub/adobe-mcp-rs/
+  .repo.git/          # central bare repository
+  main/               # main worktree
+  worktrees/          # issue/feature worktrees
 ```
 
 Useful commands:
 
 ```powershell
+cd .\main
 git worktree list
-git worktree add ..\adobe-mcp-rs-photoshop -b codex/photoshop-support main
-git worktree add ..\adobe-mcp-rs-illustrator -b codex/illustrator-support main
-git worktree remove ..\adobe-mcp-rs-photoshop
+git worktree add ..\worktrees\issue-123 -b codex/issue-123 main
+git worktree remove ..\worktrees\issue-123
 ```
 
 See [docs/worktree.md](docs/worktree.md) for the local workflow notes.

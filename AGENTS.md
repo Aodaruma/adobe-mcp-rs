@@ -26,7 +26,7 @@
 
 ## 運用上の注意
 
-- この checkout は linked worktree 化済み。親ディレクトリに bare repo `adobe-mcp-rs.git` がある想定。詳細は `docs/worktree.md`。
+- リポジトリコンテナ直下は `.repo.git/`（bare repo）、`main/`（main worktree）、`worktrees/`（Issue別worktree）の構成。通常の編集・Git操作は `main/` または `worktrees/<name>/` で行う。詳細は `docs/worktree.md`。
 - AE 側で `Window > mcp-bridge-auto.jsx` を開き、`Auto-run commands` を ON にすること。
 - `ae_command.json` が `pending` のままなら、パネル未起動・Auto-run OFF・AE再読込漏れを疑うこと。
 - `getLayerInfo`（ブリッジ版）は「アクティブコンポ」前提。アクティブでないと `No active composition` を返す。
