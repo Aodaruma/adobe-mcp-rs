@@ -237,7 +237,8 @@ To use this integration with Premiere Pro, follow these steps:
 2. Open Adobe Premiere Pro
 3. Open Window > UXP Plugins > Premiere MCP Bridge
 4. Enable "Auto-run commands" in the panel
-5. Use tools from your MCP client and read back results
+5. Start `pr-mcp serve-daemon`
+6. Use tools from your MCP client and read back results
 
 UXP bridge source:
 - src/premiere/uxp/mcp-bridge-premiere/manifest.json

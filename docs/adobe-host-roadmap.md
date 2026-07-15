@@ -20,14 +20,11 @@
 | Host | Binary | Bridge runtime | 状態 | 主な制約 |
 |---|---|---|---|---|
 | After Effects | `ae-mcp` | ScriptUI panel / ExtendScript JSX | **Primary** | MCP の待機・instance routing は `ae-mcp serve-daemon` が必要。panel を開いて `Auto-run commands` を有効にする。公開 tool 一覧と legacy dispatch の差分が残る。 |
-| Premiere Pro | `pr-mcp` | UXP panel（25.6+）、CEP / ExtendScript fallback（24.0+） | **Experimental** | `serve-daemon` は broker ではない。UXP の install/release と実機 version matrix が未確立。CEP は fallback。 |
-| Photoshop | `ps-mcp` | UXP panel（23.3+、API v2） | **Experimental** | 読み取り中心の小さな allowlist。`serve-daemon` は broker ではない。modal policy、書き込み操作、配布・実機 E2E が未完成。 |
-| Illustrator | `ai-mcp` | CEP panel / ExtendScript（24.0+、CSXS 10） | **Experimental** | unsigned CEP は debug mode が必要な場合がある。`serve-daemon` は broker ではない。現行 version の実機検証と署名・配布が未完成。 |
+| Premiere Pro | `pr-mcp` | UXP panel（25.6+）、CEP / ExtendScript fallback（24.0+） | **Experimental** | 共通 broker を使用。UXP の install/release と実機 version matrix が未確立。CEP は fallback。 |
+| Photoshop | `ps-mcp` | UXP panel（23.3+、API v2） | **Experimental** | 共通 broker を使用。modal policy、書き込み操作、配布・実機 E2E が未完成。 |
+| Illustrator | `ai-mcp` | CEP panel / ExtendScript（24.0+、CSXS 10） | **Experimental** | 共通 broker を使用。現行 version の実機検証と署名・配布が未完成。 |
 
-4 host とも Rust workspace の member、`serve-stdio`、`health`、直接 bridge 検証 command、instance registry / retained result のコードを持ちます。ただし daemon の意味は同じではありません。
-
-- After Effects: localhost TCP broker が command routing、待機、request registry、result retention を担当する。
-- Premiere Pro / Photoshop / Illustrator: MCP stdio server が file bridge を直接操作する。`serve-daemon` は現在 PID file と定期 log を維持する heartbeat process だけで、request を処理しない。
+4 host とも `daemon-core` の localhost TCP broker を使用します。`serve-daemon` は command routing、待機、instance別FIFO、別instance並列、global exclusive、request registry、result retention を担当します。既定 port は AE `47655` / Premiere `47656` / Photoshop `47657` / Illustrator `47658` です。
 
 ## Host 別の実装範囲
 
@@ -58,7 +55,8 @@ MCP client -> ae-mcp serve-stdio -> ae-mcp serve-daemon
 Runtime と経路:
 
 ```text
-MCP client -> pr-mcp serve-stdio -> ~/Documents/pr-mcp-bridge
+MCP client -> pr-mcp serve-stdio -> pr-mcp serve-daemon
+           -> ~/Documents/pr-mcp-bridge
            -> UXP panel (preferred) / CEP ExtendScript panel (fallback)
 ```
 
@@ -72,14 +70,15 @@ MCP client -> pr-mcp serve-stdio -> ~/Documents/pr-mcp-bridge
 
 - UXP manifest は Premiere Pro 25.6.0+ を要求する。Developer Mode と UXP Developer Tool が必要になる場合がある。
 - CEP manifest は Premiere Pro 24.0+ / CSXS 10 を対象とする fallback で、UXP と同じ release quality を保証しない。
-- `pr-mcp serve-daemon`、`service`、`autostart` は request broker を提供しない。通常の MCP 操作には起動不要。
+- `pr-mcp serve-daemon` の起動が通常の MCP 操作に必要。UXP / CEP 実機での broker E2E は release gate。
 
 ### Photoshop — Experimental
 
 Runtime と経路:
 
 ```text
-MCP client -> ps-mcp serve-stdio -> ~/Documents/ps-mcp-bridge
+MCP client -> ps-mcp serve-stdio -> ps-mcp serve-daemon
+           -> ~/Documents/ps-mcp-bridge
            -> Photoshop UXP panel
 ```
 
@@ -93,7 +92,7 @@ MCP client -> ps-mcp serve-stdio -> ~/Documents/ps-mcp-bridge
 
 - UXP manifest は Photoshop 23.3.0+、API v2、`loadEvent: startup` を要求する。
 - 現時点の allowlist は document / layer の読み取り中心で、公開 prompt はない。
-- `ps-mcp serve-daemon`、`service`、`autostart` は request broker を提供しない。通常の MCP 操作には起動不要。
+- `ps-mcp serve-daemon` の起動が通常の MCP 操作に必要。UXP 実機での broker E2E は release gate。
 - document write / export、`batchPlay` wrapper、modal execution policy、error normalization は hardening 対象。
 
 ### Illustrator — Experimental
@@ -101,7 +100,8 @@ MCP client -> ps-mcp serve-stdio -> ~/Documents/ps-mcp-bridge
 Runtime と経路:
 
 ```text
-MCP client -> ai-mcp serve-stdio -> ~/Documents/ai-mcp-bridge
+MCP client -> ai-mcp serve-stdio -> ai-mcp serve-daemon
+           -> ~/Documents/ai-mcp-bridge
            -> CEP panel -> Illustrator ExtendScript
 ```
 
@@ -115,7 +115,7 @@ MCP client -> ai-mcp serve-stdio -> ~/Documents/ai-mcp-bridge
 制約:
 
 - CEP manifest は Illustrator 24.0+ / CSXS 10 を対象とする。local unsigned extension は CEP debug mode が必要な場合がある。
-- `ai-mcp serve-daemon`、`service`、`autostart` は request broker を提供しない。通常の MCP 操作には起動不要。
+- `ai-mcp serve-daemon` の起動が通常の MCP 操作に必要。CEP 実機での broker E2E は release gate。
 - UXP を既定 runtime にはしない。third-party host support と配布経路が明確になるまで CEP / ExtendScript を baseline とする。
 
 ## Bridge protocol の現状
@@ -138,7 +138,7 @@ MCP client -> ai-mcp serve-stdio -> ~/Documents/ai-mcp-bridge
 ## Roadmap
 
 1. **完了:** host名、binary、bridge root、file名、instance tool名を `HostSpec` に集約し、protocol v1を導入する。
-2. Premiere Pro / Photoshop / Illustrator の daemon を AE と同等の broker にするか、heartbeat command を廃止して direct file bridge と明記する。
+2. **完了:** 4 host の daemon を `daemon-core` の共通 broker に統一する。direct file bridge は互換・診断用途として残す。
 3. host 共通の protocol / E2E fixture と Adobe 実機 test matrix を追加する。
 4. Premiere Pro の UXP package、CEP fallback、installer の対応 version を実機で固定する。
 5. Photoshop の書き込み・export・modal policy と Illustrator の export / packaging を hardening する。

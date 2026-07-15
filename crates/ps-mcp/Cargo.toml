@@ -14,5 +14,6 @@ serde.workspace = true
 serde_json.workspace = true
 mcp-core = { path = "../mcp-core" }
 bridge-core = { path = "../bridge-core" }
+daemon-core = { path = "../daemon-core" }
 platform-service = { path = "../platform-service" }
 ps-core = { path = "../ps-core" }

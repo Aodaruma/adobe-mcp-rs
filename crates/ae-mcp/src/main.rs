@@ -1,12 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use mcp_core::{AppConfig, AFTER_EFFECTS_HOST};
-use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::info;
 
-mod daemon;
 mod mcp_stdio;
 
 #[derive(Debug, Parser)]
@@ -143,8 +141,7 @@ async fn serve_daemon(cfg: AppConfig, once: bool) -> Result<()> {
     if once {
         return Ok(());
     }
-    let _pid_file = DaemonPidFile::create(cfg.bridge.root_dir.join("daemon.pid"))?;
-    daemon::run_daemon_server(cfg)
+    daemon_core::run_daemon_server(cfg)
 }
 
 fn run_service_command(
@@ -239,37 +236,6 @@ fn run_bridge_command(cfg: AppConfig, command: BridgeCommands) -> Result<()> {
             let raw = bridge.read_results_with_stale_warning(Duration::from_secs(stale_seconds))?;
             println!("{raw}");
             Ok(())
-        }
-    }
-}
-
-struct DaemonPidFile {
-    path: PathBuf,
-    pid: u32,
-}
-
-impl DaemonPidFile {
-    fn create(path: PathBuf) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let pid = std::process::id();
-        let exe = std::env::current_exe()?;
-        fs::write(&path, format!("{pid}\n{}\n", exe.display()))?;
-        Ok(Self { path, pid })
-    }
-}
-
-impl Drop for DaemonPidFile {
-    fn drop(&mut self) {
-        let Ok(raw) = fs::read_to_string(&self.path) else {
-            return;
-        };
-        let Some(pid_line) = raw.lines().next() else {
-            return;
-        };
-        if pid_line.trim() == self.pid.to_string() {
-            let _ = fs::remove_file(&self.path);
         }
     }
 }

@@ -1,11 +1,10 @@
 use anyhow::{anyhow, Context, Result};
-use bridge_core::{BridgeClient, BridgeRunOptions, BridgeTarget};
+use bridge_core::BridgeClient;
 use mcp_core::AppConfig;
 use ps_core::{general_help_text, prompt_messages, prompt_specs, tool_specs};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::fs;
-use std::time::Duration;
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
@@ -168,13 +167,16 @@ fn resources_read_result(cfg: &AppConfig, bridge: &BridgeClient, params: &Value)
         return Err(anyhow!("unknown resource URI: {uri}"));
     }
 
-    bridge.clear_results_file()?;
-    bridge.write_command_file("listDocuments", json!({}))?;
-    let text = bridge.wait_for_bridge_result(
-        Some("listDocuments"),
-        Duration::from_millis(cfg.result_timeout_ms + 1_000),
-        Duration::from_millis(cfg.poll_interval_ms),
+    let value = run_bridge_command_value(
+        cfg,
+        bridge,
+        "listDocuments",
+        json!({}),
+        &json!({}),
+        cfg.result_timeout_ms + 1_000,
     )?;
+    let text = serde_json::to_string_pretty(&value)
+        .with_context(|| "failed to serialize resource result")?;
 
     Ok(json!({
         "contents": [
@@ -217,20 +219,23 @@ fn dispatch_tool_inner(
     match name {
         "run-jsx" => run_jsx_tool(cfg, bridge, args),
         "run-jsx-file" => run_jsx_file_tool(cfg, bridge, args),
-        "get-jsx-result" => get_jsx_result_tool(bridge, args),
+        "get-jsx-result" => get_jsx_result_tool(cfg, args),
         "list-photoshop-instances" => list_photoshop_instances_tool(cfg, bridge),
         "run-script" => run_script_tool(cfg, bridge, args),
         "get-results" => {
             if let Some(request_id) = args.get("requestId").and_then(Value::as_str) {
-                let record = bridge.get_request_record(request_id)?;
-                Ok(tool_json(record.to_value())?)
+                let value = daemon_core::call_daemon(
+                    cfg,
+                    json!({ "op": "getResult", "requestId": request_id }),
+                    cfg.result_timeout_ms,
+                )?;
+                Ok(tool_json(value)?)
             } else {
-                let value = bridge
-                    .latest_request_record()?
-                    .map(|record| record.to_value())
-                    .unwrap_or_else(
-                        || json!({ "status": "empty", "message": "No retained request result." }),
-                    );
+                let value = daemon_core::call_daemon(
+                    cfg,
+                    json!({ "op": "latestResult" }),
+                    cfg.result_timeout_ms,
+                )?;
                 Ok(tool_json(value)?)
             }
         }
@@ -321,20 +326,20 @@ fn run_jsx_file_tool(cfg: &AppConfig, bridge: &BridgeClient, args: Value) -> Res
     )
 }
 
-fn get_jsx_result_tool(bridge: &BridgeClient, args: Value) -> Result<Value> {
+fn get_jsx_result_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
     let request_id = required_non_empty_string(&args, "requestId")?;
-    let record = bridge.get_request_record(request_id)?;
-    Ok(tool_json(record.to_value())?)
+    let value = daemon_core::call_daemon(
+        cfg,
+        json!({ "op": "getResult", "requestId": request_id }),
+        cfg.result_timeout_ms,
+    )?;
+    Ok(tool_json(value)?)
 }
 
-fn list_photoshop_instances_tool(cfg: &AppConfig, bridge: &BridgeClient) -> Result<Value> {
-    let instances =
-        bridge.list_active_instances(Duration::from_millis(cfg.instance_heartbeat_stale_ms))?;
-    Ok(tool_json(json!({
-        "instances": instances,
-        "count": instances.len(),
-        "staleThresholdMs": cfg.instance_heartbeat_stale_ms
-    }))?)
+fn list_photoshop_instances_tool(cfg: &AppConfig, _bridge: &BridgeClient) -> Result<Value> {
+    let value =
+        daemon_core::call_daemon(cfg, json!({ "op": "listInstances" }), cfg.result_timeout_ms)?;
+    Ok(tool_json(value)?)
 }
 
 fn run_direct_bridge_call(
@@ -365,6 +370,20 @@ fn run_bridge_command(
     timeout_ms: u64,
     error_prefix: &str,
 ) -> Result<Value> {
+    match run_bridge_command_value(cfg, bridge, command, command_args, option_args, timeout_ms) {
+        Ok(value) => Ok(tool_json(value)?),
+        Err(error) => Ok(tool_error(format!("{error_prefix}: {error}"))),
+    }
+}
+
+fn run_bridge_command_value(
+    cfg: &AppConfig,
+    _bridge: &BridgeClient,
+    command: &str,
+    command_args: Value,
+    option_args: &Value,
+    timeout_ms: u64,
+) -> Result<Value> {
     let retention_seconds = option_args
         .get("resultRetentionSeconds")
         .and_then(Value::as_u64)
@@ -380,26 +399,21 @@ fn run_bridge_command(
         );
     }
 
-    let options = BridgeRunOptions {
-        target: BridgeTarget {
-            instance_id: option_args
-                .get("targetInstanceId")
-                .and_then(Value::as_str)
-                .map(ToString::to_string),
-            version: option_args
-                .get("targetVersion")
-                .and_then(Value::as_str)
-                .map(ToString::to_string),
-        },
-        timeout: Duration::from_millis(timeout_ms),
-        poll_interval: Duration::from_millis(cfg.poll_interval_ms),
-        retention_seconds,
-    };
-
-    match bridge.run_command_sync(command, command_args, options) {
-        Ok(outcome) => Ok(tool_json(outcome.to_value())?),
-        Err(error) => Ok(tool_error(format!("{error_prefix}: {error}"))),
-    }
+    daemon_core::call_daemon(
+        cfg,
+        json!({
+            "op": "runCommand",
+            "command": command,
+            "args": command_args,
+            "targetInstanceId": option_args.get("targetInstanceId").cloned().unwrap_or(Value::Null),
+            "targetVersion": option_args.get("targetVersion").cloned().unwrap_or(Value::Null),
+            "timeoutMs": timeout_ms,
+            "pollIntervalMs": cfg.poll_interval_ms,
+            "retentionSeconds": retention_seconds,
+            "globalExclusive": option_args.get("globalExclusive").and_then(Value::as_bool).unwrap_or(false)
+        }),
+        timeout_ms,
+    )
 }
 
 fn required_non_empty_string<'a>(args: &'a Value, key: &str) -> Result<&'a str> {

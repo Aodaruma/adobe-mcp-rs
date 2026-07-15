@@ -10,6 +10,7 @@ dependencies = [
  "bridge-core",
  "chrono",
  "clap",
+ "daemon-core",
  "mcp-core",
  "platform-service",
  "serde",
@@ -45,6 +46,7 @@ dependencies = [
  "anyhow",
  "bridge-core",
  "clap",
+ "daemon-core",
  "mcp-core",
  "platform-service",
  "serde",
@@ -237,6 +239,19 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "daemon-core"
+version = "0.4.4"
+dependencies = [
+ "anyhow",
+ "bridge-core",
+ "mcp-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
 
 [[package]]
 name = "equivalent"
@@ -484,6 +499,7 @@ dependencies = [
  "anyhow",
  "bridge-core",
  "clap",
+ "daemon-core",
  "mcp-core",
  "platform-service",
  "pr-core",
@@ -529,6 +545,7 @@ dependencies = [
  "anyhow",
  "bridge-core",
  "clap",
+ "daemon-core",
  "mcp-core",
  "platform-service",
  "ps-core",

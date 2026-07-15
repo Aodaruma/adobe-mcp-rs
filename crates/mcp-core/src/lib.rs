@@ -58,6 +58,7 @@ pub struct HostSpec {
     pub instance_tool_name: &'static str,
     pub bridge_runtime: &'static str,
     pub bridge_setup_hint: &'static str,
+    pub daemon_port: u16,
 }
 
 impl HostSpec {
@@ -68,6 +69,10 @@ impl HostSpec {
             result_file: root_dir.join(self.result_file_name),
             root_dir,
         }
+    }
+
+    pub fn daemon_addr(self) -> String {
+        format!("127.0.0.1:{}", self.daemon_port)
     }
 }
 
@@ -81,6 +86,7 @@ pub const AFTER_EFFECTS_HOST: HostSpec = HostSpec {
     instance_tool_name: "list-ae-instances",
     bridge_runtime: "extendscript-scriptui",
     bridge_setup_hint: "Open Window > mcp-bridge-auto.jsx and enable Auto-run commands.",
+    daemon_port: 47655,
 };
 
 pub const PREMIERE_PRO_HOST: HostSpec = HostSpec {
@@ -94,6 +100,7 @@ pub const PREMIERE_PRO_HOST: HostSpec = HostSpec {
     bridge_runtime: "uxp",
     bridge_setup_hint:
         "Open Window > UXP Plugins > Premiere MCP Bridge and enable Auto-run commands.",
+    daemon_port: 47656,
 };
 
 pub const PHOTOSHOP_HOST: HostSpec = HostSpec {
@@ -106,6 +113,7 @@ pub const PHOTOSHOP_HOST: HostSpec = HostSpec {
     instance_tool_name: "list-photoshop-instances",
     bridge_runtime: "uxp",
     bridge_setup_hint: "Open the Photoshop MCP Bridge panel and enable Auto-run commands.",
+    daemon_port: 47657,
 };
 
 pub const ILLUSTRATOR_HOST: HostSpec = HostSpec {
@@ -119,6 +127,7 @@ pub const ILLUSTRATOR_HOST: HostSpec = HostSpec {
     bridge_runtime: "cep-extendscript",
     bridge_setup_hint:
         "Open Window > Extensions > Illustrator MCP Bridge and enable Auto-run commands.",
+    daemon_port: 47658,
 };
 
 pub const HOST_SPECS: &[HostSpec] = &[
@@ -237,8 +246,21 @@ impl AppConfig {
         if config_path.is_none() {
             cfg.bridge = host.bridge_paths();
         }
+        if config_path.is_none() || !config_declares_daemon_addr(config_path)? {
+            cfg.daemon_addr = host.daemon_addr();
+        }
         Ok(cfg)
     }
+}
+
+fn config_declares_daemon_addr(config_path: Option<&Path>) -> Result<bool> {
+    let Some(path) = config_path else {
+        return Ok(false);
+    };
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file: {}", path.display()))?;
+    let value: toml::Value = toml::from_str(&raw).with_context(|| "failed to parse TOML config")?;
+    Ok(value.get("daemon_addr").is_some())
 }
 
 pub fn default_bridge_root_dir() -> PathBuf {
@@ -782,7 +804,59 @@ mod tests {
             let cfg = AppConfig::load_for_host(None, *host).expect("host config");
             assert_eq!(cfg.host_id, host.id);
             assert_eq!(cfg.bridge, paths);
+            assert_eq!(cfg.daemon_addr, host.daemon_addr());
         }
+        let ports = HOST_SPECS
+            .iter()
+            .map(|host| host.daemon_port)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ports.len(), HOST_SPECS.len());
+    }
+
+    #[test]
+    fn host_default_port_applies_when_config_omits_daemon_addr() {
+        let path = std::env::temp_dir().join(format!(
+            "adobe-mcp-config-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            r#"
+host_id = "ignored"
+poll_interval_ms = 250
+result_timeout_ms = 5000
+result_retention_seconds = 3600
+result_retention_max_seconds = 86400
+instance_heartbeat_stale_ms = 10000
+log_level = "info"
+
+[bridge]
+root_dir = "bridge"
+command_file = "bridge/command.json"
+result_file = "bridge/result.json"
+"#,
+        )
+        .unwrap();
+        let cfg = AppConfig::load_for_host(Some(&path), PREMIERE_PRO_HOST).unwrap();
+        assert_eq!(cfg.daemon_addr, PREMIERE_PRO_HOST.daemon_addr());
+
+        let raw = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("daemon_addr = \"127.0.0.1:49000\"\n{raw}")).unwrap();
+        let overridden = AppConfig::load_for_host(Some(&path), PREMIERE_PRO_HOST).unwrap();
+        let _ = fs::remove_file(path);
+        assert_eq!(overridden.daemon_addr, "127.0.0.1:49000");
+    }
+
+    #[test]
+    fn supported_hosts_have_stable_default_daemon_ports() {
+        assert_eq!(AFTER_EFFECTS_HOST.daemon_addr(), "127.0.0.1:47655");
+        assert_eq!(PREMIERE_PRO_HOST.daemon_addr(), "127.0.0.1:47656");
+        assert_eq!(PHOTOSHOP_HOST.daemon_addr(), "127.0.0.1:47657");
+        assert_eq!(ILLUSTRATOR_HOST.daemon_addr(), "127.0.0.1:47658");
     }
 
     #[test]

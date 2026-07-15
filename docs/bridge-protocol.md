@@ -13,7 +13,7 @@
 3. bridge が後述の `heartbeat.json` を書き出す
 4. host 固有 MCP tool から共通の `hostInstance` schema をそのまま返す
 
-`HostSpec` は host id、表示名、binary名、bridge root、command/result file名、instance tool名、primary runtime、bridge起動案内を保持します。設定ファイルで bridge path を明示した場合、その値は従来どおり優先されます。
+`HostSpec` は host id、表示名、binary名、bridge root、command/result file名、instance tool名、primary runtime、bridge起動案内、daemon既定portを保持します。設定ファイルで bridge path や `daemon_addr` を明示した場合、その値は従来どおり優先されます。
 
 例えば InDesign 用の雛形は次の形です（この例自体は InDesign 実装を追加しません）。
 
@@ -28,8 +28,21 @@ pub const INDESIGN_HOST: HostSpec = HostSpec {
     instance_tool_name: "list-indesign-instances",
     bridge_runtime: "uxp-script",
     bridge_setup_hint: "Install and enable the InDesign MCP startup script.",
+    daemon_port: 47659,
 };
 ```
+
+## daemon broker
+
+4 host の `serve-daemon` は `daemon-core` の同一 protocol を実装します。localhost TCP の1行JSONで次の operationを受け付けます。
+
+- `ping`
+- `listInstances`
+- `runCommand`
+- `getResult`
+- `latestResult`
+
+同一 `instanceId` は FIFO、別 instance は並列です。`runCommand.globalExclusive=true` はその host daemon の全 instance に対する排他を取得します。client timeout 後も worker は継続し、`requestId` を `getResult` へ渡すと完了結果を回収できます。詳細は [ADR 0001](adr/0001-host-neutral-daemon-broker.md) を参照してください。
 
 ## ディレクトリ
 

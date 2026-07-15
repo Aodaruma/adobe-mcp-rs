@@ -517,18 +517,18 @@ Promptsはtool数を減らした後の「使い方の足場」として有効。
   - active instanceが0件ならエラー。
   - active instanceが複数件ならエラーにし、`targetInstanceId` または `targetVersion` を要求する。
 
-### 現時点の制約
+### v1導入当時の制約（履歴）
 
-- `serve-daemon` はまだ本格broker IPCとしては使っていない。
+- `serve-daemon` はまだ本格broker IPCとしては使っていなかった（現在は後述のv2へ移行済み）。
 - v1は `bridge-core` の file lock と registry による安全化。
 - process間の厳密なFIFO順序はOSのlock取得順に依存するため、完全なfair queueではない。
 - ただし同一AE instanceへのcommand/result上書き競合は避ける。
 - 異なるAE instanceの完全並列実行はまだ優先していない。global `broker.lock` により安全側に倒している。
 - AEに渡した後にtimeoutしたrequestは実行継続扱い。後続requestは `current_request.json` を見て、完了・lost判定まで待つ。
 
-### 次段階
+### v2への移行
 
-本格的にdaemon brokerへ移す場合は、`serve-daemon` にローカルIPCを持たせ、`serve-stdio` はdaemonへproxyする。これによりメモリ上のfair FIFO、AE instanceごとの並列キュー、より明確なcancel制御を実装できる。
+`serve-daemon` のローカルIPCと `serve-stdio` proxyは実装済みで、現在は `daemon-core` を4 hostで共有する。file-based v1は互換・CLI診断用途として残す。
 
 ## 実装メモ: daemon broker v2
 

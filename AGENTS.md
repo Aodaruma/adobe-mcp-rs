@@ -10,7 +10,7 @@
   - Premiere Pro: `pr-mcp` + UXP（25.6+）。CEP / ExtendScript（24.0+）は fallback。
   - Photoshop: `ps-mcp` + UXP（23.3+）。読み取り中心の小さな allowlist と任意 UXP code 実行。
   - Illustrator: `ai-mcp` + CEP / ExtendScript（24.0+）。document / artboard / layer 読み取りと export の初期実装。
-- `pr-mcp` / `ps-mcp` / `ai-mcp` の `serve-daemon` は PID file と heartbeat log を維持するだけで、AE の request broker とは同等ではない。MCP stdio server が file bridge を直接操作する。
+- 4 host の `serve-daemon` は `daemon-core` の共通 TCP broker を使う。MCP stdio server は host 別 daemon を経由し、instance別FIFO・別instance並列・global exclusive・retained resultを共有する。
 - 状態区分の基準、host 別 runtime / 最小機能 / 制約の source of truth は `docs/adobe-host-roadmap.md`。
 - npm/TypeScript サーバー実装は削除済み（`package.json` / `src/index.ts` 等は廃止）。
 - AE 連携は `mcp-bridge-auto.jsx` 経由（`~/Documents/ae-mcp-bridge` の command/result ファイル）。
@@ -48,7 +48,7 @@ cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp
 .\target\release\ae-mcp.exe bridge get-results
 ```
 
-`health` は binary と bridge root の確認に留まり、Adobe host 内の実行確認にはならない。host panel の `Auto-run commands` を有効にし、`list-*-instances` と `run-bridge-test` まで確認する。AE の MCP 経路では `ae-mcp serve-daemon` も必要。
+`health` は binary、bridge root、host 別 daemon address の確認に留まり、Adobe host 内の実行確認にはならない。host panel の `Auto-run commands` を有効にし、対象 binary の `serve-daemon` を起動して `list-*-instances` と `run-bridge-test` まで確認する。
 
 ## ドキュメント
 

@@ -244,7 +244,15 @@ Illustrator:
 2. Illustrator で `Window > Extensions > Illustrator MCP Bridge` を開く
 3. `Auto-run commands` を ON
 
-Premiere Pro / Photoshop / Illustrator は MCP stdio server が file bridge を直接操作します。各 `serve-daemon` は現在 request broker ではなく、通常の MCP 操作には起動不要です。
+Premiere Pro / Photoshop / Illustrator も MCP stdio server から host 別 `serve-daemon` broker を経由します。host panel の準備後、対応する daemon を起動してください。
+
+```powershell
+.\target\release\pr-mcp.exe serve-daemon # 127.0.0.1:47656
+.\target\release\ps-mcp.exe serve-daemon # 127.0.0.1:47657
+.\target\release\ai-mcp.exe serve-daemon # 127.0.0.1:47658
+```
+
+daemon 未起動時は stdio tool が接続エラーと起動コマンドを返します。timeout 後も `requestId` を `get-jsx-result` または `get-results` に渡すと、後から完了した結果を回収できます。root 直下の command/result file と `bridge` CLI は互換・診断用途です。
 
 ### 6.2 LLM運用時の推奨プロンプト（重要）
 
@@ -271,28 +279,28 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 ユーザー操作に引き継ぐときだけ interactive=true を使ってダイアログ表示を許可する。
 ```
 
-## 7. After Effects daemon の常駐化
+## 7. host 別 daemon の常駐化
 
-After Effects broker を常駐させる場合、Windows は `autostart`、macOS は `service` を使います。Premiere Pro / Photoshop / Illustrator の同名 command は現在 heartbeat process の管理に留まるため、この手順の対象外です。
+各 host broker を常駐させる場合、Windows は対象 binary の `autostart`、macOS は `service` を使います。複数 host を利用する場合は binary ごとに登録します。既定 address は AE `127.0.0.1:47655`、Premiere `:47656`、Photoshop `:47657`、Illustrator `:47658` です。
 
 ### 7.1 Windows
 
 ```powershell
-.\target\release\ae-mcp.exe autostart install
-.\target\release\ae-mcp.exe autostart status
-.\target\release\ae-mcp.exe autostart start
-.\target\release\ae-mcp.exe autostart stop
-.\target\release\ae-mcp.exe autostart uninstall
+.\target\release\<host>-mcp.exe autostart install
+.\target\release\<host>-mcp.exe autostart status
+.\target\release\<host>-mcp.exe autostart start
+.\target\release\<host>-mcp.exe autostart stop
+.\target\release\<host>-mcp.exe autostart uninstall
 ```
 
 ### 7.2 macOS
 
 ```bash
-./target/release/ae-mcp service install
-./target/release/ae-mcp service status
-./target/release/ae-mcp service start
-./target/release/ae-mcp service stop
-./target/release/ae-mcp service uninstall
+./target/release/<host>-mcp service install
+./target/release/<host>-mcp service status
+./target/release/<host>-mcp service start
+./target/release/<host>-mcp service stop
+./target/release/<host>-mcp service uninstall
 ```
 
 ## 8. よくあるトラブル

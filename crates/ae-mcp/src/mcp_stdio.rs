@@ -6,8 +6,6 @@ use mcp_core::{
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::fs;
-use std::io::{BufRead as StdBufRead, BufReader as StdBufReader, Write as StdWrite};
-use std::net::TcpStream;
 use std::time::Duration;
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
@@ -15,13 +13,6 @@ use tokio::io::{
 use tracing::{debug, error, info};
 
 const MAX_JSX_BYTES: usize = 1_048_576;
-
-#[derive(Debug, Deserialize)]
-struct DaemonResponse {
-    ok: bool,
-    value: Option<Value>,
-    error: Option<String>,
-}
 
 #[derive(Debug, Clone, Copy)]
 enum MessageFormat {
@@ -178,7 +169,7 @@ fn resources_read_result(cfg: &AppConfig, _bridge: &BridgeClient, params: &Value
         return Err(anyhow!("unknown resource URI: {uri}"));
     }
 
-    let outcome = call_daemon(
+    let outcome = daemon_core::call_daemon(
         cfg,
         json!({
             "op": "runCommand",
@@ -256,7 +247,7 @@ fn dispatch_tool_inner(
         }
         "get-results" => {
             if let Some(request_id) = args.get("requestId").and_then(Value::as_str) {
-                let value = call_daemon(
+                let value = daemon_core::call_daemon(
                     cfg,
                     json!({
                         "op": "getResult",
@@ -266,7 +257,7 @@ fn dispatch_tool_inner(
                 )?;
                 Ok(tool_json(value)?)
             } else {
-                let value = call_daemon(
+                let value = daemon_core::call_daemon(
                     cfg,
                     json!({
                         "op": "latestResult"
@@ -705,7 +696,7 @@ fn run_jsx_file_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Re
 
 fn get_jsx_result_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
     let request_id = required_non_empty_string(&args, "requestId")?;
-    let value = call_daemon(
+    let value = daemon_core::call_daemon(
         cfg,
         json!({
             "op": "getResult",
@@ -717,7 +708,7 @@ fn get_jsx_result_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
 }
 
 fn list_ae_instances_tool(cfg: &AppConfig) -> Result<Value> {
-    let value = call_daemon(
+    let value = daemon_core::call_daemon(
         cfg,
         json!({
             "op": "listInstances"
@@ -751,7 +742,7 @@ fn run_daemon_command(
         );
     }
 
-    let daemon_value = call_daemon(
+    let daemon_value = daemon_core::call_daemon(
         cfg,
         json!({
             "op": "runCommand",
@@ -770,58 +761,6 @@ fn run_daemon_command(
     match daemon_value {
         Ok(value) => Ok(tool_json(value)?),
         Err(error) => Ok(tool_error(format!("{error_prefix}: {error}"))),
-    }
-}
-
-fn call_daemon(cfg: &AppConfig, request: Value, timeout_ms: u64) -> Result<Value> {
-    let mut stream = TcpStream::connect(&cfg.daemon_addr).with_context(|| {
-        format!(
-            "failed to connect to ae-mcp daemon at {}. Start it with `ae-mcp serve-daemon`, or on Windows use `ae-mcp autostart install` and `ae-mcp autostart start`.",
-            cfg.daemon_addr
-        )
-    })?;
-    let io_timeout = Duration::from_millis(timeout_ms.saturating_add(2_000).max(5_000));
-    stream
-        .set_read_timeout(Some(io_timeout))
-        .with_context(|| "failed to set daemon read timeout")?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .with_context(|| "failed to set daemon write timeout")?;
-
-    let raw =
-        serde_json::to_string(&request).with_context(|| "failed to serialize daemon request")?;
-    stream
-        .write_all(raw.as_bytes())
-        .with_context(|| "failed to write daemon request")?;
-    stream
-        .write_all(b"\n")
-        .with_context(|| "failed to terminate daemon request")?;
-    stream
-        .flush()
-        .with_context(|| "failed to flush daemon request")?;
-
-    let mut reader = StdBufReader::new(stream);
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .with_context(|| "failed to read daemon response")?;
-    if line.trim().is_empty() {
-        anyhow::bail!("daemon returned an empty response");
-    }
-
-    let response: DaemonResponse =
-        serde_json::from_str(line.trim()).with_context(|| "failed to parse daemon response")?;
-    if response.ok {
-        response
-            .value
-            .ok_or_else(|| anyhow!("daemon response did not include value"))
-    } else {
-        Err(anyhow!(
-            "{}",
-            response
-                .error
-                .unwrap_or_else(|| "daemon request failed".to_string())
-        ))
     }
 }
 

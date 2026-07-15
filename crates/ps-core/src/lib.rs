@@ -135,7 +135,8 @@ To use this integration with Photoshop, follow these steps:
 2. Open Adobe Photoshop
 3. Open the Photoshop MCP Bridge panel from the Plugins menu
 4. Enable "Auto-run commands" in the panel
-5. Use tools from your MCP client and read back retained results
+5. Start `ps-mcp serve-daemon`
+6. Use tools from your MCP client and read back retained results
 
 UXP bridge source:
 - src/photoshop/uxp/mcp-bridge-photoshop/manifest.json

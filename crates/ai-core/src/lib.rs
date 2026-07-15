@@ -219,7 +219,8 @@ To use this integration with Illustrator, follow these steps:
 2. Open Adobe Illustrator
 3. Open Window > Extensions > Illustrator MCP Bridge
 4. Enable "Auto-run commands" in the panel
-5. Use tools from your MCP client and read back results
+5. Start `ai-mcp serve-daemon`
+6. Use tools from your MCP client and read back results
 
 Bridge files are stored under `~/Documents/ai-mcp-bridge`.
 
