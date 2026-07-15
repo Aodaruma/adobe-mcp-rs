@@ -66,12 +66,12 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 
 ## 3.4 MCP + AE ブリッジ
 
-1. MSI/pkg で導入した場合、`mcp-bridge-auto.jsx` が検出済み AE に自動配置されることを確認
-2. ポータブル版（zip/tar.gz）の場合は `mcp-bridge-auto.jsx` を手動配置
-3. AEで `Window > mcp-bridge-auto.jsx` を開く
-4. `Auto-run commands` をON
-5. Codexで公開Tool `list-ae-instances` を実行し、対象instanceを確認
-6. 公開Tool `run-bridge-test` を実行し、daemon broker経由の結果JSONを取得
+1. MSI/pkgで導入した場合、runtimeが`ScriptUI Panels`、bootstrapが`Scripts/Startup`、cleanupが`Scripts/Shutdown`へ自動配置されることを確認
+2. ポータブル版（zip/tar.gz）の場合は3つのJSXを手動配置
+3. AEを再起動し、panelを開かずに公開Tool `list-ae-instances` を実行する
+4. `bridgeRuntime: extendscript-startup`、`lifecycleMode: startup-headless`、heartbeat更新を確認
+5. 公開Tool `run-bridge-test` を実行し、daemon broker経由の結果JSONを取得
+6. daemon先行/AE先行、workspace reset、bootstrap再評価、stop/restartを [ADR 0002](adr/0002-after-effects-headless-startup-bridge.md) のmatrixで確認
 
 ## 4. 失敗時の確認ポイント
 

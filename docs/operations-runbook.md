@@ -73,8 +73,9 @@ macOS 版 CLI に Windows 用 `autostart` は存在しない。
 - Windows の `running from a different executable` は移動前 exe がまだ稼働中。`autostart stop` 後に `install` と `start` をやり直す
 
 2. `get-results` が stale warning
-- AEの `mcp-bridge-auto.jsx` を開く
-- `Auto-run commands` を ON にする
+- AEを再起動し、`Scripts/Startup/mcp-bridge-startup.jsx` と `Scripts/ScriptUI Panels/mcp-bridge-auto.jsx` の配置を確認する
+- Scripting & Expressionsのfile/network access設定を確認する
+- `$.global.__adobeMcpBridgeBootstrapState` と `aeMcpBridgeGetState()` を確認する
 - `list-ae-instances` / `list-premiere-instances` の `inactiveInstances` を確認し、`heartbeat is stale`、parse error、空の `instanceId` などの理由を見る
 
 3. `method not found`（MCP）
@@ -82,7 +83,7 @@ macOS 版 CLI に Windows 用 `autostart` は存在しない。
 - 古いNode設定が残っていないか確認
 
 4. panel / UXP を開いたまま host app を再起動した後に instance が見えない
-- AE: `mcp-bridge-auto.jsx` を一度閉じて開き直し、heartbeat task のログを確認
+- AE: `aeMcpBridgeRestart()`を実行するかAEを再起動し、Startup bootstrap stateとheartbeat更新時刻を確認
 - Premiere UXP: `Window > UXP Plugins > Premiere MCP Bridge` を開き、Instance 表示と `~/Documents/pr-mcp-bridge/instances/<instanceId>/heartbeat.json` の更新時刻を確認
 - Premiere CEP fallback: `~/Documents/pr-mcp-bridge/instances/<instanceId>/heartbeat.json` が作成されているか確認
 

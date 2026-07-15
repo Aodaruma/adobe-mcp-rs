@@ -48,6 +48,9 @@
         "hostId": { "type": "string", "minLength": 1 },
         "appVersion": { "type": "string", "minLength": 1 },
         "bridgeRuntime": { "type": "string", "minLength": 1 },
+        "lifecycleMode": { "type": "string", "minLength": 1 },
+        "runtimeId": { "type": "string", "minLength": 1 },
+        "runtimeStartedAt": { "type": "string", "format": "date-time" },
         "bridgeVersion": { "type": "string" },
         "instanceId": { "type": "string", "minLength": 1 },
         "capabilities": {

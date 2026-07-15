@@ -75,6 +75,12 @@ pub struct HostInstance {
     pub current_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bridge_runtime: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
     pub bridge_root: String,
@@ -1629,7 +1635,10 @@ mod tests {
             project_path: None,
             status: Some("idle".to_string()),
             current_request_id: None,
-            bridge_runtime: "extendscript-scriptui".to_string(),
+            bridge_runtime: "extendscript-startup".to_string(),
+            lifecycle_mode: Some("startup-headless".to_string()),
+            runtime_id: Some("runtime-test".to_string()),
+            runtime_started_at: Some("2026-07-15T00:00:00Z".to_string()),
             capabilities: vec!["run-jsx".to_string()],
             bridge_root: cfg.bridge.root_dir.display().to_string(),
             command_file: dir.join("ae_command.json").display().to_string(),
@@ -1839,6 +1848,11 @@ mod tests {
             .expect("instances");
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].instance_id, "ae-test");
+        assert_eq!(
+            instances[0].lifecycle_mode.as_deref(),
+            Some("startup-headless")
+        );
+        assert_eq!(instances[0].runtime_id.as_deref(), Some("runtime-test"));
     }
 
     #[test]

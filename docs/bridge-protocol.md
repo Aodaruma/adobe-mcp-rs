@@ -99,7 +99,9 @@ protocol v1 の共通項目は次のとおりです。
 }
 ```
 
-`capabilities` は bridge が実際に処理できる機能の識別子です。未知の capability は無視します。`bridgeRuntime` は `uxp`、`cep-extendscript`、`extendscript-scriptui` など実行環境を示します。
+`capabilities` は bridge が実際に処理できる機能の識別子です。未知の capability は無視します。`bridgeRuntime` は `uxp`、`cep-extendscript`、`extendscript-startup`、`extendscript-scriptui` など実行環境を示します。
+
+host固有の観測情報は追加可能です。AE Startup runtimeは `lifecycleMode`、`runtimeId`、`runtimeStartedAt` を追加し、poller generationと再初期化を診断できるようにします。protocol readerは未知の追加項目を無視します。
 
 ## request record
 

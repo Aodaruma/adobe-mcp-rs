@@ -18,6 +18,37 @@ fn smoke_result_schema_and_example_are_valid_json() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
+    let startup = include_str!("../../../src/scripts/mcp-bridge-startup.jsx");
+    let shutdown = include_str!("../../../src/scripts/mcp-bridge-shutdown.jsx");
+    let runtime = include_str!("../../../src/scripts/mcp-bridge-auto.jsx");
+    let windows_installer = include_str!("../../../scripts/install-bridge.ps1");
+    let packaged_installer = include_str!("../../../scripts/install-bridge-installer.ps1");
+    let macos_installer = include_str!("../../../scripts/install-bridge.sh");
+
+    assert!(startup.contains("$.evalFile(runtimeFile)"));
+    assert!(startup.contains("headless: true"));
+    assert!(!startup.contains("findMenuCommandId"));
+    assert!(!startup.contains("executeCommand"));
+    assert!(!startup.contains("new Window"));
+
+    assert!(runtime.contains("__adobeMcpBridgeRuntime"));
+    assert!(runtime.contains("__adobeMcpBridgeCommandTick('"));
+    assert!(runtime.contains("scheduledRuntimeId !== bridgeRuntimeId"));
+    assert!(runtime.contains("Neutralize callbacks left by the pre-generation runtime"));
+    assert!(runtime.contains("aeMcpBridgeRestart"));
+    assert!(runtime.contains("extendscript-startup"));
+    assert!(shutdown.contains("removeHeartbeat: true"));
+    assert!(shutdown.contains("after-effects-shutdown"));
+
+    for installer in [windows_installer, packaged_installer, macos_installer] {
+        assert!(installer.contains("mcp-bridge-startup.jsx"));
+        assert!(installer.contains("mcp-bridge-shutdown.jsx"));
+        assert!(installer.contains("mcp-bridge-auto.jsx"));
+    }
+}
+
 fn run_command(
     daemon: &DaemonEndpoint,
     target_instance_id: Option<&str>,

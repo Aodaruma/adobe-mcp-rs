@@ -86,6 +86,14 @@ try {
     if (!(Test-Path $bridgePanelPath)) {
         throw "Bridge panel script not found: $bridgePanelPath"
     }
+    $bridgeStartupPath = Join-Path $repoRoot "src\scripts\mcp-bridge-startup.jsx"
+    if (!(Test-Path $bridgeStartupPath)) {
+        throw "Bridge startup script not found: $bridgeStartupPath"
+    }
+    $bridgeShutdownPath = Join-Path $repoRoot "src\scripts\mcp-bridge-shutdown.jsx"
+    if (!(Test-Path $bridgeShutdownPath)) {
+        throw "Bridge shutdown script not found: $bridgeShutdownPath"
+    }
     $premiereCepPath = Join-Path $repoRoot "src\premiere\cep\mcp-bridge-premiere"
     if (!(Test-Path $premiereCepPath)) {
         throw "Premiere CEP bridge not found: $premiereCepPath"
@@ -117,6 +125,8 @@ try {
     Copy-Item $psExePath (Join-Path $stageDir "ps-mcp.exe") -Force
     Copy-Item $aiExePath (Join-Path $stageDir "ai-mcp.exe") -Force
     Copy-Item $bridgePanelPath (Join-Path $stageDir "mcp-bridge-auto.jsx") -Force
+    Copy-Item $bridgeStartupPath (Join-Path $stageDir "mcp-bridge-startup.jsx") -Force
+    Copy-Item $bridgeShutdownPath (Join-Path $stageDir "mcp-bridge-shutdown.jsx") -Force
     $premiereStageDir = Join-Path $stageDir "premiere-cep"
     Ensure-Directory $premiereStageDir
     Copy-Item $premiereCepPath (Join-Path $premiereStageDir "mcp-bridge-premiere") -Recurse -Force
@@ -157,6 +167,8 @@ try {
     $escapedPsExe = (Join-Path $stageDir "ps-mcp.exe").Replace("\", "\\")
     $escapedAiExe = (Join-Path $stageDir "ai-mcp.exe").Replace("\", "\\")
     $escapedBridgePanel = (Join-Path $stageDir "mcp-bridge-auto.jsx").Replace("\", "\\")
+    $escapedBridgeStartup = (Join-Path $stageDir "mcp-bridge-startup.jsx").Replace("\", "\\")
+    $escapedBridgeShutdown = (Join-Path $stageDir "mcp-bridge-shutdown.jsx").Replace("\", "\\")
     $escapedBridgeInstallerPs1 = (Join-Path $stageDir "install-bridge-installer.ps1").Replace("\", "\\")
     $escapedLicenseRtf = $licenseRtfPath.Replace("\", "\\")
     $premiereRoot = Join-Path $stageDir "premiere-cep\mcp-bridge-premiere"
@@ -212,6 +224,12 @@ try {
         </Component>
         <Component Id="BridgePanelComponent" Guid="6EFCE0CF-7EFD-4A28-9DF9-9A4B1A16F9D4">
           <File Id="BridgePanelFile" Source="$escapedBridgePanel" KeyPath="yes" />
+        </Component>
+        <Component Id="BridgeStartupComponent" Guid="C9422D99-5E69-4C9F-8D68-DFCD6459E2D7">
+          <File Id="BridgeStartupFile" Source="$escapedBridgeStartup" KeyPath="yes" />
+        </Component>
+        <Component Id="BridgeShutdownComponent" Guid="87FFBC69-A9D8-4A8A-B6F2-3F91EBCE6A36">
+          <File Id="BridgeShutdownFile" Source="$escapedBridgeShutdown" KeyPath="yes" />
         </Component>
         <Component Id="BridgeInstallerScriptComponent" Guid="6D25E6A8-A7F3-4C42-AEF9-A1756BC85701">
           <File Id="BridgeInstallerScriptFile" Source="$escapedBridgeInstallerPs1" KeyPath="yes" />
@@ -319,7 +337,7 @@ try {
       </Directory>
     </StandardDirectory>
     <SetProperty Id="InstallMachineHostIntegration"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -NonInteractive -SkipUserInstall"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -BridgeStartupScriptPath &quot;[INSTALLFOLDER]mcp-bridge-startup.jsx&quot; -BridgeShutdownScriptPath &quot;[INSTALLFOLDER]mcp-bridge-shutdown.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -NonInteractive -SkipUserInstall"
                  Before="InstallMachineHostIntegration"
                  Sequence="execute" />
     <CustomAction Id="InstallMachineHostIntegration"
@@ -329,7 +347,7 @@ try {
                   Impersonate="no"
                   Return="ignore" />
     <SetProperty Id="WixQuietExecCmdLine"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -NonInteractive -SkipHostBridgeInstall"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -BridgeStartupScriptPath &quot;[INSTALLFOLDER]mcp-bridge-startup.jsx&quot; -BridgeShutdownScriptPath &quot;[INSTALLFOLDER]mcp-bridge-shutdown.jsx&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -NonInteractive -SkipHostBridgeInstall"
                  Before="InstallUserHostIntegration"
                  Sequence="execute" />
     <CustomAction Id="InstallUserHostIntegration"
@@ -357,8 +375,10 @@ try {
       <ComponentRef Id="PsMcpExeComponent" />
       <ComponentRef Id="AiMcpExeComponent" />
       <ComponentRef Id="BridgeInstallerScriptComponent" />
-      <Feature Id="AfterEffectsPanelFeature" Title="After Effects ScriptUI panel" Description="Deploys mcp-bridge-auto.jsx and startup loader to detected After Effects installations." Level="1">
+      <Feature Id="AfterEffectsPanelFeature" Title="After Effects headless bridge" Description="Deploys the ExtendScript runtime and startup bootstrap to detected After Effects installations." Level="1">
         <ComponentRef Id="BridgePanelComponent" />
+        <ComponentRef Id="BridgeStartupComponent" />
+        <ComponentRef Id="BridgeShutdownComponent" />
       </Feature>
       <Feature Id="PremiereUxpFeature" Title="Premiere Pro UXP bridge" Description="Installs the Premiere Pro UXP bridge package when supported." Level="1">
         <ComponentRef Id="PremiereUxpManifestComponent" />

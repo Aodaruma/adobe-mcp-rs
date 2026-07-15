@@ -39,6 +39,16 @@ if [[ ! -f "$BRIDGE_PANEL_PATH" ]]; then
   echo "Bridge panel script not found: $BRIDGE_PANEL_PATH" >&2
   exit 1
 fi
+BRIDGE_STARTUP_PATH="$REPO_ROOT/src/scripts/mcp-bridge-startup.jsx"
+if [[ ! -f "$BRIDGE_STARTUP_PATH" ]]; then
+  echo "Bridge startup script not found: $BRIDGE_STARTUP_PATH" >&2
+  exit 1
+fi
+BRIDGE_SHUTDOWN_PATH="$REPO_ROOT/src/scripts/mcp-bridge-shutdown.jsx"
+if [[ ! -f "$BRIDGE_SHUTDOWN_PATH" ]]; then
+  echo "Bridge shutdown script not found: $BRIDGE_SHUTDOWN_PATH" >&2
+  exit 1
+fi
 PREMIERE_CEP_PATH="$REPO_ROOT/src/premiere/cep/mcp-bridge-premiere"
 if [[ ! -d "$PREMIERE_CEP_PATH" ]]; then
   echo "Premiere CEP bridge not found: $PREMIERE_CEP_PATH" >&2
@@ -71,6 +81,8 @@ chmod +x "$STAGE_DIR/ps-mcp"
 cp "$BIN_PATH_AI" "$STAGE_DIR/ai-mcp"
 chmod +x "$STAGE_DIR/ai-mcp"
 cp "$BRIDGE_PANEL_PATH" "$STAGE_DIR/mcp-bridge-auto.jsx"
+cp "$BRIDGE_STARTUP_PATH" "$STAGE_DIR/mcp-bridge-startup.jsx"
+cp "$BRIDGE_SHUTDOWN_PATH" "$STAGE_DIR/mcp-bridge-shutdown.jsx"
 mkdir -p "$STAGE_DIR/premiere-cep"
 cp -R "$PREMIERE_CEP_PATH" "$STAGE_DIR/premiere-cep/mcp-bridge-premiere"
 mkdir -p "$STAGE_DIR/premiere-uxp"
@@ -105,6 +117,8 @@ cp "$STAGE_DIR/pr-mcp" "$INSTALL_BIN_DIR/pr-mcp"
 cp "$STAGE_DIR/ps-mcp" "$INSTALL_BIN_DIR/ps-mcp"
 cp "$STAGE_DIR/ai-mcp" "$INSTALL_BIN_DIR/ai-mcp"
 cp "$STAGE_DIR/mcp-bridge-auto.jsx" "$INSTALL_SHARE_DIR/mcp-bridge-auto.jsx"
+cp "$STAGE_DIR/mcp-bridge-startup.jsx" "$INSTALL_SHARE_DIR/mcp-bridge-startup.jsx"
+cp "$STAGE_DIR/mcp-bridge-shutdown.jsx" "$INSTALL_SHARE_DIR/mcp-bridge-shutdown.jsx"
 mkdir -p "$INSTALL_SHARE_DIR/premiere-cep"
 cp -R "$STAGE_DIR/premiere-cep/mcp-bridge-premiere" "$INSTALL_SHARE_DIR/premiere-cep/mcp-bridge-premiere"
 mkdir -p "$INSTALL_SHARE_DIR/premiere-uxp"
@@ -122,12 +136,22 @@ cat > "$PKG_SCRIPTS_DIR/postinstall" <<'POSTINSTALL'
 set -euo pipefail
 
 SOURCE_SCRIPT="/usr/local/share/ae-mcp/mcp-bridge-auto.jsx"
+SOURCE_STARTUP_SCRIPT="/usr/local/share/ae-mcp/mcp-bridge-startup.jsx"
+SOURCE_SHUTDOWN_SCRIPT="/usr/local/share/ae-mcp/mcp-bridge-shutdown.jsx"
 PREMIERE_CEP_SOURCE="/usr/local/share/ae-mcp/premiere-cep/mcp-bridge-premiere"
 PREMIERE_UXP_MANIFEST="/usr/local/share/ae-mcp/premiere-uxp/mcp-bridge-premiere/manifest.json"
 PHOTOSHOP_UXP_MANIFEST="/usr/local/share/ae-mcp/photoshop-uxp/mcp-bridge-photoshop/manifest.json"
 ILLUSTRATOR_CEP_SOURCE="/usr/local/share/ae-mcp/illustrator-cep/mcp-bridge-illustrator"
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then
-  echo "Bridge panel source not found: $SOURCE_SCRIPT"
+  echo "Bridge runtime source not found: $SOURCE_SCRIPT"
+  exit 0
+fi
+if [[ ! -f "$SOURCE_STARTUP_SCRIPT" ]]; then
+  echo "Bridge startup source not found: $SOURCE_STARTUP_SCRIPT"
+  exit 0
+fi
+if [[ ! -f "$SOURCE_SHUTDOWN_SCRIPT" ]]; then
+  echo "Bridge shutdown source not found: $SOURCE_SHUTDOWN_SCRIPT"
   exit 0
 fi
 
@@ -138,16 +162,24 @@ for ae_path in /Applications/Adobe\ After\ Effects\ *; do
   [[ "$ae_name" =~ ^Adobe\ After\ Effects\ [0-9]{4}$ ]] || continue
 
   dest_dir="$ae_path/Scripts/ScriptUI Panels"
+  startup_dir="$ae_path/Scripts/Startup"
+  shutdown_dir="$ae_path/Scripts/Shutdown"
   mkdir -p "$dest_dir"
+  mkdir -p "$startup_dir"
+  mkdir -p "$shutdown_dir"
   cp "$SOURCE_SCRIPT" "$dest_dir/mcp-bridge-auto.jsx"
-  echo "Installed bridge panel: $dest_dir/mcp-bridge-auto.jsx"
+  cp "$SOURCE_STARTUP_SCRIPT" "$startup_dir/mcp-bridge-startup.jsx"
+  cp "$SOURCE_SHUTDOWN_SCRIPT" "$shutdown_dir/mcp-bridge-shutdown.jsx"
+  echo "Installed bridge runtime: $dest_dir/mcp-bridge-auto.jsx"
+  echo "Installed startup bootstrap: $startup_dir/mcp-bridge-startup.jsx"
+  echo "Installed shutdown cleanup: $shutdown_dir/mcp-bridge-shutdown.jsx"
   installed=$((installed + 1))
 done
 
 if [[ "$installed" -eq 0 ]]; then
   echo "No After Effects installation found. Bridge panel deployment skipped."
 else
-  echo "Bridge panel deployment completed for $installed installation(s)."
+  echo "Headless bridge deployment completed for $installed installation(s)."
 fi
 
 premiere_installed=0

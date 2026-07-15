@@ -8,7 +8,7 @@
 
 1. 操作対象の Adobe host。repository の manifest 上の最小 version は Premiere Pro UXP 25.6、Premiere Pro CEP fallback 24.0、Photoshop UXP 23.3、Illustrator CEP 24.0。InDesignはfile I/Oを使うため18.5+をPoC対象とし、After Effects は 2022 以降を推奨
 2. Rust（stable）と Cargo
-3. After Effects は ScriptUI / ExtendScript の `mcp-bridge-auto.jsx`、Premiere Pro は UXP（CEP fallback あり）、Photoshop は UXP、Illustrator は CEP / ExtendScript の bridge panel、InDesignはUXP Startup Scriptを利用できること
+3. After Effects は Startup ExtendScript bridge、Premiere Pro は UXP（CEP fallback あり）、Photoshop は UXP、Illustrator は CEP / ExtendScript bridge、InDesign は UXP Startup Script を利用できること
 4. Codex CLI もしくは Codex IDE Extension が利用可能であること
 
 現在の状態は After Effects が **Primary**、Premiere Pro / Photoshop / Illustrator / InDesign が **Experimental** です。Experimental host は binary と最小 MCP surface を実装済みですが、実機 E2E、配布、runtime compatibility、broker / service の同等性が未完成です。詳しい基準と制約は [Adobe host support status and roadmap](adobe-host-roadmap.md) を参照してください。
@@ -33,9 +33,9 @@ cargo build --release -p id-mcp
 - Illustrator: `target/release/ai-mcp(.exe)`
 - InDesign: `target/release/id-mcp(.exe)`
 
-## 3. After Effectsブリッジパネルを導入（npm不要）
+## 3. After Effects headless bridgeを導入（npm不要）
 
-このプロジェクトは AE 連携に `mcp-bridge-auto.jsx`（ScriptUI Panel）を使います。
+このプロジェクトはAE連携に `mcp-bridge-startup.jsx` と `mcp-bridge-auto.jsx` のExtendScript runtimeを使います。Startup bootstrapがruntimeを直接評価するため、workspaceやpanelのopen状態に依存しません。
 
 ### 3.1 推奨（シェルスクリプト）
 
@@ -74,12 +74,18 @@ bash ./scripts/install-bridge.sh --ae-path "/Applications/Adobe After Effects 20
 - `src/scripts/mcp-bridge-auto.jsx` を After Effects の ScriptUI Panels に配置
   - Windows: `C:\Program Files\Adobe\Adobe After Effects <VERSION>\Support Files\Scripts\ScriptUI Panels\`
   - macOS: `/Applications/Adobe After Effects <VERSION>/Scripts/ScriptUI Panels/`
+- `src/scripts/mcp-bridge-startup.jsx` をAfter EffectsのStartupに配置
+  - Windows: `C:\Program Files\Adobe\Adobe After Effects <VERSION>\Support Files\Scripts\Startup\`
+  - macOS: `/Applications/Adobe After Effects <VERSION>/Scripts/Startup/`
+- `src/scripts/mcp-bridge-shutdown.jsx` をAfter EffectsのShutdownに配置
+  - Windows: `C:\Program Files\Adobe\Adobe After Effects <VERSION>\Support Files\Scripts\Shutdown\`
+  - macOS: `/Applications/Adobe After Effects <VERSION>/Scripts/Shutdown/`
 
 After Effects 側で:
 1. Scripting & Expressions の「Allow Scripts to Write Files and Access Network」を有効化
 2. 再起動
-3. `Window > mcp-bridge-auto.jsx` を開く
-4. `Auto-run commands` を ON
+
+通常運用でpanelを開く操作や`Auto-run commands`は不要です。lifecycle APIと障害確認は [After Effects bridge lifecycle](after-effects-bridge-lifecycle.md) を参照してください。
 
 別 terminal で AE broker を起動します。`serve-stdio` からの instance routing、待機、retained result 取得にはこの process が必要です。
 
@@ -238,11 +244,10 @@ enabled = true
 ## 7. 動作確認（最短）
 
 1. After Effects を起動
-2. `Window > mcp-bridge-auto.jsx` を開き、`Auto-run commands` を ON
-3. `ae-mcp serve-daemon` を起動
-4. Codex 側で `aftereffects` サーバーが有効であることを確認
-5. Codex から `list-ae-instances` を実行し、対象 instance と version を確認
-6. `run-bridge-test` を実行し、bridge 結果が返ることを確認
+2. `ae-mcp serve-daemon` を起動
+3. Codex 側で `aftereffects` サーバーが有効であることを確認
+4. Codex から `list-ae-instances` を実行し、対象 instance、`extendscript-startup` runtime、versionを確認
+5. `run-bridge-test` を実行し、bridge 結果が返ることを確認
 
 `health` は binary 起動と bridge root の表示だけを確認し、Adobe host 内での実行成功までは確認しません。
 
@@ -371,7 +376,7 @@ Windows MSI は初回インストール時に autostart を勝手に有効化し
 ## 9. よくあるトラブル
 
 1. `get-results` が stale warning を返す
-- AE側パネルが閉じているか、`Auto-run commands` が OFF の可能性があります。
+- AEのStartup bootstrapが未配置・未読込、またはfile/network accessが無効な可能性があります。
 
 2. Codexからサーバーが見えない
 - `codex mcp list` で登録状態確認

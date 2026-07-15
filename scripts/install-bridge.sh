@@ -50,9 +50,19 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOURCE_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-auto.jsx"
+SOURCE_STARTUP_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-startup.jsx"
+SOURCE_SHUTDOWN_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-shutdown.jsx"
 
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then
   echo "Bridge script not found: $SOURCE_SCRIPT" >&2
+  exit 1
+fi
+if [[ ! -f "$SOURCE_STARTUP_SCRIPT" ]]; then
+  echo "Bridge startup script not found: $SOURCE_STARTUP_SCRIPT" >&2
+  exit 1
+fi
+if [[ ! -f "$SOURCE_SHUTDOWN_SCRIPT" ]]; then
+  echo "Bridge shutdown script not found: $SOURCE_SHUTDOWN_SCRIPT" >&2
   exit 1
 fi
 
@@ -98,6 +108,8 @@ else
   echo "Destinations:"
   for ae in "${AE_PATHS[@]}"; do
     echo "  - $ae/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx"
+    echo "  - $ae/Scripts/Startup/mcp-bridge-startup.jsx"
+    echo "  - $ae/Scripts/Shutdown/mcp-bridge-shutdown.jsx"
   done
 fi
 
@@ -110,14 +122,26 @@ if [[ "${#AE_PATHS[@]}" -gt 0 ]]; then
   for ae in "${AE_PATHS[@]}"; do
     DEST_DIR="$ae/Scripts/ScriptUI Panels"
     DEST_FILE="$DEST_DIR/mcp-bridge-auto.jsx"
+    STARTUP_DIR="$ae/Scripts/Startup"
+    STARTUP_FILE="$STARTUP_DIR/mcp-bridge-startup.jsx"
+    SHUTDOWN_DIR="$ae/Scripts/Shutdown"
+    SHUTDOWN_FILE="$SHUTDOWN_DIR/mcp-bridge-shutdown.jsx"
 
-    if [[ -w "$ae" || ( -d "$DEST_DIR" && -w "$DEST_DIR" ) ]]; then
+    if [[ -w "$ae" || ( -d "$DEST_DIR" && -w "$DEST_DIR" && -d "$STARTUP_DIR" && -w "$STARTUP_DIR" && -d "$SHUTDOWN_DIR" && -w "$SHUTDOWN_DIR" ) ]]; then
       mkdir -p "$DEST_DIR"
+      mkdir -p "$STARTUP_DIR"
+      mkdir -p "$SHUTDOWN_DIR"
       cp "$SOURCE_SCRIPT" "$DEST_FILE"
+      cp "$SOURCE_STARTUP_SCRIPT" "$STARTUP_FILE"
+      cp "$SOURCE_SHUTDOWN_SCRIPT" "$SHUTDOWN_FILE"
     else
       echo "Destination may require sudo. Installing with sudo for: $ae"
       sudo mkdir -p "$DEST_DIR"
+      sudo mkdir -p "$STARTUP_DIR"
+      sudo mkdir -p "$SHUTDOWN_DIR"
       sudo cp "$SOURCE_SCRIPT" "$DEST_FILE"
+      sudo cp "$SOURCE_STARTUP_SCRIPT" "$STARTUP_FILE"
+      sudo cp "$SOURCE_SHUTDOWN_SCRIPT" "$SHUTDOWN_FILE"
     fi
   done
 fi
@@ -127,13 +151,15 @@ if [[ "${#AE_PATHS[@]}" -gt 0 ]]; then
   echo "Bridge script installed to ${#AE_PATHS[@]} location(s)."
   for ae in "${AE_PATHS[@]}"; do
     echo "  - $ae/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx"
+    echo "  - $ae/Scripts/Startup/mcp-bridge-startup.jsx"
+    echo "  - $ae/Scripts/Shutdown/mcp-bridge-shutdown.jsx"
   done
   echo "Next steps:"
   echo "1. Open After Effects"
   echo "2. After Effects > Settings > Scripting & Expressions"
   echo "3. Enable \"Allow Scripts to Write Files and Access Network\""
   echo "4. Restart After Effects"
-  echo "5. Open Window > mcp-bridge-auto.jsx"
+  echo "5. The MCP bridge starts headlessly; no panel or Auto-run checkbox is required"
 fi
 
 PREMIERE_SOURCE="$REPO_ROOT/src/premiere/cep/mcp-bridge-premiere"

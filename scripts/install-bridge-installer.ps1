@@ -1,5 +1,7 @@
 param(
     [string]$BridgeScriptPath,
+    [string]$BridgeStartupScriptPath,
+    [string]$BridgeShutdownScriptPath,
     [string]$AeMcpPath,
     [string]$PrMcpPath,
     [string]$PsMcpPath,
@@ -457,37 +459,34 @@ function Resolve-BridgeScriptPath {
     throw "Bridge script not found. Provide -BridgeScriptPath or place mcp-bridge-auto.jsx beside this script."
 }
 
-function Get-AeBridgeStartupScriptContent {
-    return @'
-/* Adobe MCP Bridge startup loader. Installed by adobe-mcp-rs. */
-(function () {
-    var panelScriptName = "mcp-bridge-auto.jsx";
-    var markerName = "__adobeMcpBridgeStartupOpened";
-    var runnerName = "__adobeMcpBridgeStartupOpenPanel";
+function Resolve-BridgeStartupScriptPath {
+    param([string]$InputPath)
 
-    $.global[runnerName] = function () {
-        try {
-            if ($.global[markerName]) {
-                return;
-            }
-            var commandId = app.findMenuCommandId(panelScriptName);
-            if (commandId) {
-                app.executeCommand(commandId);
-                $.global[markerName] = true;
-            }
-        } catch (_err) {}
-    };
-
-    try {
-        app.scheduleTask("$.global.__adobeMcpBridgeStartupOpenPanel()", 3000, false);
-        app.scheduleTask("$.global.__adobeMcpBridgeStartupOpenPanel()", 8000, false);
-    } catch (_scheduleErr) {
-        try {
-            $.global[runnerName]();
-        } catch (_runErr) {}
+    if (-not [string]::IsNullOrWhiteSpace($InputPath) -and (Test-Path -LiteralPath $InputPath)) {
+        return (Resolve-Path -LiteralPath $InputPath).Path
     }
-})();
-'@
+
+    $fallback = Join-Path $PSScriptRoot "mcp-bridge-startup.jsx"
+    if (Test-Path -LiteralPath $fallback) {
+        return (Resolve-Path -LiteralPath $fallback).Path
+    }
+
+    throw "Bridge startup script not found. Provide -BridgeStartupScriptPath or place mcp-bridge-startup.jsx beside this script."
+}
+
+function Resolve-BridgeShutdownScriptPath {
+    param([string]$InputPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($InputPath) -and (Test-Path -LiteralPath $InputPath)) {
+        return (Resolve-Path -LiteralPath $InputPath).Path
+    }
+
+    $fallback = Join-Path $PSScriptRoot "mcp-bridge-shutdown.jsx"
+    if (Test-Path -LiteralPath $fallback) {
+        return (Resolve-Path -LiteralPath $fallback).Path
+    }
+
+    throw "Bridge shutdown script not found. Provide -BridgeShutdownScriptPath or place mcp-bridge-shutdown.jsx beside this script."
 }
 
 function Get-AeInstallPaths {
@@ -638,12 +637,18 @@ function Get-InstallPlan {
     Write-InstallerLog -Message ("Get-InstallPlan started. PSScriptRoot='{0}', UserInteractive={1}, Identity='{2}'" -f $PSScriptRoot, [Environment]::UserInteractive, [Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
     $bridgeScript = $null
+    $bridgeStartupScript = $null
+    $bridgeShutdownScript = $null
     try {
         $bridgeScript = Resolve-BridgeScriptPath -InputPath $BridgeScriptPath
+        $bridgeStartupScript = Resolve-BridgeStartupScriptPath -InputPath $BridgeStartupScriptPath
+        $bridgeShutdownScript = Resolve-BridgeShutdownScriptPath -InputPath $BridgeShutdownScriptPath
     } catch {
         Write-InstallerLog -Message ("Get-InstallPlan: bridge script resolution failed: {0}" -f $_.Exception.Message)
     }
     Write-InstallerLog -Message ("Get-InstallPlan: bridgeScript='{0}'" -f (Get-DisplayVersion $bridgeScript))
+    Write-InstallerLog -Message ("Get-InstallPlan: bridgeStartupScript='{0}'" -f (Get-DisplayVersion $bridgeStartupScript))
+    Write-InstallerLog -Message ("Get-InstallPlan: bridgeShutdownScript='{0}'" -f (Get-DisplayVersion $bridgeShutdownScript))
 
     Write-InstallerLog -Message "Get-InstallPlan: detecting installed Adobe hosts."
     $aeTargets = Get-AeInstallPaths
@@ -668,12 +673,12 @@ function Get-InstallPlan {
     Write-InstallerLog -Message "Get-InstallPlan: building After Effects item."
     $items += New-InstallPlanItem `
         -Key "aftereffects-panel" `
-        -Label "After Effects ScriptUI panel" `
-        -Available ([bool]$bridgeScript -and $aeTargets.Count -gt 0) `
+        -Label "After Effects headless Startup bridge" `
+        -Available ([bool]$bridgeScript -and [bool]$bridgeStartupScript -and [bool]$bridgeShutdownScript -and $aeTargets.Count -gt 0) `
         -Selected $true `
         -OldVersion (Get-InstalledAePanelVersion) `
         -NewVersion (Get-PanelScriptVersion -ScriptPath $bridgeScript) `
-        -Note "Installs mcp-bridge-auto.jsx into detected After Effects versions."
+        -Note "Installs the runtime and headless Startup bootstrap into detected After Effects versions."
 
     Write-InstallerLog -Message "Get-InstallPlan: building Premiere UXP item."
     $items += New-InstallPlanItem `
@@ -1580,27 +1585,33 @@ if (-not $SkipHostBridgeInstall) {
     $targets = Get-AeInstallPaths
 
     if (-not (Test-InstallComponentSelected -Key "aftereffects-panel")) {
-        Write-Host "After Effects bridge panel deployment skipped by install selection."
+        Write-Host "After Effects headless bridge deployment skipped by install selection."
         Add-InstallReport -Key "aftereffects-panel" -Status "skipped" -Message "Not selected or not available."
     } elseif ($targets.Count -eq 0) {
         Write-Host "No After Effects installation was detected under C:\Program Files\Adobe. Skipped AE bridge deployment."
         Add-InstallReport -Key "aftereffects-panel" -Status "skipped" -Message "No After Effects installation was detected."
     } else {
         $source = $null
+        $startupSource = $null
+        $shutdownSource = $null
         try {
             $source = Resolve-BridgeScriptPath -InputPath $BridgeScriptPath
+            $startupSource = Resolve-BridgeStartupScriptPath -InputPath $BridgeStartupScriptPath
+            $shutdownSource = Resolve-BridgeShutdownScriptPath -InputPath $BridgeShutdownScriptPath
         } catch {
-            Write-Warning "After Effects bridge panel source was not found. Skipped AE bridge deployment."
-            Add-InstallReport -Key "aftereffects-panel" -Status "skipped" -Message "After Effects bridge panel source was not found."
+            Write-Warning "After Effects bridge source was not found. Skipped AE bridge deployment."
+            Add-InstallReport -Key "aftereffects-panel" -Status "skipped" -Message "After Effects runtime or startup source was not found."
         }
 
         $installed = 0
-        if ($source) {
+        if ($source -and $startupSource -and $shutdownSource) {
             foreach ($aePath in $targets) {
                 $destDir = Join-Path $aePath "Support Files\Scripts\ScriptUI Panels"
                 $destFile = Join-Path $destDir "mcp-bridge-auto.jsx"
                 $startupDir = Join-Path $aePath "Support Files\Scripts\Startup"
                 $startupFile = Join-Path $startupDir "mcp-bridge-startup.jsx"
+                $shutdownDir = Join-Path $aePath "Support Files\Scripts\Shutdown"
+                $shutdownFile = Join-Path $shutdownDir "mcp-bridge-shutdown.jsx"
 
                 try {
                     if (-not (Test-Path -LiteralPath $destDir)) {
@@ -1609,18 +1620,23 @@ if (-not $SkipHostBridgeInstall) {
                     if (-not (Test-Path -LiteralPath $startupDir)) {
                         New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
                     }
+                    if (-not (Test-Path -LiteralPath $shutdownDir)) {
+                        New-Item -ItemType Directory -Path $shutdownDir -Force | Out-Null
+                    }
                     Copy-Item -LiteralPath $source -Destination $destFile -Force
-                    Get-AeBridgeStartupScriptContent | Set-Content -LiteralPath $startupFile -Encoding ASCII
+                    Copy-Item -LiteralPath $startupSource -Destination $startupFile -Force
+                    Copy-Item -LiteralPath $shutdownSource -Destination $shutdownFile -Force
                     Write-Host "Installed: $destFile"
-                    Write-Host "Installed startup loader: $startupFile"
+                    Write-Host "Installed headless startup bootstrap: $startupFile"
+                    Write-Host "Installed shutdown cleanup: $shutdownFile"
                     $installed++
                 } catch {
-                    Write-Warning "Failed to install bridge panel/startup loader to '$aePath': $($_.Exception.Message)"
+                    Write-Warning "Failed to install bridge runtime/startup bootstrap to '$aePath': $($_.Exception.Message)"
                 }
             }
 
-            Write-Host "Bridge deployment completed. Installed panel and startup loader to $installed location(s)."
-            Add-InstallReport -Key "aftereffects-panel" -Status "installed" -Message "Installed panel and startup loader to $installed After Effects location(s)."
+            Write-Host "Bridge deployment completed. Installed runtime and headless startup bootstrap to $installed location(s)."
+            Add-InstallReport -Key "aftereffects-panel" -Status "installed" -Message "Installed runtime and headless startup bootstrap to $installed After Effects location(s)."
         }
     }
 

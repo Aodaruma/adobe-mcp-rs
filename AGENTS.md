@@ -33,8 +33,8 @@
 ## 運用上の注意
 
 - リポジトリコンテナ直下は `.repo.git/`（bare repo）、`main/`（main worktree）、`worktrees/`（Issue別worktree）の構成。通常の編集・Git操作は `main/` または `worktrees/<name>/` で行う。詳細は `docs/worktree.md`。
-- AE 側で `Window > mcp-bridge-auto.jsx` を開き、`Auto-run commands` を ON にすること。
-- `ae_command.json` が `pending` のままなら、パネル未起動・Auto-run OFF・AE再読込漏れを疑うこと。
+- AE bridge は `Scripts/Startup/mcp-bridge-startup.jsx` からheadless起動する。panelや`Auto-run commands`は不要。
+- `ae_command.json` が `pending` のままなら、Startup/runtime配置、file/network access、heartbeat、AE再読込漏れを疑うこと。
 - `getLayerInfo`（ブリッジ版）は「アクティブコンポ」前提。アクティブでないと `No active composition` を返す。
 - 外部プラグイン系は表示名と matchName が一致しない場合がある。
   - 例: Glow は環境により `ADBE Glow` ではなく `ADBE Glo2` になる。
@@ -50,7 +50,7 @@ cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp -p id-mcp
 .\target\release\ae-mcp.exe bridge get-results
 ```
 
-`health` は binary、bridge root、host 別 daemon address の確認に留まり、Adobe host 内の実行確認にはならない。panel host は `Auto-run commands` を有効にし、InDesign は Startup Script を配置して再起動する。対象 binary の `serve-daemon` を起動して `list-*-instances` と `run-bridge-test` まで確認する。
+`health` は binary、bridge root、host 別 daemon address の確認に留まり、Adobe host 内の実行確認にはならない。対象host bridgeと binary の `serve-daemon` を起動し、`list-*-instances` と `run-bridge-test` まで確認する。AEとInDesignはpanelではなくStartup heartbeatを確認する。
 
 ## ドキュメント
 

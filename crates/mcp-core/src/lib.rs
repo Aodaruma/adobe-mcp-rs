@@ -147,8 +147,9 @@ pub const AFTER_EFFECTS_HOST: HostSpec = HostSpec {
     command_file_name: "ae_command.json",
     result_file_name: "ae_mcp_result.json",
     instance_tool_name: "list-ae-instances",
-    bridge_runtime: "extendscript-scriptui",
-    bridge_setup_hint: "Open Window > mcp-bridge-auto.jsx and enable Auto-run commands.",
+    bridge_runtime: "extendscript-startup",
+    bridge_setup_hint:
+        "Install the AE Startup bridge, enable file/network access, and restart After Effects.",
     daemon_port: 47655,
 };
 
@@ -1009,12 +1010,11 @@ pub fn general_help_text() -> &'static str {
 
 To use this integration with After Effects, follow these steps:
 
-1. Install bridge panel script with the installer command
+1. Install the bridge runtime and Startup bootstrap with the installer command
 2. Start the broker with `ae-mcp serve-daemon`; on Windows you can also use `ae-mcp autostart install` and `ae-mcp autostart start`
 3. Open Adobe After Effects
-4. Open Window > mcp-bridge-auto.jsx
-5. Enable "Auto-run commands"
-6. Call `list-ae-instances`, then `run-bridge-test` for the shortest end-to-end check
+4. Enable "Allow Scripts to Write Files and Access Network" and restart After Effects
+5. Call `list-ae-instances`, then `run-bridge-test` for the shortest end-to-end check
 
 Public tools (the exact `tools/list` contract):
 - run-jsx

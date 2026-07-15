@@ -19,7 +19,7 @@
 
 | Host | Binary | Bridge runtime | 状態 | 主な制約 |
 |---|---|---|---|---|
-| After Effects | `ae-mcp` | ScriptUI panel / ExtendScript JSX | **Primary** | MCP の待機・instance routing は `ae-mcp serve-daemon` が必要。panel を開いて `Auto-run commands` を有効にする。 |
+| After Effects | `ae-mcp` | Startup / ExtendScript JSX | **Primary** | headless Startup bootstrapを利用。MCPの待機・instance routingは`ae-mcp serve-daemon`が必要。 |
 | Premiere Pro | `pr-mcp` | UXP panel（25.6+）、CEP / ExtendScript fallback（24.0+） | **Experimental** | 共通 broker を使用。UXP の install/release と実機 version matrix が未確立。CEP は fallback。 |
 | Photoshop | `ps-mcp` | UXP panel（23.3+、API v2） | **Experimental** | 共通 broker を使用。modal policy、書き込み操作、配布・実機 E2E が未完成。 |
 | Illustrator | `ai-mcp` | CEP panel / ExtendScript（24.0+、CSXS 10） | **Experimental** | 共通 broker を使用。現行 version の実機検証と署名・配布が未完成。 |
@@ -35,7 +35,7 @@ Runtime と経路:
 
 ```text
 MCP client -> ae-mcp serve-stdio -> ae-mcp serve-daemon
-           -> ~/Documents/ae-mcp-bridge -> ScriptUI / ExtendScript panel
+           -> ~/Documents/ae-mcp-bridge -> Startup / ExtendScript runtime
 ```
 
 最小機能:
@@ -46,8 +46,8 @@ MCP client -> ae-mcp serve-stdio -> ae-mcp serve-daemon
 
 制約:
 
-- `mcp-bridge-auto.jsx` を ScriptUI Panels に配置し、After Effects の file / network access を許可する。
-- panel を開いて `Auto-run commands` を有効にする必要がある。自動起動と daemon 再接続は今後の hardening 対象。
+- `mcp-bridge-auto.jsx`をScriptUI Panels、`mcp-bridge-startup.jsx`をScripts/Startupに配置し、After Effectsのfile/network accessを許可する。
+- Startup bootstrapがheadless runtimeを起動する。panel、workspace、Auto-run checkboxには依存しない。実機lifecycle matrixはpreview検証中。
 - `getLayerInfo` の bridge 実装は active composition が必要。
 - `tools/list`でadvertiseする9 Toolだけが公開surface。legacy / host-specific名は非公開互換dispatchとして受理し、呼出時に公開置換先を返す。
 - `run-script`はallowlistを持つが、非同期direct-file互換経路と同期daemon broker契約の安全境界・完了条件が異なるため公開しない。
@@ -190,7 +190,7 @@ cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp -p id-mcp
 
 Primary / Experimental の release 判定では、実際の Adobe host で次も確認して記録します。
 
-1. bridge を導入して panel を開き、heartbeat が更新される。
+1. bridgeを導入してhost側runtimeを起動し、heartbeatが更新される。AEはpanelを開かずStartup起動を確認する。
 2. `list-*-instances` が対象 instance と version / runtime を返す。
 3. `run-bridge-test` と allowlist の読み取り操作が成功する。
 4. 代表的な書き込みまたは export が成功する。

@@ -15,7 +15,10 @@
     "protocolVersion": 1,
     "hostId": "aftereffects",
     "appVersion": "25.0",
-    "bridgeRuntime": "extendscript-scriptui",
+    "bridgeRuntime": "extendscript-startup",
+    "lifecycleMode": "startup-headless",
+    "runtimeId": "redacted-runtime",
+    "runtimeStartedAt": "2026-07-15T11:59:55Z",
     "bridgeVersion": "0.4.4",
     "instanceId": "redacted-instance",
     "capabilities": ["ping", "run-jsx"]

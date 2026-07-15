@@ -12,7 +12,7 @@ LLM から Adobe アプリをローカル自動操作するための、Rust 製 
 
 | 対象アプリ | バイナリ | bridge runtime | 状態 | 現在の境界 |
 |---|---|---|---|---|
-| After Effects | `ae-mcp` | ScriptUI / ExtendScript JSX | **Primary** | panel、Auto-run、`serve-daemon` broker が必要 |
+| After Effects | `ae-mcp` | Startup / ExtendScript JSX | **Primary** | headless Startup bootstrapと`serve-daemon` brokerを使用 |
 | Premiere Pro | `pr-mcp` | UXP 25.6+、CEP / ExtendScript 24.0+ fallback | **Experimental** | sequence / export の初期 surface。`serve-daemon` broker が必要 |
 | Photoshop | `ps-mcp` | UXP 23.3+（API v2） | **Experimental** | 汎用実行と document / layer 読み取りの初期 surface |
 | Illustrator | `ai-mcp` | CEP / ExtendScript 24.0+（CSXS 10） | **Experimental** | document / artboard / layer / export の初期 surface。runtime 配布の検証が必要 |
@@ -76,7 +76,7 @@ cargo build --release -p id-mcp
 
 ### After Effects
 
-bridge panel を配置します。
+headless bridge runtimeとStartup bootstrapを配置します。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-bridge.ps1
@@ -90,8 +90,8 @@ After Effects 側:
 
 1. `Allow Scripts to Write Files and Access Network` を有効化
 2. After Effects を再起動
-3. `Window > mcp-bridge-auto.jsx` を開く
-4. `Auto-run commands` を ON
+
+bridgeは `Scripts/Startup` から自動起動するため、panelを開く操作や`Auto-run commands`は不要です。詳細は [After Effects bridge lifecycle](docs/after-effects-bridge-lifecycle.md) を参照してください。
 
 broker を起動:
 

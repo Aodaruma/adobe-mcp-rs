@@ -82,7 +82,7 @@
 
 ## 最短確認
 
-1. AE panelで`Auto-run commands`を有効にする。
+1. Startup bridgeのheartbeatが更新されていることを確認する。
 2. `ae-mcp serve-daemon`を起動する。
 3. 公開Tool `list-ae-instances`で対象instanceを確認する。
 4. 公開Tool `run-bridge-test`で結果JSONを確認する。

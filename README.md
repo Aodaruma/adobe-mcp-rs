@@ -12,7 +12,7 @@ Last synchronized with the code on 2026-07-15.
 
 | Host app | Binary | Bridge runtime | Status | Current boundary |
 |---|---|---|---|---|
-| After Effects | `ae-mcp` | ScriptUI / ExtendScript JSX | **Primary** | Requires the panel, Auto-run, and the `serve-daemon` broker |
+| After Effects | `ae-mcp` | Startup / ExtendScript JSX | **Primary** | Uses a headless Startup bootstrap and the `serve-daemon` broker |
 | Premiere Pro | `pr-mcp` | UXP 25.6+, CEP / ExtendScript 24.0+ fallback | **Experimental** | Initial sequence/export surface; `serve-daemon` broker required |
 | Photoshop | `ps-mcp` | UXP 23.3+ (API v2) | **Experimental** | Initial generic execution and read-only document/layer surface |
 | Illustrator | `ai-mcp` | CEP / ExtendScript 24.0+ (CSXS 10) | **Experimental** | Initial document/artboard/layer/export surface; runtime packaging needs validation |
@@ -76,7 +76,7 @@ cargo build --release -p id-mcp
 
 ### After Effects
 
-Install the bridge panel:
+Install the headless bridge runtime and Startup bootstrap:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-bridge.ps1
@@ -90,8 +90,8 @@ In After Effects:
 
 1. Enable `Allow Scripts to Write Files and Access Network`.
 2. Restart After Effects.
-3. Open `Window > mcp-bridge-auto.jsx`.
-4. Enable `Auto-run commands`.
+
+The bridge starts from `Scripts/Startup`; opening a panel or enabling an Auto-run checkbox is not required. See [After Effects bridge lifecycle](docs/after-effects-bridge-lifecycle.md).
 
 Run the broker:
 

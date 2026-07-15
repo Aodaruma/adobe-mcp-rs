@@ -1,5 +1,5 @@
 // mcp-bridge-auto.jsx
-// Auto-running MCP Bridge panel for After Effects
+// MCP Bridge command runtime for After Effects (headless Startup or ScriptUI fallback)
 #targetengine "ae_mcp_bridge"
 
 // Remove #include directives as we define functions below
@@ -14,6 +14,22 @@
 // --- Function Definitions ---
 var AE_MCP_BRIDGE_VERSION = "0.4.4";
 var fxDialogsSuppressed = false;
+var aeMcpBootstrapConfig = $.global.__adobeMcpBridgeBootstrapConfig || {};
+var aeMcpHeadless = aeMcpBootstrapConfig.headless === true;
+var aeMcpLifecycleMode = aeMcpHeadless ? "startup-headless" : "scriptui-panel";
+var aeMcpPreviousInstanceId = "";
+
+// A reload can otherwise leave repeating scheduleTask callbacks alive. Ask the
+// previous runtime to cancel its task IDs before installing this generation.
+try {
+    var aeMcpPreviousRuntime = $.global.__adobeMcpBridgeRuntime;
+    if (aeMcpPreviousRuntime && aeMcpPreviousRuntime.stop) {
+        if (aeMcpPreviousRuntime.getState) {
+            aeMcpPreviousInstanceId = aeMcpPreviousRuntime.getState().instanceId || "";
+        }
+        aeMcpPreviousRuntime.stop({ removeHeartbeat: false, reason: "superseded" });
+    }
+} catch (_previousRuntimeStopErr) {}
 
 // --- createComposition (from createComposition.jsx) --- 
 function createComposition(args) {
@@ -2518,38 +2534,45 @@ if (typeof JSON.stringify !== "function") {
     })();
 }
 
-// Create a dockable panel when executed from ScriptUI Panels.
-// Fallback to a floating palette when launched as a normal script.
-var panel = (this instanceof Panel)
-    ? this
-    : new Window("palette", "MCP Bridge Auto " + AE_MCP_BRIDGE_VERSION, undefined, { resizeable: true });
-var isDockablePanel = panel instanceof Panel;
-if (isDockablePanel) {
-    panel.text = "MCP Bridge Auto " + AE_MCP_BRIDGE_VERSION;
+// Startup mode deliberately creates no Window/Panel. ScriptUI remains a
+// manual diagnostics fallback when this file is launched without bootstrap.
+var panel = null;
+var isDockablePanel = false;
+var statusText = null;
+var logPanel = null;
+var logText = null;
+var autoRunCheckbox = null;
+var debugLogCheckbox = null;
+var checkButton = null;
+
+if (!aeMcpHeadless) {
+    panel = (this instanceof Panel)
+        ? this
+        : new Window("palette", "MCP Bridge Auto " + AE_MCP_BRIDGE_VERSION, undefined, { resizeable: true });
+    isDockablePanel = panel instanceof Panel;
+    if (isDockablePanel) {
+        panel.text = "MCP Bridge Auto " + AE_MCP_BRIDGE_VERSION;
+    }
+    panel.orientation = "column";
+    panel.alignChildren = ["fill", "top"];
+    panel.spacing = 10;
+    panel.margins = 16;
+
+    statusText = panel.add("statictext", undefined, "Waiting for commands... (v" + AE_MCP_BRIDGE_VERSION + ")");
+    statusText.alignment = ["fill", "top"];
+
+    logPanel = panel.add("panel", undefined, "Command Log");
+    logPanel.orientation = "column";
+    logPanel.alignChildren = ["fill", "fill"];
+    logText = logPanel.add("edittext", undefined, "", {multiline: true, readonly: true});
+    logText.preferredSize.height = 200;
+
+    autoRunCheckbox = panel.add("checkbox", undefined, "Auto-run commands");
+    autoRunCheckbox.value = true;
+
+    debugLogCheckbox = panel.add("checkbox", undefined, "Write debug log");
+    debugLogCheckbox.value = false;
 }
-panel.orientation = "column";
-panel.alignChildren = ["fill", "top"];
-panel.spacing = 10;
-panel.margins = 16;
-
-// Status display
-var statusText = panel.add("statictext", undefined, "Waiting for commands... (v" + AE_MCP_BRIDGE_VERSION + ")");
-statusText.alignment = ["fill", "top"];
-
-// Add log area
-var logPanel = panel.add("panel", undefined, "Command Log");
-logPanel.orientation = "column";
-logPanel.alignChildren = ["fill", "fill"];
-var logText = logPanel.add("edittext", undefined, "", {multiline: true, readonly: true});
-logText.preferredSize.height = 200;
-
-// Auto-run checkbox
-var autoRunCheckbox = panel.add("checkbox", undefined, "Auto-run commands");
-autoRunCheckbox.value = true;
-
-// Debug file logging checkbox
-var debugLogCheckbox = panel.add("checkbox", undefined, "Write debug log");
-debugLogCheckbox.value = false;
 
 // Check interval (ms)
 var checkInterval = 2000;
@@ -2558,15 +2581,20 @@ var isChecking = false;
 var permissionStateKnown = false;
 var hasFileNetworkPermission = false;
 var hasShownPermissionDialog = false;
-var autoRunValueBeforePermissionLock = autoRunCheckbox.value;
+var autoRunValueBeforePermissionLock = true;
 var commandCheckerTaskId = 0;
 var heartbeatTaskId = 0;
 var lastCommandCheckerState = "";
 var debugLogEnabled = false;
 var debugLogPathOverride = "";
-var bridgeInstanceId = "";
+var bridgeInstanceId = aeMcpPreviousInstanceId;
 var currentRequestId = "";
 var currentCommandName = "";
+var bridgeRuntimeId = "runtime-" + (new Date().getTime()) + "-" + Math.floor(Math.random() * 1000000);
+var bridgeStartedAt = fxDateToIsoString(new Date());
+var bridgeRuntimeRunning = false;
+var bridgeHasStarted = false;
+var bridgeRuntime = null;
 
 function isControlValid(control) {
     try {
@@ -2597,7 +2625,9 @@ function isAutoRunEnabled() {
 
 function safePanelUpdate() {
     try {
-        panel.update();
+        if (panel) {
+            panel.update();
+        }
     } catch (_e) {}
 }
 
@@ -2886,6 +2916,9 @@ function getProjectPathForHeartbeat() {
 }
 
 function getBridgeInstanceStatus() {
+    if (!bridgeRuntimeRunning) {
+        return "stopped";
+    }
     if (currentRequestId) {
         return "running";
     }
@@ -2907,7 +2940,10 @@ function getHostInstanceMetadata() {
         appVersion: (app && app.version) ? String(app.version) : "",
         displayName: "Adobe After Effects " + ((app && app.version) ? String(app.version) : ""),
         bridgeVersion: AE_MCP_BRIDGE_VERSION,
-        bridgeRuntime: "extendscript-scriptui",
+        bridgeRuntime: aeMcpHeadless ? "extendscript-startup" : "extendscript-scriptui",
+        lifecycleMode: aeMcpLifecycleMode,
+        runtimeId: bridgeRuntimeId,
+        runtimeStartedAt: bridgeStartedAt,
         hostId: "aftereffects",
         capabilities: ["run-jsx", "projects.read", "compositions.read", "layers.read", "render-queue"],
         projectPath: getProjectPathForHeartbeat(),
@@ -2989,36 +3025,43 @@ function isModalDialogError(error) {
 }
 
 function applyPermissionState(showDialog) {
-    if (!isControlValid(autoRunCheckbox) || !isControlValid(checkButton)) {
-        return;
-    }
-
     if (!hasFileNetworkPermission) {
-        if (autoRunCheckbox.enabled) {
-            autoRunValueBeforePermissionLock = autoRunCheckbox.value;
+        if (isControlValid(autoRunCheckbox)) {
+            if (autoRunCheckbox.enabled) {
+                autoRunValueBeforePermissionLock = autoRunCheckbox.value;
+            }
+            autoRunCheckbox.value = false;
+            autoRunCheckbox.enabled = false;
         }
-
-        autoRunCheckbox.value = false;
-        autoRunCheckbox.enabled = false;
-        checkButton.enabled = false;
+        if (isControlValid(checkButton)) {
+            checkButton.enabled = false;
+        }
         setStatus("Permission required - Enable Scripts to Write Files and Access Network");
 
-        if (showDialog && !hasShownPermissionDialog) {
+        if (showDialog && !aeMcpHeadless && !hasShownPermissionDialog) {
             hasShownPermissionDialog = true;
             showPermissionDialog();
         }
         return;
     }
 
-    var wasLocked = !autoRunCheckbox.enabled || !checkButton.enabled;
-    autoRunCheckbox.enabled = true;
-    checkButton.enabled = true;
+    var wasLocked = false;
+    if (isControlValid(autoRunCheckbox)) {
+        wasLocked = !autoRunCheckbox.enabled;
+        autoRunCheckbox.enabled = true;
+        if (wasLocked) {
+            autoRunCheckbox.value = autoRunValueBeforePermissionLock;
+        }
+    }
+    if (isControlValid(checkButton)) {
+        wasLocked = wasLocked || !checkButton.enabled;
+        checkButton.enabled = true;
+    }
     if (wasLocked) {
-        autoRunCheckbox.value = autoRunValueBeforePermissionLock;
         hasShownPermissionDialog = false;
         logToPanel("File/network access detected. Controls re-enabled.");
     }
-    setStatus("Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF"));
+    setStatus("Ready - Auto-run is " + (isAutoRunEnabled() ? "ON" : "OFF"));
 }
 
 function refreshPermissionState(showDialog) {
@@ -3667,7 +3710,14 @@ function checkForCommands() {
 // Set up timer to check for commands
 function startCommandChecker() {
     stopCommandChecker();
-    commandCheckerTaskId = app.scheduleTask("$.global.checkForCommands()", checkInterval, true);
+    commandCheckerTaskId = app.scheduleTask(
+        "$.global.__adobeMcpBridgeCommandTick('" + bridgeRuntimeId + "')",
+        checkInterval,
+        true
+    );
+    if (bridgeRuntime) {
+        bridgeRuntime.commandTaskId = commandCheckerTaskId;
+    }
     logToPanel("Command checker scheduled. taskId=" + commandCheckerTaskId + " intervalMs=" + checkInterval);
 }
 
@@ -3680,12 +3730,22 @@ function stopCommandChecker() {
         app.cancelTask(commandCheckerTaskId);
     } catch (_e) {}
     commandCheckerTaskId = 0;
+    if (bridgeRuntime) {
+        bridgeRuntime.commandTaskId = 0;
+    }
 }
 
 function startHeartbeatTask() {
     stopHeartbeatTask();
     writeInstanceHeartbeat();
-    heartbeatTaskId = app.scheduleTask("$.global.aeMcpHeartbeatTick()", heartbeatInterval, true);
+    heartbeatTaskId = app.scheduleTask(
+        "$.global.__adobeMcpBridgeHeartbeatTick('" + bridgeRuntimeId + "')",
+        heartbeatInterval,
+        true
+    );
+    if (bridgeRuntime) {
+        bridgeRuntime.heartbeatTaskId = heartbeatTaskId;
+    }
     logToPanel("Heartbeat task scheduled. taskId=" + heartbeatTaskId + " intervalMs=" + heartbeatInterval);
 }
 
@@ -3698,41 +3758,154 @@ function stopHeartbeatTask() {
         app.cancelTask(heartbeatTaskId);
     } catch (_e) {}
     heartbeatTaskId = 0;
+    if (bridgeRuntime) {
+        bridgeRuntime.heartbeatTaskId = 0;
+    }
+}
+
+function removeInstanceHeartbeat() {
+    try {
+        var heartbeatFile = new File(getHeartbeatFilePath());
+        if (heartbeatFile.exists) {
+            heartbeatFile.remove();
+        }
+    } catch (_heartbeatRemoveErr) {}
+}
+
+function getBridgeRuntimeState() {
+    return {
+        version: AE_MCP_BRIDGE_VERSION,
+        running: bridgeRuntimeRunning,
+        lifecycleMode: aeMcpLifecycleMode,
+        runtimeId: bridgeRuntimeId,
+        instanceId: getBridgeInstanceId(),
+        commandTaskId: commandCheckerTaskId,
+        heartbeatTaskId: heartbeatTaskId,
+        startedAt: bridgeStartedAt,
+        bootstrapSource: aeMcpBootstrapConfig.source || "manual"
+    };
+}
+
+function stopBridgeRuntime(options) {
+    options = options || {};
+    stopCommandChecker();
+    stopHeartbeatTask();
+    bridgeRuntimeRunning = false;
+    if (bridgeRuntime) {
+        bridgeRuntime.running = false;
+        bridgeRuntime.stoppedAt = fxDateToIsoString(new Date());
+        bridgeRuntime.stopReason = options.reason || "requested";
+    }
+    if (options.removeHeartbeat !== false) {
+        removeInstanceHeartbeat();
+    }
+    setStatus("Bridge stopped");
+    return getBridgeRuntimeState();
+}
+
+function registerScheduledBridgeFunctions() {
+    $.global.__adobeMcpBridgeCommandTick = function (scheduledRuntimeId) {
+        if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId) {
+            return;
+        }
+        checkForCommands();
+    };
+    $.global.__adobeMcpBridgeHeartbeatTick = function (scheduledRuntimeId) {
+        if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId) {
+            return;
+        }
+        heartbeatTick();
+    };
+    // Neutralize callbacks left by the pre-generation runtime. New scheduled
+    // callbacks always use the generation-aware functions above.
+    $.global.checkForCommands = function () { return null; };
+    $.global.aeMcpHeartbeatTick = function () { return null; };
+}
+
+function startBridgeRuntime() {
+    if (bridgeRuntimeRunning && commandCheckerTaskId && heartbeatTaskId) {
+        writeInstanceHeartbeat();
+        return getBridgeRuntimeState();
+    }
+    if (bridgeHasStarted) {
+        bridgeRuntimeId = "runtime-" + (new Date().getTime()) + "-" + Math.floor(Math.random() * 1000000);
+        bridgeStartedAt = fxDateToIsoString(new Date());
+        if (bridgeRuntime) {
+            bridgeRuntime.runtimeId = bridgeRuntimeId;
+            bridgeRuntime.startedAt = bridgeStartedAt;
+        }
+    }
+    bridgeHasStarted = true;
+    bridgeRuntimeRunning = true;
+    if (bridgeRuntime) {
+        bridgeRuntime.running = true;
+        bridgeRuntime.stoppedAt = null;
+        bridgeRuntime.stopReason = null;
+    }
+    registerScheduledBridgeFunctions();
+    refreshPermissionState(false);
+    startHeartbeatTask();
+    startCommandChecker();
+    return getBridgeRuntimeState();
+}
+
+function restartBridgeRuntime() {
+    stopBridgeRuntime({ removeHeartbeat: false, reason: "restart" });
+    return startBridgeRuntime();
 }
 
 applyDebugLogConfig(readDebugLogConfig());
 resetDebugLogFileForSession();
 
 try {
-    $.global.checkForCommands = checkForCommands;
-    $.global.aeMcpHeartbeatTick = heartbeatTick;
-    logToPanel("Registered scheduled bridge functions on $.global.");
+    bridgeRuntime = {
+        version: AE_MCP_BRIDGE_VERSION,
+        running: false,
+        lifecycleMode: aeMcpLifecycleMode,
+        runtimeId: bridgeRuntimeId,
+        startedAt: bridgeStartedAt,
+        commandTaskId: 0,
+        heartbeatTaskId: 0,
+        start: startBridgeRuntime,
+        stop: stopBridgeRuntime,
+        restart: restartBridgeRuntime,
+        getState: getBridgeRuntimeState,
+        writeHeartbeat: writeInstanceHeartbeat
+    };
+    $.global.__adobeMcpBridgeRuntime = bridgeRuntime;
+    $.global.aeMcpBridgeStart = startBridgeRuntime;
+    $.global.aeMcpBridgeStop = stopBridgeRuntime;
+    $.global.aeMcpBridgeRestart = restartBridgeRuntime;
+    $.global.aeMcpBridgeGetState = getBridgeRuntimeState;
+    registerScheduledBridgeFunctions();
+    logToPanel("Registered bridge lifecycle and scheduled functions on $.global.");
 } catch (globalRegisterError) {
-    logToPanel("Failed to register scheduled bridge functions on $.global: " + globalRegisterError.toString());
+    logToPanel("Failed to register bridge lifecycle on $.global: " + globalRegisterError.toString());
 }
 
 // Add manual check button
-var checkButton = panel.add("button", undefined, "Check for Commands Now");
-checkButton.onClick = function() {
-    if (!refreshPermissionState(true)) {
-        return;
-    }
-    logToPanel("Manually checking for commands");
-    checkForCommands();
-};
+if (panel) {
+    checkButton = panel.add("button", undefined, "Check for Commands Now");
+    checkButton.onClick = function() {
+        if (!refreshPermissionState(true)) {
+            return;
+        }
+        logToPanel("Manually checking for commands");
+        checkForCommands();
+    };
 
-debugLogCheckbox.onClick = function() {
-    setDebugLogEnabled(debugLogCheckbox.value === true);
-    logToPanel(
-        "Debug file logging " +
-        (debugLogEnabled ? "enabled: " + getDebugLogFilePath() : "disabled")
-    );
-};
+    debugLogCheckbox.onClick = function() {
+        setDebugLogEnabled(debugLogCheckbox.value === true);
+        logToPanel(
+            "Debug file logging " +
+            (debugLogEnabled ? "enabled: " + getDebugLogFilePath() : "disabled")
+        );
+    };
+}
 
 // Log startup
-writeInstanceHeartbeat();
 logToPanel("MCP Bridge Auto started");
-logToPanel("UI mode: " + (isDockablePanel ? "dockable panel" : "floating window"));
+logToPanel("Lifecycle mode: " + aeMcpLifecycleMode);
 try {
     logToPanel("AE instance: " + getBridgeInstanceId());
     logToPanel("Command file: " + getCommandFilePath());
@@ -3742,32 +3915,24 @@ try {
 } catch (pathError) {
     logToPanel("Command file path unavailable: " + pathError.toString());
 }
-refreshPermissionState(true);
+refreshPermissionState(!aeMcpHeadless);
 
 // Start the command checker
-startHeartbeatTask();
-startCommandChecker();
+startBridgeRuntime();
 
-panel.onClose = function () {
-    stopCommandChecker();
-    stopHeartbeatTask();
-    try {
-        var heartbeatFile = new File(getHeartbeatFilePath());
-        if (heartbeatFile.exists) {
-            heartbeatFile.remove();
-        }
-    } catch (_heartbeatCloseErr) {}
-    return true;
-};
+if (panel) {
+    panel.onClose = function () {
+        stopBridgeRuntime({ removeHeartbeat: true, reason: "panel-closed" });
+        return true;
+    };
 
-// Keep layout responsive for both docked panel and floating window.
-panel.onResizing = panel.onResize = function () {
-    this.layout.resize();
-};
-panel.layout.layout(true);
+    panel.onResizing = panel.onResize = function () {
+        this.layout.resize();
+    };
+    panel.layout.layout(true);
 
-// Show only when using floating window mode.
-if (!isDockablePanel) {
-    panel.center();
-    panel.show();
+    if (!isDockablePanel) {
+        panel.center();
+        panel.show();
+    }
 }
