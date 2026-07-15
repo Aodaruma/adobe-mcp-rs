@@ -1,17 +1,26 @@
 use anyhow::{anyhow, Context, Result};
 use mcp_core::{host_spec_by_id, AppConfig, HostSpec};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(1);
+static ATOMIC_REPLACE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
 const BROKER_LOCK_STALE_SECONDS: u64 = 86_400;
+const ATOMIC_TEMP_STALE_SECONDS: u64 = 3_600;
+const ATOMIC_REPLACE_RETRIES: usize = 50;
+const JSON_READ_RETRIES: usize = 8;
+const FILE_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+const JSON_READ_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -253,8 +262,8 @@ impl BridgeClient {
         if !path.exists() {
             return Err(BridgeError::MissingResultFile(path.display().to_string()).into());
         }
-        fs::read_to_string(path)
-            .with_context(|| format!("failed to read result file: {}", path.display()))
+        read_json_text_with_retry(path)
+            .with_context(|| format!("failed to read valid result JSON: {}", path.display()))
     }
 
     pub fn read_results_with_stale_warning(&self, stale_threshold: Duration) -> Result<String> {
@@ -265,9 +274,9 @@ impl BridgeClient {
 
         let path = &self.cfg.bridge.result_file;
         if !path.exists() {
-            return Ok(json_text(&serde_json::json!({
+            return json_text(&serde_json::json!({
                 "error": "No results file found. Please run a script in the host application first."
-            }))?);
+            }));
         }
 
         let metadata = fs::metadata(path)
@@ -275,17 +284,17 @@ impl BridgeClient {
         let modified = metadata
             .modified()
             .unwrap_or_else(|_| SystemTime::now() - stale_threshold);
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read result file: {}", path.display()))?;
+        let content = read_json_text_with_retry(path)
+            .with_context(|| format!("failed to read valid result JSON: {}", path.display()))?;
 
         if let Ok(age) = SystemTime::now().duration_since(modified) {
             if age > stale_threshold {
-                return Ok(json_text(&serde_json::json!({
+                return json_text(&serde_json::json!({
                     "warning": "Result file appears to be stale (not recently updated).",
                     "message": "This could indicate the host application is not properly writing results or the MCP Bridge panel is not running.",
                     "ageSeconds": age.as_secs(),
                     "originalContent": content
-                }))?);
+                }));
             }
         }
 
@@ -301,10 +310,7 @@ impl BridgeClient {
         let start = SystemTime::now();
         loop {
             if self.cfg.bridge.result_file.exists() {
-                let content = self.read_results_raw()?;
-                if content.trim().is_empty() {
-                    // continue polling
-                } else if let Ok(value) = serde_json::from_str::<Value>(&content) {
+                if let Some((content, value)) = try_read_json_text(&self.cfg.bridge.result_file)? {
                     let matched = expected_command
                         .map(|cmd| {
                             value.get("_commandExecuted").and_then(Value::as_str) == Some(cmd)
@@ -381,26 +387,13 @@ impl BridgeClient {
             let age = SystemTime::now()
                 .duration_since(modified)
                 .unwrap_or_else(|_| Duration::from_secs(0));
-            let raw = match fs::read_to_string(&heartbeat_path) {
+            let mut instance = match read_json_file_with_retry::<HostInstance>(&heartbeat_path) {
                 Ok(value) => value,
                 Err(error) => {
                     inactive_instances.push(instance_discovery_issue(
                         folder_name,
                         &heartbeat_path,
-                        format!("failed to read heartbeat.json: {error}"),
-                        Some(age),
-                        None,
-                    ));
-                    continue;
-                }
-            };
-            let mut instance = match serde_json::from_str::<HostInstance>(&raw) {
-                Ok(value) => value,
-                Err(error) => {
-                    inactive_instances.push(instance_discovery_issue(
-                        folder_name,
-                        &heartbeat_path,
-                        format!("failed to parse heartbeat.json: {error}"),
+                        format!("failed to read or parse heartbeat.json: {error}"),
                         Some(age),
                         None,
                     ));
@@ -637,9 +630,9 @@ impl BridgeClient {
         record.updated_at = chrono_like_timestamp();
         self.write_request_record(&record)?;
 
-        self.write_instance_waiting_result(&instance, &request_id)?;
-        self.write_current_request(&instance, &request_id, command)?;
-        self.write_instance_command_file(&instance, &request_id, command, args)?;
+        self.write_instance_waiting_result(&instance, request_id)?;
+        self.write_current_request(&instance, request_id, command)?;
+        self.write_instance_command_file(&instance, request_id, command, args)?;
 
         record.status = "running".to_string();
         record.updated_at = chrono_like_timestamp();
@@ -647,7 +640,7 @@ impl BridgeClient {
 
         loop {
             if let Some((raw, parsed)) =
-                self.try_read_instance_result(&instance, &request_id, Some(command))?
+                self.try_read_instance_result(&instance, request_id, Some(command))?
             {
                 record.status = result_record_status(&parsed).to_string();
                 record.updated_at = chrono_like_timestamp();
@@ -855,10 +848,8 @@ impl BridgeClient {
         if !path.exists() {
             return Ok(None);
         }
-        let raw = fs::read_to_string(&path)
+        let current = read_json_file_with_retry(&path)
             .with_context(|| format!("failed to read current request: {}", path.display()))?;
-        let current = serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse current request: {}", path.display()))?;
         Ok(Some(current))
     }
 
@@ -945,14 +936,8 @@ impl BridgeClient {
         if !path.exists() {
             return Ok(None);
         }
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read instance result: {}", path.display()))?;
-        if raw.trim().is_empty() {
+        let Some((raw, parsed)) = try_read_json_text(&path)? else {
             return Ok(None);
-        }
-        let parsed = match serde_json::from_str::<Value>(&raw) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
         };
         let request_matches = parsed
             .get("_requestId")
@@ -982,10 +967,8 @@ impl BridgeClient {
     fn read_request_record(&self, request_id: &str) -> Result<RequestRecord> {
         validate_request_id(request_id)?;
         let path = self.registry_path(request_id);
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read request registry: {}", path.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse request registry: {}", path.display()))
+        read_json_file_with_retry(&path)
+            .with_context(|| format!("failed to read request registry: {}", path.display()))
     }
 
     fn cleanup_registry(&self) -> Result<()> {
@@ -993,6 +976,11 @@ impl BridgeClient {
         if !dir.exists() {
             return Ok(());
         }
+        cleanup_stale_atomic_temp_files(
+            &dir,
+            None,
+            Duration::from_secs(ATOMIC_TEMP_STALE_SECONDS),
+        )?;
         let now = chrono::Utc::now();
         for entry in fs::read_dir(&dir)
             .with_context(|| format!("failed to read registry directory: {}", dir.display()))?
@@ -1050,8 +1038,305 @@ pub fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             .with_context(|| format!("failed to create directory: {}", parent.display()))?;
     }
     let raw = serde_json::to_string_pretty(value).with_context(|| "failed to serialize JSON")?;
-    fs::write(path, raw).with_context(|| format!("failed to write file: {}", path.display()))?;
+    write_atomic_text_file(path, raw.as_bytes())
+        .with_context(|| format!("failed to atomically write file: {}", path.display()))
+}
+
+fn write_atomic_text_file(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+
+    let target_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("atomic write target has no file name: {}", path.display()))?
+        .to_string_lossy()
+        .into_owned();
+    cleanup_stale_atomic_temp_files(
+        parent,
+        Some(&target_name),
+        Duration::from_secs(ATOMIC_TEMP_STALE_SECONDS),
+    )?;
+
+    let (temp_path, mut temp_file) = create_atomic_temp_file(parent, &target_name)?;
+    let mut temp_guard = AtomicTempGuard::new(temp_path.clone());
+    temp_file
+        .write_all(contents)
+        .with_context(|| format!("failed to write temporary file: {}", temp_path.display()))?;
+    temp_file
+        .flush()
+        .with_context(|| format!("failed to flush temporary file: {}", temp_path.display()))?;
+    temp_file
+        .sync_all()
+        .with_context(|| format!("failed to sync temporary file: {}", temp_path.display()))?;
+    drop(temp_file);
+
+    atomic_replace_with_retry(&temp_path, path)?;
+    temp_guard.disarm();
+    sync_parent_directory(parent)?;
     Ok(())
+}
+
+fn create_atomic_temp_file(parent: &Path, target_name: &str) -> Result<(PathBuf, File)> {
+    for _ in 0..32 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0))
+            .as_nanos();
+        let counter = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".{target_name}.tmp-{}-{nanos:x}-{counter:x}",
+            std::process::id()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to create atomic temporary file: {}", path.display())
+                });
+            }
+        }
+    }
+    Err(anyhow!(
+        "failed to allocate a unique atomic temporary file for {target_name}"
+    ))
+}
+
+fn atomic_replace_with_retry(source: &Path, destination: &Path) -> Result<()> {
+    let destination_lock = {
+        let mut locks = ATOMIC_REPLACE_LOCKS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| anyhow!("atomic replace lock registry is poisoned"))?;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(destination).and_then(Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(Mutex::new(()));
+            locks.insert(destination.to_path_buf(), Arc::downgrade(&lock));
+            lock
+        }
+    };
+    let _replace_guard = destination_lock
+        .lock()
+        .map_err(|_| anyhow!("atomic replace lock is poisoned"))?;
+    let mut last_error = None;
+    for attempt in 0..ATOMIC_REPLACE_RETRIES {
+        match atomic_replace(source, destination) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let retryable = is_retryable_atomic_replace_error(&error);
+                last_error = Some(error);
+                if retryable && attempt + 1 < ATOMIC_REPLACE_RETRIES {
+                    thread::sleep(FILE_RETRY_INTERVAL);
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("atomic replace failed"))).with_context(
+        || {
+            format!(
+                "failed to replace {} with {}",
+                destination.display(),
+                source.display()
+            )
+        },
+    )
+}
+
+fn is_retryable_atomic_replace_error(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+        matches!(error.raw_os_error(), Some(5 | 32 | 33))
+    }
+    #[cfg(not(windows))]
+    {
+        matches!(
+            error.kind(),
+            ErrorKind::PermissionDenied | ErrorKind::WouldBlock | ErrorKind::Interrupted
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<()> {
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("failed to sync directory: {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn cleanup_stale_atomic_temp_files(
+    directory: &Path,
+    target_name: Option<&str>,
+    stale_after: Duration,
+) -> Result<()> {
+    if !directory.exists() {
+        return Ok(());
+    }
+    let target_prefix = target_name.map(|name| format!(".{name}.tmp-"));
+    for entry in fs::read_dir(directory)
+        .with_context(|| format!("failed to scan atomic temp files: {}", directory.display()))?
+    {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        let is_atomic_temp = target_prefix
+            .as_deref()
+            .map(|prefix| file_name.starts_with(prefix))
+            .unwrap_or_else(|| file_name.starts_with('.') && file_name.contains(".tmp-"));
+        if !is_atomic_temp {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(SystemTime::now());
+        let age = SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_else(|_| Duration::from_secs(0));
+        if age >= stale_after {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
+fn read_json_text_with_retry(path: &Path) -> Result<String> {
+    let mut last_error = String::new();
+    for attempt in 0..JSON_READ_RETRIES {
+        match fs::read_to_string(path) {
+            Ok(raw) if !raw.trim().is_empty() => match serde_json::from_str::<Value>(&raw) {
+                Ok(_) => return Ok(raw),
+                Err(error) => last_error = format!("invalid JSON: {error}"),
+            },
+            Ok(_) => last_error = "file is empty".to_string(),
+            Err(error) => last_error = error.to_string(),
+        }
+        if attempt + 1 < JSON_READ_RETRIES {
+            thread::sleep(JSON_READ_RETRY_INTERVAL);
+        }
+    }
+    Err(anyhow!(
+        "failed to read complete JSON after {JSON_READ_RETRIES} attempts: {last_error}"
+    ))
+}
+
+fn read_json_file_with_retry<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let mut last_error = String::new();
+    for attempt in 0..JSON_READ_RETRIES {
+        match fs::read_to_string(path) {
+            Ok(raw) if !raw.trim().is_empty() => match serde_json::from_str::<T>(&raw) {
+                Ok(value) => return Ok(value),
+                Err(error) => last_error = format!("invalid JSON: {error}"),
+            },
+            Ok(_) => last_error = "file is empty".to_string(),
+            Err(error) => last_error = error.to_string(),
+        }
+        if attempt + 1 < JSON_READ_RETRIES {
+            thread::sleep(JSON_READ_RETRY_INTERVAL);
+        }
+    }
+    Err(anyhow!(
+        "failed to read complete JSON after {JSON_READ_RETRIES} attempts: {last_error}"
+    ))
+}
+
+fn try_read_json_text(path: &Path) -> Result<Option<(String, Value)>> {
+    let raw = match fs::read_to_string(path) {
+        Ok(value) => value,
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::NotFound | ErrorKind::PermissionDenied | ErrorKind::WouldBlock
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read JSON: {}", path.display()));
+        }
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return Ok(None);
+    };
+    Ok(Some((raw, value)))
+}
+
+struct AtomicTempGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl AtomicTempGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AtomicTempGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 fn instance_command_path(instance: &HostInstance) -> PathBuf {
@@ -1222,7 +1507,10 @@ fn json_text(value: &Value) -> Result<String> {
 mod tests {
     use super::*;
     use mcp_core::BridgePaths;
+    use std::sync::Arc;
     use tempfile::tempdir;
+
+    static ATOMIC_STRESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_config() -> (AppConfig, tempfile::TempDir) {
         let dir = tempdir().expect("tempdir");
@@ -1289,6 +1577,113 @@ mod tests {
         let raw = fs::read_to_string(cfg.bridge.result_file).expect("read");
         let data: WaitingResult = serde_json::from_str(&raw).expect("parse");
         assert_eq!(data.status, "waiting");
+    }
+
+    #[test]
+    fn atomic_write_replaces_an_existing_destination() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("command.json");
+        write_json_file(&path, &json!({ "status": "pending", "revision": 1 }))
+            .expect("first write");
+        write_json_file(&path, &json!({ "status": "running", "revision": 2 }))
+            .expect("replace existing destination");
+
+        let value: Value = read_json_file_with_retry(&path).expect("replacement");
+        assert_eq!(value.get("status").and_then(Value::as_str), Some("running"));
+        assert_eq!(value.get("revision").and_then(Value::as_u64), Some(2));
+    }
+
+    #[test]
+    fn atomic_writes_remain_valid_during_parallel_updates() {
+        let _stress_guard = ATOMIC_STRESS_TEST_LOCK.lock().expect("stress test lock");
+        let dir = tempdir().expect("tempdir");
+        let path = Arc::new(dir.path().join("heartbeat.json"));
+        write_json_file(&path, &json!({ "writer": 0, "sequence": 0 })).expect("initial");
+
+        let mut writers = Vec::new();
+        for writer in 1..=4 {
+            let path = Arc::clone(&path);
+            writers.push(thread::spawn(move || {
+                for sequence in 0..40 {
+                    write_json_file(
+                        &path,
+                        &json!({
+                            "writer": writer,
+                            "sequence": sequence,
+                            "payload": "x".repeat(16 * 1024)
+                        }),
+                    )
+                    .expect("parallel atomic write");
+                }
+            }));
+        }
+
+        for _ in 0..200 {
+            let raw = read_json_text_with_retry(&path).expect("complete JSON");
+            let value: Value = serde_json::from_str(&raw).expect("parse");
+            assert!(value.get("writer").and_then(Value::as_u64).is_some());
+        }
+        for writer in writers {
+            writer.join().expect("writer thread");
+        }
+
+        let prefix = ".heartbeat.json.tmp-";
+        let residues = fs::read_dir(dir.path())
+            .expect("scan")
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+            .count();
+        assert_eq!(residues, 0);
+    }
+
+    #[test]
+    fn json_reader_retries_a_transient_partial_write() {
+        let _stress_guard = ATOMIC_STRESS_TEST_LOCK.lock().expect("stress test lock");
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("result.json");
+        fs::write(&path, r#"{"status":"#).expect("partial write");
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(5));
+            write_json_file(&writer_path, &json!({ "status": "completed" }))
+                .expect("complete write");
+        });
+
+        let value: Value = read_json_file_with_retry(&path).expect("reader recovers");
+        assert_eq!(
+            value.get("status").and_then(Value::as_str),
+            Some("completed")
+        );
+        writer.join().expect("writer thread");
+    }
+
+    #[test]
+    fn stale_atomic_residue_is_cleaned_without_touching_target() {
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("command.json");
+        let residue = dir.path().join(".command.json.tmp-crashed-writer");
+        write_json_file(&target, &json!({ "status": "pending" })).expect("target");
+        fs::write(&residue, r#"{"status":"#).expect("residue");
+
+        cleanup_stale_atomic_temp_files(dir.path(), Some("command.json"), Duration::ZERO)
+            .expect("cleanup");
+
+        assert!(!residue.exists());
+        let value: Value = read_json_file_with_retry(&target).expect("target remains valid");
+        assert_eq!(value.get("status").and_then(Value::as_str), Some("pending"));
+    }
+
+    #[test]
+    fn failed_replace_keeps_the_previous_valid_file() {
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("registry.json");
+        write_json_file(&target, &json!({ "status": "queued" })).expect("target");
+
+        let error = atomic_replace_with_retry(&dir.path().join("missing.tmp"), &target)
+            .expect_err("replace must fail");
+        assert!(error.to_string().contains("failed to replace"));
+        let value: Value = read_json_file_with_retry(&target).expect("old JSON remains");
+        assert_eq!(value.get("status").and_then(Value::as_str), Some("queued"));
     }
 
     #[test]

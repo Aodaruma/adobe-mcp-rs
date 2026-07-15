@@ -45,6 +45,23 @@ pub const INDESIGN_HOST: HostSpec = HostSpec {
 
 既存ホストの directory 名と command/result file名は変更しません。
 
+## JSON fileの原子更新
+
+`command`、`result`、`heartbeat`、`current_request`、`registry/<requestId>.json` は、次のwriter規約に従います。
+
+1. 最終fileと同じdirectoryに、`.＜最終file名＞.tmp-＜process/session固有suffix＞` を排他的に作成する
+2. 完成したJSON全体を書き、flushする
+3. 最終pathへ同一filesystem内のreplace/renameで公開する
+4. 成功・失敗を問わず自分の一時fileを片付ける
+
+Rust writerはfileを `sync_all` してから公開します。Windowsでは既存fileを先に削除せず、`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` を使用します。共有違反などで置換できない場合は短時間再試行し、最終的に失敗しても旧fileを残します。macOS/Linuxでは同一directoryの `rename` 後にdirectoryも同期します。同一processから同じtargetへの更新は直列化し、複数process間では最後に成功した置換を採用します。
+
+Node.js filesystemを使えるUXP bridgeは、排他的な一時fileへ書き、`fsyncSync`、`renameSync` の順で公開します。ExtendScript/CEP bridgeは `File.close()` をflush境界とし、同一directoryの直接renameを最初に試します。既存宛先をrenameで上書きできないhostでは、旧fileを `.＜最終file名＞.bak-...` に退避してから一時fileを公開し、公開失敗時は旧fileを復元します。このlegacy fallbackに限り最終pathが短時間存在しない場合があります。
+
+readerは `.tmp-*` と `.bak-*` を列挙対象にせず、最終pathだけを読みます。最終pathの短時間の欠落、共有違反、空file、不完全JSONは「まだ更新中」として再試行します。polling readerはそのpollを未到着として扱い、次のpollへ進みます。1時間以上残った対象file用の `.tmp-*` / `.bak-*` は次回のwrite時に削除し、Rustのregistry cleanupはregistry directoryの古い `.tmp-*` も削除します。
+
+最終fileを直接truncateして書くwriterはprotocol v1非準拠です。新しいJSX/UXP/CEP bridgeを追加する場合も、この命名・flush・公開・cleanup規約を使用してください。
+
 ## heartbeat.json
 
 protocol v1 の共通項目は次のとおりです。

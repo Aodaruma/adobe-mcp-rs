@@ -147,13 +147,78 @@ function mcpBridgeHeartbeatFile() {
     return new File(folder.fsName + "/heartbeat.json");
 }
 
-function mcpBridgeWriteJsonFile(file, value) {
-    file.encoding = "UTF-8";
-    if (!file.open("w")) {
-        throw new Error("Failed to open file: " + file.fsName);
+var mcpBridgeAtomicWriteCounter = 0;
+
+function mcpBridgeCleanupAtomicResidues(file) {
+    try {
+        var prefix = "." + file.name + ".tmp-";
+        var backupPrefix = "." + file.name + ".bak-";
+        var now = new Date().getTime();
+        var entries = file.parent.getFiles();
+        for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i];
+            if (!(entry instanceof File) ||
+                (entry.name.indexOf(prefix) !== 0 && entry.name.indexOf(backupPrefix) !== 0)) {
+                continue;
+            }
+            var modified = entry.modified ? entry.modified.getTime() : now;
+            if (now - modified >= 60 * 60 * 1000) {
+                try { entry.remove(); } catch (_cleanupErr) {}
+            }
+        }
+    } catch (_scanErr) {}
+}
+
+function mcpBridgeAtomicWriteText(file, text) {
+    if (file.parent && !file.parent.exists && !file.parent.create()) {
+        throw new Error("Failed to create directory: " + file.parent.fsName);
     }
-    file.write(JSON.stringify(value, null, 2));
-    file.close();
+    mcpBridgeCleanupAtomicResidues(file);
+    mcpBridgeAtomicWriteCounter += 1;
+    var suffix = new Date().getTime() + "-" + mcpBridgeAtomicWriteCounter + "-" +
+        Math.floor(Math.random() * 0x7fffffff).toString(16);
+    var tempFile = new File(file.parent.fsName + "/." + file.name + ".tmp-" + suffix);
+    tempFile.encoding = "UTF-8";
+    if (!tempFile.open("w")) {
+        throw new Error("Failed to open temporary file: " + tempFile.fsName);
+    }
+    if (!tempFile.write(text)) {
+        try { tempFile.close(); } catch (_writeCloseErr) {}
+        try { tempFile.remove(); } catch (_writeRemoveErr) {}
+        throw new Error("Failed to write temporary file: " + tempFile.fsName);
+    }
+    if (!tempFile.close()) {
+        try { tempFile.remove(); } catch (_closeRemoveErr) {}
+        throw new Error("Failed to flush temporary file: " + tempFile.fsName);
+    }
+
+    // Some ExtendScript hosts overwrite on rename. Prefer that atomic path first.
+    if (tempFile.rename(file.name)) {
+        return;
+    }
+
+    // Legacy hosts may reject overwrite. Preserve the old valid file as a backup,
+    // publish the temp file, then remove the backup. Readers tolerate this short gap.
+    var backupFile = new File(file.parent.fsName + "/." + file.name + ".bak-" + suffix);
+    var hadTarget = file.exists;
+    if (hadTarget && !file.rename(backupFile.name)) {
+        try { tempFile.remove(); } catch (_targetRemoveErr) {}
+        throw new Error("Failed to preserve previous file: " + file.fsName);
+    }
+    if (!tempFile.rename(file.name)) {
+        if (hadTarget && backupFile.exists) {
+            try { backupFile.rename(file.name); } catch (_rollbackErr) {}
+        }
+        try { tempFile.remove(); } catch (_publishRemoveErr) {}
+        throw new Error("Failed to publish temporary file: " + file.fsName);
+    }
+    if (backupFile.exists) {
+        try { backupFile.remove(); } catch (_backupRemoveErr) {}
+    }
+}
+
+function mcpBridgeWriteJsonFile(file, value) {
+    mcpBridgeAtomicWriteText(file, JSON.stringify(value, null, 2));
 }
 
 function mcpBridgeWriteHeartbeat() {
@@ -223,30 +288,16 @@ function mcpExecuteCommand(command, args) {
 
 function mcpWriteResult(raw, resultFile) {
     resultFile = resultFile || mcpBridgeResultFile();
-    resultFile.encoding = "UTF-8";
-    if (!resultFile.open("w")) {
-        throw new Error("Failed to open result file: " + resultFile.fsName);
-    }
-    resultFile.write(raw);
-    resultFile.close();
+    mcpBridgeAtomicWriteText(resultFile, raw);
     var globalResultFile = mcpBridgeResultFile();
     if (globalResultFile.fsName !== resultFile.fsName) {
-        globalResultFile.encoding = "UTF-8";
-        if (globalResultFile.open("w")) {
-            globalResultFile.write(raw);
-            globalResultFile.close();
-        }
+        try { mcpBridgeAtomicWriteText(globalResultFile, raw); } catch (_rootWriteErr) {}
     }
 }
 
 function mcpUpdateCommandStatus(commandFile, payload, status) {
     payload.status = status;
-    commandFile.encoding = "UTF-8";
-    if (!commandFile.open("w")) {
-        throw new Error("Failed to open command file: " + commandFile.fsName);
-    }
-    commandFile.write(JSON.stringify(payload, null, 2));
-    commandFile.close();
+    mcpBridgeWriteJsonFile(commandFile, payload);
 }
 
 function mcpReadCommandPayload(commandFile) {

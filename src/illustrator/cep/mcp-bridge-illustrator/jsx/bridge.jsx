@@ -198,16 +198,71 @@ function aiReadFile(file) {
     return text;
 }
 
+var aiAtomicWriteCounter = 0;
+
+function aiCleanupAtomicResidues(file) {
+    try {
+        var prefix = "." + file.name + ".tmp-";
+        var backupPrefix = "." + file.name + ".bak-";
+        var now = new Date().getTime();
+        var entries = file.parent.getFiles();
+        for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i];
+            if (!(entry instanceof File) ||
+                (entry.name.indexOf(prefix) !== 0 && entry.name.indexOf(backupPrefix) !== 0)) {
+                continue;
+            }
+            var modified = entry.modified ? entry.modified.getTime() : now;
+            if (now - modified >= 60 * 60 * 1000) {
+                try { entry.remove(); } catch (_cleanupErr) {}
+            }
+        }
+    } catch (_scanErr) {}
+}
+
 function aiWriteFile(file, text) {
     if (file.parent && !file.parent.exists) {
         aiEnsureFolder(file.parent);
     }
-    file.encoding = "UTF-8";
-    if (!file.open("w")) {
-        throw new Error("Failed to open file for writing: " + file.fsName);
+    aiCleanupAtomicResidues(file);
+    aiAtomicWriteCounter += 1;
+    var suffix = new Date().getTime() + "-" + aiAtomicWriteCounter + "-" +
+        Math.floor(Math.random() * 0x7fffffff).toString(16);
+    var tempFile = new File(file.parent.fsName + "/." + file.name + ".tmp-" + suffix);
+    tempFile.encoding = "UTF-8";
+    if (!tempFile.open("w")) {
+        throw new Error("Failed to open temporary file: " + tempFile.fsName);
     }
-    file.write(text);
-    file.close();
+    if (!tempFile.write(text)) {
+        try { tempFile.close(); } catch (_writeCloseErr) {}
+        try { tempFile.remove(); } catch (_writeRemoveErr) {}
+        throw new Error("Failed to write temporary file: " + tempFile.fsName);
+    }
+    if (!tempFile.close()) {
+        try { tempFile.remove(); } catch (_closeRemoveErr) {}
+        throw new Error("Failed to flush temporary file: " + tempFile.fsName);
+    }
+
+    if (tempFile.rename(file.name)) {
+        return;
+    }
+
+    var backupFile = new File(file.parent.fsName + "/." + file.name + ".bak-" + suffix);
+    var hadTarget = file.exists;
+    if (hadTarget && !file.rename(backupFile.name)) {
+        try { tempFile.remove(); } catch (_targetRemoveErr) {}
+        throw new Error("Failed to preserve previous file: " + file.fsName);
+    }
+    if (!tempFile.rename(file.name)) {
+        if (hadTarget && backupFile.exists) {
+            try { backupFile.rename(file.name); } catch (_rollbackErr) {}
+        }
+        try { tempFile.remove(); } catch (_publishRemoveErr) {}
+        throw new Error("Failed to publish temporary file: " + file.fsName);
+    }
+    if (backupFile.exists) {
+        try { backupFile.remove(); } catch (_backupRemoveErr) {}
+    }
 }
 
 function aiGetActiveDocumentPath() {

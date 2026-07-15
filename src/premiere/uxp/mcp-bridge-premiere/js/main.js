@@ -19,6 +19,7 @@
   var pollTimer = null;
   var heartbeatTimer = null;
   var currentRequestId = null;
+  var atomicWriteCounter = 0;
   var state = {
     autoRun: true,
     lastStatus: "idle",
@@ -183,7 +184,70 @@
     if (!fs) {
       throw new Error("UXP fs module is not available.");
     }
-    fs.writeFileSync(path, text, { encoding: "utf-8" });
+    var splitAt = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    var parent = splitAt >= 0 ? path.slice(0, splitAt) : ".";
+    var fileName = splitAt >= 0 ? path.slice(splitAt + 1) : path;
+    var prefix = "." + fileName + ".tmp-";
+    var now = Date.now();
+    try {
+      var entries = fs.readdirSync(parent);
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].indexOf(prefix) !== 0) {
+          continue;
+        }
+        var residue = joinPath(parent, entries[i]);
+        try {
+          var stat = fs.statSync(residue);
+          var modifiedAt = typeof stat.mtimeMs === "number"
+            ? stat.mtimeMs
+            : stat.mtime && stat.mtime.getTime ? stat.mtime.getTime() : now;
+          if (now - modifiedAt >= 60 * 60 * 1000) {
+            fs.unlinkSync(residue);
+          }
+        } catch (_cleanupErr) {}
+      }
+    } catch (_scanErr) {}
+
+    atomicWriteCounter += 1;
+    var pid = typeof process !== "undefined" && process.pid ? process.pid : "uxp";
+    var tempPath = joinPath(
+      parent,
+      prefix + pid + "-" + now + "-" + atomicWriteCounter + "-" + Math.random().toString(36).slice(2, 10)
+    );
+    var fd = null;
+    try {
+      fd = fs.openSync(tempPath, "wx");
+      fs.writeFileSync(fd, text, { encoding: "utf-8" });
+      if (fs.fsyncSync) {
+        fs.fsyncSync(fd);
+      }
+      fs.closeSync(fd);
+      fd = null;
+
+      var lastError = null;
+      for (var attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.renameSync(tempPath, path);
+          lastError = null;
+          break;
+        } catch (renameErr) {
+          lastError = renameErr;
+          if (attempt < 4) {
+            var until = Date.now() + 10;
+            while (Date.now() < until) {}
+          }
+        }
+      }
+      if (lastError) {
+        throw lastError;
+      }
+    } catch (err) {
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch (_closeErr) {}
+      }
+      try { fs.unlinkSync(tempPath); } catch (_removeErr) {}
+      throw err;
+    }
   }
 
   function readJsonFile(path) {

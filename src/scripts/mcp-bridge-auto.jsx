@@ -2681,6 +2681,77 @@ function getHeartbeatFilePath() {
     return instanceFolder.fsName + "/heartbeat.json";
 }
 
+var atomicWriteCounter = 0;
+
+function cleanupAtomicResidues(file) {
+    try {
+        var prefix = "." + file.name + ".tmp-";
+        var backupPrefix = "." + file.name + ".bak-";
+        var now = new Date().getTime();
+        var entries = file.parent.getFiles();
+        for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i];
+            if (!(entry instanceof File) ||
+                (entry.name.indexOf(prefix) !== 0 && entry.name.indexOf(backupPrefix) !== 0)) {
+                continue;
+            }
+            var modified = entry.modified ? entry.modified.getTime() : now;
+            if (now - modified >= 60 * 60 * 1000) {
+                try { entry.remove(); } catch (_cleanupErr) {}
+            }
+        }
+    } catch (_scanErr) {}
+}
+
+function writeAtomicTextFile(file, text) {
+    if (file.parent && !file.parent.exists && !file.parent.create()) {
+        throw new Error("Failed to create directory: " + file.parent.fsName);
+    }
+    cleanupAtomicResidues(file);
+    atomicWriteCounter += 1;
+    var suffix = new Date().getTime() + "-" + atomicWriteCounter + "-" +
+        Math.floor(Math.random() * 0x7fffffff).toString(16);
+    var tempFile = new File(file.parent.fsName + "/." + file.name + ".tmp-" + suffix);
+    tempFile.encoding = "UTF-8";
+    if (!tempFile.open("w")) {
+        throw new Error("Failed to open temporary file: " + tempFile.fsName);
+    }
+    if (!tempFile.write(text)) {
+        try { tempFile.close(); } catch (_writeCloseErr) {}
+        try { tempFile.remove(); } catch (_writeRemoveErr) {}
+        throw new Error("Failed to write temporary file: " + tempFile.fsName);
+    }
+    // ExtendScript exposes no fsync; a successful close is the host flush boundary.
+    if (!tempFile.close()) {
+        try { tempFile.remove(); } catch (_closeRemoveErr) {}
+        throw new Error("Failed to flush temporary file: " + tempFile.fsName);
+    }
+
+    // Prefer a direct same-directory rename. Hosts that allow overwrite make this atomic.
+    if (tempFile.rename(file.name)) {
+        return;
+    }
+
+    // Some legacy hosts reject overwrite. Keep the old valid file as a backup and
+    // restore it if publishing fails. Readers retry a transient missing target.
+    var backupFile = new File(file.parent.fsName + "/." + file.name + ".bak-" + suffix);
+    var hadTarget = file.exists;
+    if (hadTarget && !file.rename(backupFile.name)) {
+        try { tempFile.remove(); } catch (_targetRemoveErr) {}
+        throw new Error("Failed to preserve previous file: " + file.fsName);
+    }
+    if (!tempFile.rename(file.name)) {
+        if (hadTarget && backupFile.exists) {
+            try { backupFile.rename(file.name); } catch (_rollbackErr) {}
+        }
+        try { tempFile.remove(); } catch (_publishRemoveErr) {}
+        throw new Error("Failed to publish temporary file: " + file.fsName);
+    }
+    if (backupFile.exists) {
+        try { backupFile.remove(); } catch (_backupRemoveErr) {}
+    }
+}
+
 function getDebugConfigFilePath() {
     return getBridgeFolderPath() + "/ae_mcp_debug_config.json";
 }
@@ -2738,14 +2809,10 @@ function writeDebugLogConfig(enabled, logPath) {
     try {
         ensureBridgeFolder();
         var configFile = new File(getDebugConfigFilePath());
-        configFile.encoding = "UTF-8";
-        if (configFile.open("w")) {
-            configFile.write(JSON.stringify({
-                enabled: enabled === true,
-                logPath: logPath || getDefaultDebugLogFilePath()
-            }, null, 2));
-            configFile.close();
-        }
+        writeAtomicTextFile(configFile, JSON.stringify({
+            enabled: enabled === true,
+            logPath: logPath || getDefaultDebugLogFilePath()
+        }, null, 2));
     } catch (_e) {}
 }
 
@@ -2858,11 +2925,7 @@ function getHostInstanceMetadata() {
 function writeInstanceHeartbeat() {
     try {
         var heartbeatFile = new File(getHeartbeatFilePath());
-        heartbeatFile.encoding = "UTF-8";
-        if (heartbeatFile.open("w")) {
-            heartbeatFile.write(JSON.stringify(getHostInstanceMetadata(), null, 2));
-            heartbeatFile.close();
-        }
+        writeAtomicTextFile(heartbeatFile, JSON.stringify(getHostInstanceMetadata(), null, 2));
     } catch (heartbeatError) {
         logToPanel("Failed to write instance heartbeat: " + heartbeatError.toString());
     }
@@ -3430,25 +3493,8 @@ function executeCommand(command, args, requestId) {
         }
         
         var resultFile = new File(getResultFilePath());
-        resultFile.encoding = "UTF-8"; // Ensure UTF-8 encoding
-        logToPanel("Opening result file for writing...");
-        var opened = resultFile.open("w");
-        if (!opened) {
-            logToPanel("ERROR: Failed to open result file for writing: " + resultFile.fsName);
-            throw new Error("Failed to open result file for writing.");
-        }
-        logToPanel("Writing to result file...");
-        var written = resultFile.write(resultString);
-        if (!written) {
-             logToPanel("ERROR: Failed to write to result file (write returned false): " + resultFile.fsName);
-             // Still try to close, but log the error
-        }
-        logToPanel("Closing result file...");
-        var closed = resultFile.close();
-         if (!closed) {
-             logToPanel("ERROR: Failed to close result file: " + resultFile.fsName);
-             // Continue, but log the error
-        }
+        logToPanel("Writing result file atomically...");
+        writeAtomicTextFile(resultFile, resultString);
         logToPanel("Result file write process complete.");
         
         logToPanel("Command completed successfully: " + command); // Changed log message
@@ -3500,14 +3546,8 @@ function executeCommand(command, args, requestId) {
                 fileName: error.fileName
             });
             var errorFile = new File(getResultFilePath());
-            errorFile.encoding = "UTF-8";
-            if (errorFile.open("w")) {
-                errorFile.write(errorResult);
-                errorFile.close();
-                logToPanel("Successfully wrote ERROR to result file.");
-            } else {
-                 logToPanel("CRITICAL ERROR: Failed to open result file to write error!");
-            }
+            writeAtomicTextFile(errorFile, errorResult);
+            logToPanel("Successfully wrote ERROR to result file.");
         } catch (writeError) {
              logToPanel("CRITICAL ERROR: Failed to write error to result file: " + writeError.toString());
         }
@@ -3534,10 +3574,7 @@ function updateCommandStatus(status) {
             if (content) {
                 var commandData = JSON.parse(content);
                 commandData.status = status;
-                
-                commandFile.open("w");
-                commandFile.write(JSON.stringify(commandData, null, 2));
-                commandFile.close();
+                writeAtomicTextFile(commandFile, JSON.stringify(commandData, null, 2));
             }
         }
     } catch (e) {
