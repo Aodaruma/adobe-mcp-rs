@@ -30,11 +30,21 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
     assert!(startup.contains("$.evalFile(runtimeFile)"));
     assert!(startup.contains("headless: true"));
     assert!(startup.contains("delete $.global.__adobeMcpBridgeBootstrapConfig"));
+    assert!(startup.contains("ae_mcp_bootstrap.json"));
+    assert!(startup.contains("writeBootstrapDiagnostic(state)"));
     assert!(!startup.contains("findMenuCommandId"));
     assert!(!startup.contains("executeCommand"));
     assert!(!startup.contains("new Window"));
 
     assert!(runtime.contains("__adobeMcpBridgeRuntime"));
+    assert!(runtime.contains("(function (thisObj)"));
+    assert!(runtime.contains("aeMcpAttachExistingRuntime"));
+    assert!(runtime.contains("Closing it must"));
+    assert!(runtime.contains("writeHeartbeatTextFile(heartbeatFile"));
+    assert!(runtime.contains("Rust reader's retry"));
+    assert!(runtime.contains("var targetName = file.name;"));
+    assert!(runtime.contains("tempFile.rename(targetName)"));
+    assert!(runtime.contains("var publishedBackup = new File(backupPath)"));
     assert!(runtime.contains("__adobeMcpBridgeCommandTick('"));
     assert!(runtime.contains("scheduledRuntimeId !== bridgeRuntimeId"));
     assert!(runtime.contains("Neutralize callbacks left by the pre-generation runtime"));

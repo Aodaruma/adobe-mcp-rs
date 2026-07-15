@@ -24,13 +24,54 @@
             pad(date.getUTCMilliseconds(), 3) + "Z";
     }
 
+    function quoteJson(value) {
+        return "\"" + String(value || "")
+            .replace(/\\/g, "\\\\")
+            .replace(/\"/g, "\\\"")
+            .replace(/\r/g, "\\r")
+            .replace(/\n/g, "\\n") + "\"";
+    }
+
+    function writeBootstrapDiagnostic(state) {
+        try {
+            var bridgeFolder = new Folder(Folder.myDocuments.fsName + "/ae-mcp-bridge");
+            if (!bridgeFolder.exists && !bridgeFolder.create()) {
+                return;
+            }
+            var details = state.details || {};
+            var diagnosticFile = new File(bridgeFolder.fsName + "/ae_mcp_bootstrap.json");
+            diagnosticFile.encoding = "UTF-8";
+            if (!diagnosticFile.open("w")) {
+                return;
+            }
+            diagnosticFile.write("{\n" +
+                "  \"bootstrapVersion\": " + quoteJson(state.bootstrapVersion) + ",\n" +
+                "  \"status\": " + quoteJson(state.status) + ",\n" +
+                "  \"updatedAt\": " + quoteJson(state.updatedAt) + ",\n" +
+                "  \"startupScriptPath\": " + quoteJson($.fileName) + ",\n" +
+                "  \"runtimeScriptPath\": " + quoteJson(details.runtimeScriptPath || "") + ",\n" +
+                "  \"message\": " + quoteJson(details.message || "") + ",\n" +
+                "  \"line\": " + (details.line || "null") + ",\n" +
+                "  \"fileName\": " + quoteJson(details.fileName || "") + ",\n" +
+                "  \"runtimeVersion\": " + quoteJson(details.version || "") + ",\n" +
+                "  \"lifecycleMode\": " + quoteJson(details.lifecycleMode || "") + ",\n" +
+                "  \"runtimeId\": " + quoteJson(details.runtimeId || "") + ",\n" +
+                "  \"instanceId\": " + quoteJson(details.instanceId || "") + ",\n" +
+                "  \"running\": " + (details.running === true ? "true" : details.running === false ? "false" : "null") + "\n" +
+                "}\n");
+            diagnosticFile.close();
+        } catch (_diagnosticError) {}
+    }
+
     function publish(status, details) {
-        $.global[stateName] = {
+        var state = {
             bootstrapVersion: BOOTSTRAP_VERSION,
             status: status,
             updatedAt: nowIso(),
             details: details || null
         };
+        $.global[stateName] = state;
+        writeBootstrapDiagnostic(state);
     }
 
     function clearBootstrapConfig() {

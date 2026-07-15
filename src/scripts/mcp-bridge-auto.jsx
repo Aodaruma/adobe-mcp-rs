@@ -2,6 +2,8 @@
 // MCP Bridge command runtime for After Effects (headless Startup or ScriptUI fallback)
 #targetengine "ae_mcp_bridge"
 
+(function (thisObj) {
+
 // Remove #include directives as we define functions below
 /*
 #include "createComposition.jsx"
@@ -18,15 +20,80 @@ var aeMcpBootstrapConfig = $.global.__adobeMcpBridgeBootstrapConfig || {};
 var aeMcpHeadless = aeMcpBootstrapConfig.headless === true;
 var aeMcpLifecycleMode = aeMcpHeadless ? "startup-headless" : "scriptui-panel";
 var aeMcpPreviousInstanceId = "";
+var aeMcpPreviousRuntime = null;
+var aeMcpPreviousState = null;
+var aeMcpAttachExistingRuntime = false;
+
+try {
+    aeMcpPreviousRuntime = $.global.__adobeMcpBridgeRuntime;
+    if (aeMcpPreviousRuntime && aeMcpPreviousRuntime.getState) {
+        aeMcpPreviousState = aeMcpPreviousRuntime.getState();
+        aeMcpPreviousInstanceId = aeMcpPreviousState.instanceId || "";
+        aeMcpAttachExistingRuntime = !aeMcpHeadless &&
+            aeMcpPreviousState.running === true &&
+            aeMcpPreviousState.lifecycleMode === "startup-headless";
+    }
+} catch (_previousRuntimeStateErr) {}
+
+function attachDiagnosticsPanel(runtime) {
+    var attachedPanel = (thisObj instanceof Panel)
+        ? thisObj
+        : new Window("palette", "MCP Bridge Auto " + AE_MCP_BRIDGE_VERSION, undefined, { resizeable: true });
+    var attachedDockable = attachedPanel instanceof Panel;
+    attachedPanel.orientation = "column";
+    attachedPanel.alignChildren = ["fill", "top"];
+    attachedPanel.spacing = 8;
+    attachedPanel.margins = 12;
+
+    var attachedStatus = attachedPanel.add("statictext", undefined, "", { multiline: true });
+    attachedStatus.preferredSize.width = 280;
+    var attachedRefresh = attachedPanel.add("button", undefined, "Refresh Headless Status");
+    var attachedRestart = attachedPanel.add("button", undefined, "Restart Headless Bridge");
+
+    function refreshAttachedStatus() {
+        try {
+            var runtimeState = runtime.getState();
+            attachedStatus.text = "Headless runtime: " + (runtimeState.running ? "RUNNING" : "STOPPED") +
+                "\nInstance: " + (runtimeState.instanceId || "") +
+                "\nRuntime: " + (runtimeState.runtimeId || "");
+        } catch (error) {
+            attachedStatus.text = "Headless runtime unavailable: " + error.toString();
+        }
+        try { attachedPanel.layout.layout(true); } catch (_attachedLayoutErr) {}
+    }
+
+    attachedRefresh.onClick = refreshAttachedStatus;
+    attachedRestart.onClick = function () {
+        try {
+            runtime.restart();
+        } catch (_attachedRestartErr) {}
+        refreshAttachedStatus();
+    };
+    attachedPanel.onClose = function () {
+        // This window only observes the Startup-owned runtime. Closing it must
+        // never stop the headless command and heartbeat schedules.
+        return true;
+    };
+    attachedPanel.onResizing = attachedPanel.onResize = function () {
+        this.layout.resize();
+    };
+    refreshAttachedStatus();
+    attachedPanel.layout.layout(true);
+    if (!attachedDockable) {
+        attachedPanel.center();
+        attachedPanel.show();
+    }
+}
+
+if (aeMcpAttachExistingRuntime) {
+    attachDiagnosticsPanel(aeMcpPreviousRuntime);
+    return;
+}
 
 // A reload can otherwise leave repeating scheduleTask callbacks alive. Ask the
 // previous runtime to cancel its task IDs before installing this generation.
 try {
-    var aeMcpPreviousRuntime = $.global.__adobeMcpBridgeRuntime;
     if (aeMcpPreviousRuntime && aeMcpPreviousRuntime.stop) {
-        if (aeMcpPreviousRuntime.getState) {
-            aeMcpPreviousInstanceId = aeMcpPreviousRuntime.getState().instanceId || "";
-        }
         aeMcpPreviousRuntime.stop({ removeHeartbeat: false, reason: "superseded" });
     }
 } catch (_previousRuntimeStopErr) {}
@@ -2546,8 +2613,8 @@ var debugLogCheckbox = null;
 var checkButton = null;
 
 if (!aeMcpHeadless) {
-    panel = (this instanceof Panel)
-        ? this
+    panel = (thisObj instanceof Panel)
+        ? thisObj
         : new Window("palette", "MCP Bridge Auto " + AE_MCP_BRIDGE_VERSION, undefined, { resizeable: true });
     isDockablePanel = panel instanceof Panel;
     if (isDockablePanel) {
@@ -2713,11 +2780,12 @@ function getHeartbeatFilePath() {
 
 var atomicWriteCounter = 0;
 
-function cleanupAtomicResidues(file) {
+function cleanupAtomicResidues(file, minimumAgeMs) {
     try {
         var prefix = "." + file.name + ".tmp-";
         var backupPrefix = "." + file.name + ".bak-";
         var now = new Date().getTime();
+        var minimumAge = typeof minimumAgeMs === "number" ? minimumAgeMs : 60 * 60 * 1000;
         var entries = file.parent.getFiles();
         for (var i = 0; i < entries.length; i++) {
             var entry = entries[i];
@@ -2726,7 +2794,7 @@ function cleanupAtomicResidues(file) {
                 continue;
             }
             var modified = entry.modified ? entry.modified.getTime() : now;
-            if (now - modified >= 60 * 60 * 1000) {
+            if (now - modified >= minimumAge) {
                 try { entry.remove(); } catch (_cleanupErr) {}
             }
         }
@@ -2738,6 +2806,10 @@ function writeAtomicTextFile(file, text) {
         throw new Error("Failed to create directory: " + file.parent.fsName);
     }
     cleanupAtomicResidues(file);
+    // File.rename mutates the ExtendScript File object's name/path. Capture the
+    // destination name before preserving the current target so the subsequent
+    // publish and rollback still address the original file.
+    var targetName = file.name;
     atomicWriteCounter += 1;
     var suffix = new Date().getTime() + "-" + atomicWriteCounter + "-" +
         Math.floor(Math.random() * 0x7fffffff).toString(16);
@@ -2758,27 +2830,53 @@ function writeAtomicTextFile(file, text) {
     }
 
     // Prefer a direct same-directory rename. Hosts that allow overwrite make this atomic.
-    if (tempFile.rename(file.name)) {
+    if (tempFile.rename(targetName)) {
         return;
     }
 
     // Some legacy hosts reject overwrite. Keep the old valid file as a backup and
     // restore it if publishing fails. Readers retry a transient missing target.
-    var backupFile = new File(file.parent.fsName + "/." + file.name + ".bak-" + suffix);
+    var backupPath = file.parent.fsName + "/." + file.name + ".bak-" + suffix;
+    var backupFile = new File(backupPath);
     var hadTarget = file.exists;
     if (hadTarget && !file.rename(backupFile.name)) {
         try { tempFile.remove(); } catch (_targetRemoveErr) {}
         throw new Error("Failed to preserve previous file: " + file.fsName);
     }
-    if (!tempFile.rename(file.name)) {
-        if (hadTarget && backupFile.exists) {
-            try { backupFile.rename(file.name); } catch (_rollbackErr) {}
+    if (!tempFile.rename(targetName)) {
+        var rollbackFile = new File(backupPath);
+        if (hadTarget && rollbackFile.exists) {
+            try { rollbackFile.rename(targetName); } catch (_rollbackErr) {}
         }
         try { tempFile.remove(); } catch (_publishRemoveErr) {}
         throw new Error("Failed to publish temporary file: " + file.fsName);
     }
-    if (backupFile.exists) {
-        try { backupFile.remove(); } catch (_backupRemoveErr) {}
+    var publishedBackup = new File(backupPath);
+    if (publishedBackup.exists) {
+        try { publishedBackup.remove(); } catch (_backupRemoveErr) {}
+    }
+}
+
+function writeHeartbeatTextFile(file, text) {
+    if (file.parent && !file.parent.exists && !file.parent.create()) {
+        throw new Error("Failed to create directory: " + file.parent.fsName);
+    }
+    // ExtendScript cannot replace an existing file with File.rename on
+    // Windows. The atomic fallback therefore creates a short missing-file
+    // window that is unacceptable for liveness discovery. Keep heartbeat.json
+    // present and rely on the Rust reader's retry for a transient partial JSON
+    // read. Heartbeat writes are serialized by the host's script engine.
+    cleanupAtomicResidues(file, 0);
+    file.encoding = "UTF-8";
+    if (!file.open("w")) {
+        throw new Error("Failed to open heartbeat file: " + file.fsName);
+    }
+    if (!file.write(text)) {
+        try { file.close(); } catch (_heartbeatWriteCloseErr) {}
+        throw new Error("Failed to write heartbeat file: " + file.fsName);
+    }
+    if (!file.close()) {
+        throw new Error("Failed to close heartbeat file: " + file.fsName);
     }
 }
 
@@ -2961,7 +3059,7 @@ function getHostInstanceMetadata() {
 function writeInstanceHeartbeat() {
     try {
         var heartbeatFile = new File(getHeartbeatFilePath());
-        writeAtomicTextFile(heartbeatFile, JSON.stringify(getHostInstanceMetadata(), null, 2));
+        writeHeartbeatTextFile(heartbeatFile, JSON.stringify(getHostInstanceMetadata(), null, 2));
     } catch (heartbeatError) {
         logToPanel("Failed to write instance heartbeat: " + heartbeatError.toString());
     }
@@ -3936,3 +4034,5 @@ if (panel) {
         panel.show();
     }
 }
+
+})(this);

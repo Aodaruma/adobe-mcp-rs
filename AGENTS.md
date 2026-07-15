@@ -15,7 +15,7 @@
 - 状態区分の基準、host 別 runtime / 最小機能 / 制約の source of truth は `docs/adobe-host-roadmap.md`。
 - 今後の公開 API は raw-script-first。host 間の capability matrix、非 sandbox の risk policy、structured Tool 追加基準は `docs/capability-matrix.md`。
 - npm/TypeScript サーバー実装は削除済み（`package.json` / `src/index.ts` 等は廃止）。
-- AE 連携は `mcp-bridge-auto.jsx` 経由（`~/Documents/ae-mcp-bridge` の command/result ファイル）。
+- AE 連携はStartup loaderが `mcp-bridge-auto.jsx` をheadless評価する（`~/Documents/ae-mcp-bridge` のinstance別command/result/heartbeat file）。Windows AE 2026（26.2.1x2）でcold-start、raw JSX、daemon再接続、正常終了を実機確認済み。
 - `applyEffect` / `applyEffectTemplate` は ExtendScript 互換化済み（`Object.keys` 非依存）。
 - ターゲット指定は `compId/layerId`、`compName/layerName`、`compIndex/layerIndex` をサポート。
 - 追加済み機能:
@@ -34,6 +34,7 @@
 
 - リポジトリコンテナ直下は `.repo.git/`（bare repo）、`main/`（main worktree）、`worktrees/`（Issue別worktree）の構成。通常の編集・Git操作は `main/` または `worktrees/<name>/` で行う。詳細は `docs/worktree.md`。
 - AE bridge は `Scripts/Startup/mcp-bridge-startup.jsx` からheadless起動する。panelや`Auto-run commands`は不要。
+- Startup障害時は `~/Documents/ae-mcp-bridge/ae_mcp_bootstrap.json`、継続稼働は `instances/<instanceId>/heartbeat.json` を確認する。ScriptUI panelは既存headless runtimeの診断UIとしてのみattachする。
 - `ae_command.json` が `pending` のままなら、Startup/runtime配置、file/network access、heartbeat、AE再読込漏れを疑うこと。
 - `getLayerInfo`（ブリッジ版）は「アクティブコンポ」前提。アクティブでないと `No active composition` を返す。
 - 外部プラグイン系は表示名と matchName が一致しない場合がある。
