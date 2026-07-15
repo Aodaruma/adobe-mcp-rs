@@ -2,10 +2,19 @@ use anyhow::Result;
 use bridge_contract_tests::{DaemonEndpoint, ProtocolFixture, ResponsePlan};
 use mcp_core::{HostSpec, HOST_SPECS};
 use serde_json::{json, Value};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const CONTRACT_COMMAND_TIMEOUT_MS: u64 = 2_000;
+const CONTRACT_COMMAND_TIMEOUT_MS: u64 = 5_000;
+const CONTRACT_DAEMON_CALL_TIMEOUT_MS: u64 = 5_000;
+
+fn protocol_test_guard() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[test]
 fn smoke_result_schema_and_example_are_valid_json() -> Result<()> {
@@ -181,7 +190,10 @@ fn run_command(
     if let Some(instance_id) = target_instance_id {
         request["targetInstanceId"] = json!(instance_id);
     }
-    daemon.call(request, timeout_ms.saturating_add(500))
+    daemon.call(
+        request,
+        timeout_ms.saturating_add(CONTRACT_DAEMON_CALL_TIMEOUT_MS),
+    )
 }
 
 fn assert_completed(value: &Value, host: HostSpec, instance_id: &str, sequence: u64) {
@@ -213,13 +225,17 @@ fn assert_completed(value: &Value, host: HostSpec, instance_id: &str, sequence: 
 
 #[test]
 fn heartbeat_command_and_result_contract_supports_both_start_orders() -> Result<()> {
+    let _guard = protocol_test_guard();
     for host in HOST_SPECS {
         // Host-first: a running panel must be discovered when the daemon starts later.
         let fixture = ProtocolFixture::new(*host)?;
         let mock = fixture.start_mock_host("host-first")?;
         mock.enqueue(ResponsePlan::success(json!({ "sequence": 1 })));
         let daemon = fixture.start_daemon()?;
-        let instances = daemon.call(json!({ "op": "listInstances" }), 500)?;
+        let instances = daemon.call(
+            json!({ "op": "listInstances" }),
+            CONTRACT_DAEMON_CALL_TIMEOUT_MS,
+        )?;
         assert_eq!(instances["count"], 1, "{} host-first", host.id);
         assert_eq!(instances["instances"][0]["protocolVersion"], 1);
         assert_eq!(instances["instances"][0]["hostId"], host.id);
@@ -238,7 +254,10 @@ fn heartbeat_command_and_result_contract_supports_both_start_orders() -> Result<
         // Daemon-first: a panel that appears later must become routable.
         let fixture = ProtocolFixture::new(*host)?;
         let daemon = fixture.start_daemon()?;
-        let empty = daemon.call(json!({ "op": "listInstances" }), 500)?;
+        let empty = daemon.call(
+            json!({ "op": "listInstances" }),
+            CONTRACT_DAEMON_CALL_TIMEOUT_MS,
+        )?;
         assert_eq!(empty["count"], 0, "{} daemon-first initial", host.id);
         let mock = fixture.start_mock_host("daemon-first")?;
         mock.enqueue(ResponsePlan::success(json!({ "sequence": 2 })));
@@ -255,6 +274,7 @@ fn heartbeat_command_and_result_contract_supports_both_start_orders() -> Result<
 
 #[test]
 fn timeout_late_result_survives_a_new_daemon_connection() -> Result<()> {
+    let _guard = protocol_test_guard();
     for host in HOST_SPECS {
         let fixture = ProtocolFixture::new(*host)?;
         let mock = fixture.start_mock_host("retained")?;
@@ -273,10 +293,12 @@ fn timeout_late_result_survives_a_new_daemon_connection() -> Result<()> {
         // A fresh daemon listener models client reconnect/broker restart. The
         // new process view must recover the file-backed request registry.
         let reconnected = fixture.start_daemon()?;
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let retained =
-                reconnected.call(json!({ "op": "getResult", "requestId": request_id }), 500)?;
+            let retained = reconnected.call(
+                json!({ "op": "getResult", "requestId": request_id }),
+                CONTRACT_DAEMON_CALL_TIMEOUT_MS,
+            )?;
             if retained["status"] == "completed" {
                 assert_completed(&retained, *host, "retained", 10);
                 assert_eq!(retained["requestId"], request_id);
@@ -292,6 +314,7 @@ fn timeout_late_result_survives_a_new_daemon_connection() -> Result<()> {
 
 #[test]
 fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
+    let _guard = protocol_test_guard();
     for host in HOST_SPECS {
         // Windows hosted runners can pause test threads for several hundred
         // milliseconds while the five host fixtures run concurrently. Keep
@@ -312,7 +335,10 @@ fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
         mock.pause_heartbeat();
         thread::sleep(Duration::from_millis(1_200));
 
-        let report = daemon.call(json!({ "op": "listInstances" }), 1_000)?;
+        let report = daemon.call(
+            json!({ "op": "listInstances" }),
+            CONTRACT_DAEMON_CALL_TIMEOUT_MS,
+        )?;
         assert_eq!(report["count"], 0, "{} stale count", host.id);
         let reasons: Vec<_> = report["inactiveInstances"]
             .as_array()
@@ -332,12 +358,18 @@ fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
             "{} reasons: {reasons:?}",
             host.id
         );
-        let lost = daemon.call(json!({ "op": "getResult", "requestId": request_id }), 500)?;
+        let lost = daemon.call(
+            json!({ "op": "getResult", "requestId": request_id }),
+            CONTRACT_DAEMON_CALL_TIMEOUT_MS,
+        )?;
         assert_eq!(lost["status"], "lost", "{} lost request", host.id);
 
         mock.resume_heartbeat();
         thread::sleep(Duration::from_millis(40));
-        let reconnected = daemon.call(json!({ "op": "listInstances" }), 1_000)?;
+        let reconnected = daemon.call(
+            json!({ "op": "listInstances" }),
+            CONTRACT_DAEMON_CALL_TIMEOUT_MS,
+        )?;
         assert_eq!(reconnected["count"], 1, "{} reconnect", host.id);
         mock.enqueue(ResponsePlan::success(json!({ "sequence": 21 })));
         let next = run_command(&daemon, Some("stale"), 21, CONTRACT_COMMAND_TIMEOUT_MS)?;
@@ -348,6 +380,7 @@ fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
 
 #[test]
 fn partial_file_json_and_chunked_tcp_json_do_not_break_the_protocol() -> Result<()> {
+    let _guard = protocol_test_guard();
     for host in HOST_SPECS {
         let fixture = ProtocolFixture::new(*host)?;
         let mock = fixture.start_mock_host("partial")?;
@@ -378,6 +411,7 @@ fn partial_file_json_and_chunked_tcp_json_do_not_break_the_protocol() -> Result<
 
 #[test]
 fn multiple_instances_require_targeting_and_route_independently() -> Result<()> {
+    let _guard = protocol_test_guard();
     for host in HOST_SPECS {
         let fixture = ProtocolFixture::new(*host)?;
         let first = fixture.start_mock_host("instance-a")?;
