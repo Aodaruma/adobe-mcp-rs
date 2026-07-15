@@ -4,7 +4,7 @@
 
 InDesign support is **Experimental / real-host unverified**. The Rust server, protocol-v1 bridge, contract tests, and installer path are implemented, but this repository has not yet executed them in a live InDesign process.
 
-The minimum target is InDesign 18.5. InDesign supports UXP scripts from 18.0, while Adobe's current filesystem recipe calls out 18.5 or later. The bridge uses a UXP Startup Script (.idjs) rather than a panel, so it starts with InDesign and has no Auto-run checkbox.
+The minimum target is InDesign 18.5. InDesign supports UXP scripts from 18.0, while Adobe's current filesystem recipe calls out 18.5 or later. The repository bridge uses a UXP Startup Script (.idjs) rather than a panel and is designed to start with InDesign without an Auto-run checkbox; that persistence behavior remains a real-host PoC gate.
 
 ## Architecture
 

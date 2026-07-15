@@ -23,7 +23,7 @@
 | Premiere Pro | `pr-mcp` | UXP panel（25.6+）、CEP / ExtendScript fallback（24.0+） | **Experimental** | 共通 broker を使用。UXP の install/release と実機 version matrix が未確立。CEP は fallback。 |
 | Photoshop | `ps-mcp` | UXP panel（23.3+、API v2） | **Experimental** | 共通 broker を使用。modal policy、書き込み操作、配布・実機 E2E が未完成。 |
 | Illustrator | `ai-mcp` | CEP panel / ExtendScript（24.0+、CSXS 10） | **Experimental** | 共通 broker を使用。現行 version の実機検証と署名・配布が未完成。 |
-| InDesign | `id-mcp` | UXP Startup Script（18.5+ PoC） | **Experimental** | panel不要。raw `app.doScript`、startup lifecycle、atomic file I/Oを実機検証するまでPoC扱い。 |
+| InDesign | `id-mcp` | UXP Startup Script（18.5+ PoC） | **Experimental** | repository上はpanel非依存。raw `app.doScript`、startup lifecycle、atomic file I/Oを実機検証するまでPoC扱い。 |
 
 5 host とも `daemon-core` の localhost TCP broker を使用します。`serve-daemon` は command routing、待機、instance別FIFO、別instance並列、global exclusive、request registry、result retention を担当します。既定 port は AE `47655` / Premiere `47656` / Photoshop `47657` / Illustrator `47658` / InDesign `47659` です。
 
@@ -47,7 +47,7 @@ MCP client -> ae-mcp serve-stdio -> ae-mcp serve-daemon
 制約:
 
 - `mcp-bridge-auto.jsx`をScriptUI Panels、`mcp-bridge-startup.jsx`をScripts/Startupに配置し、After Effectsのfile/network accessを許可する。
-- Startup bootstrapがheadless runtimeを起動する。panel、workspace、Auto-run checkboxには依存しない。実機lifecycle matrixはpreview検証中。
+- repository実装ではStartup bootstrapがheadless runtimeを起動し、panel、workspace、Auto-run checkboxに依存しない。実機lifecycle matrixは未検証。
 - `getLayerInfo` の bridge 実装は active composition が必要。
 - `tools/list`でadvertiseする9 Toolだけが公開surface。legacy / host-specific名は非公開互換dispatchとして受理し、呼出時に公開置換先を返す。
 - `run-script`はallowlistを持つが、非同期direct-file互換経路と同期daemon broker契約の安全境界・完了条件が異なるため公開しない。
@@ -139,7 +139,7 @@ MCP client -> id-mcp serve-stdio -> id-mcp serve-daemon
 
 制約:
 
-- `.idjs`を`Scripts/Startup Scripts`へ配置し、InDesign起動時から未解決Promiseでbridgeを維持する。panelやAuto-run checkboxには依存しない。
+- repository実装は`.idjs`を`Scripts/Startup Scripts`へ配置し、未解決Promiseでbridgeを維持する設計。panelやAuto-run checkboxに依存しないことを含め、実際の常駐は実機未検証。
 - UXP scriptの固定permissionはfilesystem/networkへの強い権限を持つ。`unsafe`はsandboxではない。
 - Adobe APIは`Application.doScript`のString入力を記載する一方、長時間動作するStartup Scriptからのraw文字列実行は本repositoryでは実機未検証。
 - Windows/macOS、InDesign/UXP version、locale、startup/restart、sleep/modal、atomic renameを[InDesign MCP PoC](indesign-mcp.md)の手順で検証するまでExperimentalから昇格しない。

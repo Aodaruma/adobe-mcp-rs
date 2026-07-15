@@ -33,6 +33,14 @@
         };
     }
 
+    function clearBootstrapConfig() {
+        try {
+            delete $.global.__adobeMcpBridgeBootstrapConfig;
+        } catch (_deleteBootstrapConfigError) {
+            $.global.__adobeMcpBridgeBootstrapConfig = null;
+        }
+    }
+
     function findRuntimeFile() {
         var startupFile = new File($.fileName);
         var startupFolder = startupFile.parent;
@@ -83,7 +91,14 @@
             runtimeScriptPath: runtimeFile.fsName
         };
         publish("loading", { runtimeScriptPath: runtimeFile.fsName });
-        $.evalFile(runtimeFile);
+        try {
+            $.evalFile(runtimeFile);
+        } finally {
+            // The runtime copies this configuration during evaluation. Leaving
+            // it global would force later manual launches to stay headless and
+            // prevent the optional ScriptUI diagnostics panel from appearing.
+            clearBootstrapConfig();
+        }
 
         var loaded = $.global[runtimeName];
         if (!loaded || !loaded.getState) {

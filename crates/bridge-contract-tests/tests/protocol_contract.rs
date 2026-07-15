@@ -29,6 +29,7 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
 
     assert!(startup.contains("$.evalFile(runtimeFile)"));
     assert!(startup.contains("headless: true"));
+    assert!(startup.contains("delete $.global.__adobeMcpBridgeBootstrapConfig"));
     assert!(!startup.contains("findMenuCommandId"));
     assert!(!startup.contains("executeCommand"));
     assert!(!startup.contains("new Window"));
@@ -173,7 +174,7 @@ fn timeout_late_result_survives_a_new_daemon_connection() -> Result<()> {
 #[test]
 fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
     for host in HOST_SPECS {
-        let fixture = ProtocolFixture::new(*host)?;
+        let fixture = ProtocolFixture::new(*host)?.with_heartbeat_stale_ms(120);
         let daemon = fixture.start_daemon()?;
         let mock = fixture.start_mock_host("stale")?;
         fixture.write_malformed_heartbeat("malformed")?;

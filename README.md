@@ -91,7 +91,7 @@ In After Effects:
 1. Enable `Allow Scripts to Write Files and Access Network`.
 2. Restart After Effects.
 
-The bridge starts from `Scripts/Startup`; opening a panel or enabling an Auto-run checkbox is not required. See [After Effects bridge lifecycle](docs/after-effects-bridge-lifecycle.md).
+The repository bridge is designed to start from `Scripts/Startup` without opening a panel or enabling an Auto-run checkbox. This headless lifecycle still requires real-host validation across supported AE versions; see [After Effects bridge lifecycle](docs/after-effects-bridge-lifecycle.md).
 
 Run the broker:
 
@@ -161,7 +161,7 @@ codex mcp add illustrator -- "<ABSOLUTE_PATH>\target\release\ai-mcp.exe" serve-s
 
 ### InDesign
 
-Build `id-mcp`, copy `src/indesign/uxp/mcp-bridge-indesign.idjs` into the installed InDesign version's `Scripts/Startup Scripts` folder, restart InDesign, and start `id-mcp serve-daemon`. No panel or Auto-run toggle is required.
+Build `id-mcp`, copy `src/indesign/uxp/mcp-bridge-indesign.idjs` into the installed InDesign version's `Scripts/Startup Scripts` folder, restart InDesign, and start `id-mcp serve-daemon`. The repository design has no panel or Auto-run toggle, but Startup Script persistence remains a real-host PoC gate.
 
 The raw-first `run-script` surface uses InDesign's documented `app.doScript` String input instead of `eval`/`Function`. This is a real-host-unverified PoC; see [InDesign MCP PoC and E2E gate](docs/indesign-mcp.md) before relying on it for production documents.
 

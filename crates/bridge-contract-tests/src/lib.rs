@@ -73,7 +73,9 @@ impl ProtocolFixture {
             result_timeout_ms: 500,
             result_retention_seconds: 60,
             result_retention_max_seconds: 3_600,
-            instance_heartbeat_stale_ms: 120,
+            // Keep ordinary contract scenarios tolerant of a busy CI host. Tests
+            // that exercise stale-heartbeat behavior opt into a shorter window.
+            instance_heartbeat_stale_ms: 1_000,
             daemon_addr: "127.0.0.1:0".to_string(),
             log_level: "error".to_string(),
             script_files: Default::default(),
@@ -87,6 +89,11 @@ impl ProtocolFixture {
 
     pub fn host(&self) -> HostSpec {
         self.host
+    }
+
+    pub fn with_heartbeat_stale_ms(mut self, stale_ms: u64) -> Self {
+        self.config.instance_heartbeat_stale_ms = stale_ms;
+        self
     }
 
     pub fn bridge_root(&self) -> &Path {

@@ -91,7 +91,7 @@ After Effects 側:
 1. `Allow Scripts to Write Files and Access Network` を有効化
 2. After Effects を再起動
 
-bridgeは `Scripts/Startup` から自動起動するため、panelを開く操作や`Auto-run commands`は不要です。詳細は [After Effects bridge lifecycle](docs/after-effects-bridge-lifecycle.md) を参照してください。
+repository上のbridgeは `Scripts/Startup` からheadless起動し、panelや`Auto-run commands`に依存しない設計です。対応AE versionでの実際のcold-startは未検証なので、[After Effects bridge lifecycle](docs/after-effects-bridge-lifecycle.md) の実機gateを確認してください。
 
 broker を起動:
 
@@ -161,7 +161,7 @@ codex mcp add illustrator -- "<ABSOLUTE_PATH>\target\release\ai-mcp.exe" serve-s
 
 ### InDesign
 
-`id-mcp`をbuildし、`src/indesign/uxp/mcp-bridge-indesign.idjs`を対象versionの`Scripts/Startup Scripts`へ配置してInDesignを再起動し、`id-mcp serve-daemon`を起動します。panelやAuto-run toggleは不要です。
+`id-mcp`をbuildし、`src/indesign/uxp/mcp-bridge-indesign.idjs`を対象versionの`Scripts/Startup Scripts`へ配置してInDesignを再起動し、`id-mcp serve-daemon`を起動します。repository上はpanelやAuto-run toggleを使わない設計ですが、Startup Scriptの常駐は実機PoC gateです。
 
 raw-firstの`run-script`は`eval`/`Function`ではなく、InDesignが公開する`app.doScript`のString入力を使います。現時点では実機未検証のPoCなので、運用前に[InDesign MCP PoCとE2E gate](docs/indesign-mcp.md)を確認してください。
 
