@@ -84,6 +84,11 @@ if [[ ! -f "$INDESIGN_INSTALLER_PATH" ]]; then
   echo "InDesign bridge installer not found: $INDESIGN_INSTALLER_PATH" >&2
   exit 1
 fi
+CODEX_CONFIG_INSTALLER_PATH="$REPO_ROOT/scripts/install-codex-mcp-config.sh"
+if [[ ! -f "$CODEX_CONFIG_INSTALLER_PATH" ]]; then
+  echo "Codex MCP config installer not found: $CODEX_CONFIG_INSTALLER_PATH" >&2
+  exit 1
+fi
 
 STAGE_DIR="$OUTPUT_DIR/stage"
 mkdir -p "$STAGE_DIR"
@@ -112,6 +117,8 @@ mkdir -p "$STAGE_DIR/indesign"
 cp "$INDESIGN_BRIDGE_PATH" "$STAGE_DIR/indesign/mcp-bridge-indesign.idjs"
 cp "$INDESIGN_INSTALLER_PATH" "$STAGE_DIR/indesign/install-indesign-bridge.sh"
 chmod +x "$STAGE_DIR/indesign/install-indesign-bridge.sh"
+cp "$CODEX_CONFIG_INSTALLER_PATH" "$STAGE_DIR/install-codex-mcp-config.sh"
+chmod +x "$STAGE_DIR/install-codex-mcp-config.sh"
 
 ARCHIVE_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.tar.gz"
 tar -C "$STAGE_DIR" -czf "$ARCHIVE_PATH" .
@@ -153,6 +160,8 @@ mkdir -p "$INSTALL_SHARE_DIR/indesign"
 cp "$STAGE_DIR/indesign/mcp-bridge-indesign.idjs" "$INSTALL_SHARE_DIR/indesign/mcp-bridge-indesign.idjs"
 cp "$STAGE_DIR/indesign/install-indesign-bridge.sh" "$INSTALL_SHARE_DIR/indesign/install-indesign-bridge.sh"
 chmod +x "$INSTALL_SHARE_DIR/indesign/install-indesign-bridge.sh"
+cp "$STAGE_DIR/install-codex-mcp-config.sh" "$INSTALL_SHARE_DIR/install-codex-mcp-config.sh"
+chmod +x "$INSTALL_SHARE_DIR/install-codex-mcp-config.sh"
 
 PKG_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.pkg"
 PKG_SCRIPTS_DIR="$OUTPUT_DIR/pkgscripts"
@@ -169,6 +178,8 @@ PREMIERE_UXP_MANIFEST="/usr/local/share/ae-mcp/premiere-uxp/mcp-bridge-premiere/
 PHOTOSHOP_UXP_MANIFEST="/usr/local/share/ae-mcp/photoshop-uxp/mcp-bridge-photoshop/manifest.json"
 ILLUSTRATOR_CEP_SOURCE="/usr/local/share/ae-mcp/illustrator-cep/mcp-bridge-illustrator"
 INDESIGN_BUNDLE_DIR="/usr/local/share/ae-mcp/indesign"
+INDESIGN_SOURCE="$INDESIGN_BUNDLE_DIR/mcp-bridge-indesign.idjs"
+CODEX_CONFIG_INSTALLER="/usr/local/share/ae-mcp/install-codex-mcp-config.sh"
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then
   echo "Bridge runtime source not found: $SOURCE_SCRIPT"
   exit 0
@@ -273,15 +284,49 @@ else
   echo "Illustrator CEP source not found: $ILLUSTRATOR_CEP_SOURCE"
 fi
 
-if [[ -f "$INDESIGN_BUNDLE_DIR/mcp-bridge-indesign.idjs" && -x "$INDESIGN_BUNDLE_DIR/install-indesign-bridge.sh" ]]; then
-  echo "InDesign Startup Script bundled at: $INDESIGN_BUNDLE_DIR/mcp-bridge-indesign.idjs"
-  echo "The root package installer did not write to a guessed user preference profile."
-  echo "As the target user, run the bundled installer after checking its dry-run output:"
-  echo "  $INDESIGN_BUNDLE_DIR/install-indesign-bridge.sh --dry-run"
-  echo "If no profile is detected, pass an explicit verified Startup Scripts directory with --destination."
+indesign_installed=0
+if [[ -f "$INDESIGN_SOURCE" ]]; then
+  for id_path in /Applications/Adobe\ InDesign\ *; do
+    [[ -d "$id_path" ]] || continue
+    id_name="$(basename "$id_path")"
+    [[ "$id_name" =~ ^Adobe\ InDesign\ [0-9]{4}$ ]] || continue
+
+    indesign_dest="$id_path/Scripts/Startup Scripts"
+    mkdir -p "$indesign_dest"
+    cp "$INDESIGN_SOURCE" "$indesign_dest/mcp-bridge-indesign.idjs"
+    echo "InDesign startup bridge installed: $indesign_dest/mcp-bridge-indesign.idjs"
+    indesign_installed=$((indesign_installed + 1))
+  done
+  if [[ "$indesign_installed" -eq 0 ]]; then
+    echo "No Adobe InDesign installation found. InDesign bridge deployment skipped."
+  fi
 else
-  echo "InDesign Startup Script bundle is incomplete: $INDESIGN_BUNDLE_DIR"
+  echo "InDesign Startup Script source not found: $INDESIGN_SOURCE"
 fi
+
+console_user="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+case "$console_user" in
+  ""|root|loginwindow|_mbsetupuser)
+    echo "No eligible console user found. Codex MCP config update skipped."
+    ;;
+  *)
+    console_home="$(/usr/bin/dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{ $1 = ""; sub(/^ /, ""); print }' || true)"
+    if [[ -z "$console_home" || ! -d "$console_home" ]]; then
+      echo "Home directory for console user '$console_user' was not found. Codex MCP config update skipped."
+    elif [[ ! -x "$CODEX_CONFIG_INSTALLER" ]]; then
+      echo "Codex MCP config installer not found or not executable: $CODEX_CONFIG_INSTALLER"
+    else
+      codex_config="$console_home/.codex/config.toml"
+      echo "Updating missing Codex MCP entries for console user: $console_user"
+      if ! /usr/bin/sudo -H -u "$console_user" /usr/bin/env HOME="$console_home" \
+          "$CODEX_CONFIG_INSTALLER" \
+          --binary-dir "/usr/local/bin" \
+          --config "$codex_config"; then
+        echo "Codex MCP config update failed for console user '$console_user'. Installed binaries were left intact."
+      fi
+    fi
+    ;;
+esac
 POSTINSTALL
 chmod +x "$PKG_SCRIPTS_DIR/postinstall"
 

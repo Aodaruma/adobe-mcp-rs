@@ -93,6 +93,59 @@ fn indesign_startup_bridge_uses_supported_uxp_file_apis() {
     }
 }
 
+#[test]
+fn installers_package_ae_and_indesign_and_only_add_missing_codex_tables() {
+    let windows_package = include_str!("../../../scripts/package-windows.ps1");
+    let windows_repo_installer = include_str!("../../../scripts/install-bridge.ps1");
+    let windows_msi_installer = include_str!("../../../scripts/install-bridge-installer.ps1");
+    let macos_package = include_str!("../../../scripts/package-macos.sh");
+    let macos_repo_installer = include_str!("../../../scripts/install-bridge.sh");
+    let macos_codex_installer = include_str!("../../../scripts/install-codex-mcp-config.sh");
+
+    for required in [
+        "ae-mcp.exe",
+        "id-mcp.exe",
+        "mcp-bridge-auto.jsx",
+        "mcp-bridge-startup.jsx",
+        "mcp-bridge-shutdown.jsx",
+        "mcp-bridge-indesign.idjs",
+    ] {
+        assert!(
+            windows_package.contains(required),
+            "Windows package is missing {required}"
+        );
+    }
+    assert!(windows_package.contains("IndesignStartupFeature"));
+
+    for installer in [windows_repo_installer, windows_msi_installer] {
+        assert!(installer.contains("Test-TomlTableExists"));
+        assert!(installer.contains("Add-MissingCodexMcpServers"));
+        assert!(!installer.contains("Set-TomlScalar"));
+        assert!(installer.contains("mcp_servers.aftereffects"));
+        assert!(installer.contains("mcp_servers.indesign"));
+    }
+
+    for required in [
+        "mcp-bridge-auto.jsx",
+        "mcp-bridge-startup.jsx",
+        "mcp-bridge-shutdown.jsx",
+        "mcp-bridge-indesign.idjs",
+        "install-codex-mcp-config.sh",
+        "/Applications/Adobe\\ InDesign\\ *",
+    ] {
+        assert!(
+            macos_package.contains(required),
+            "macOS package is missing {required}"
+        );
+    }
+    assert!(macos_package.contains("/dev/console"));
+    assert!(macos_repo_installer.contains("install-codex-mcp-config.sh"));
+    assert!(macos_codex_installer.contains("section_exists"));
+    assert!(macos_codex_installer.contains("mcp_servers.$server"));
+    assert!(macos_codex_installer.contains("aftereffects"));
+    assert!(macos_codex_installer.contains("indesign"));
+}
+
 fn run_command(
     daemon: &DaemonEndpoint,
     target_instance_id: Option<&str>,

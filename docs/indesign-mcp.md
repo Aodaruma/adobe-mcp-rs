@@ -91,9 +91,9 @@ bash ./scripts/install-indesign-bridge.sh --remove
 
 Both dedicated installers accept only a directory ending in `Scripts/Startup Scripts` and only install or remove `mcp-bridge-indesign.idjs`; they never remove the directory or unrelated scripts. Pass `-Destination` / `--destination` when auto-detection cannot identify the verified profile.
 
-Windows release ZIP/MSI artifacts include `id-mcp.exe`, the Startup Script, and `install-indesign-bridge.ps1`. The generic MSI helper updates an existing Codex config and repairs an already opted-in `InDesignMcp` current-user autostart entry. It copies the Startup Script only into current-user InDesign preference profiles that actually exist.
+Windows release ZIP/MSI artifacts include `id-mcp.exe`, the Startup Script, and `install-indesign-bridge.ps1`. The generic MSI helper creates the current-user Codex config when needed, adds only missing MCP server tables, and repairs an already opted-in `InDesignMcp` current-user autostart entry. Existing same-name MCP tables are left unchanged. It copies the Startup Script only into current-user InDesign preference profiles that actually exist.
 
-macOS release archives/pkg include `id-mcp` and an InDesign bundle under `/usr/local/share/ae-mcp/indesign`. The root pkg postinstall does not guess or modify a user preference profile. Run the bundled `install-indesign-bridge.sh --dry-run` as the target user, then pass an explicit verified destination if detection finds none.
+macOS release archives/pkg include `id-mcp` and an InDesign bundle under `/usr/local/share/ae-mcp/indesign`. The pkg postinstall copies the fixed bridge into each detected `/Applications/Adobe InDesign YYYY/Scripts/Startup Scripts` directory without guessing a user preference profile. It also adds missing MCP server tables to the active console user's Codex config while preserving existing same-name tables. The bundled `install-indesign-bridge.sh` remains available for explicit user-profile installation when required.
 
 Manual Windows destination:
 

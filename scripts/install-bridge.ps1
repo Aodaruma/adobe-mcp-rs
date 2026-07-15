@@ -284,74 +284,114 @@ function Resolve-McpBinaryPath {
 }
 
 function Get-CodexConfigPaths {
-    $paths = @()
-
-    if ($env:CODEX_HOME) {
-        $paths += (Join-Path $env:CODEX_HOME "config.toml")
+    $codexHome = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+        $codexHome = $env:CODEX_HOME
+    } else {
+        $userProfile = $env:USERPROFILE
+        if ([string]::IsNullOrWhiteSpace($userProfile)) {
+            $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($userProfile)) {
+            $codexHome = Join-Path $userProfile ".codex"
+        }
     }
-    if ($env:USERPROFILE) {
-        $paths += (Join-Path $env:USERPROFILE ".codex\config.toml")
-    }
 
-    return @($paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique)
+    if ([string]::IsNullOrWhiteSpace($codexHome)) {
+        return @()
+    }
+    return @((Join-Path $codexHome "config.toml"))
 }
 
 function Format-TomlLiteral {
     param([string]$Value)
-    return "'" + $Value.Replace("'", "''") + "'"
+    $escaped = $Value.Replace('\', '\\').Replace('"', '\"')
+    return '"' + $escaped + '"'
 }
 
-function Remove-TrailingEmptyLines {
-    param([string[]]$Lines)
-
-    $result = @($Lines)
-    while ($result.Count -gt 0 -and $result[-1] -eq "") {
-        if ($result.Count -eq 1) {
-            return @()
-        }
-        $result = @($result[0..($result.Count - 2)])
-    }
-    return $result
-}
-
-function Set-TomlScalar {
+function Test-TomlTableExists {
     param(
         [string[]]$Lines,
-        [string]$Header,
-        [string]$Key,
-        [string]$ValueLine
+        [string]$Header
     )
 
-    $Lines = @($Lines)
-    $headerLine = "[$Header]"
-    $start = [Array]::IndexOf($Lines, $headerLine)
-    if ($start -lt 0) {
-        if ($Lines.Count -eq 0) {
-            return @($headerLine, $ValueLine)
-        }
-        return @($Lines + @("", $headerLine, $ValueLine))
-    }
-
-    $end = $Lines.Count
-    for ($i = $start + 1; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -match '^\s*\[') {
-            $end = $i
-            break
+    $segments = @($Header -split '\.')
+    $headerPattern = (($segments | ForEach-Object { [regex]::Escape($_) }) -join '\s*\.\s*')
+    $pattern = '^\s*\[\s*' + $headerPattern + '\s*\]\s*(?:#.*)?$'
+    foreach ($line in @($Lines)) {
+        if ($line -match $pattern) {
+            return $true
         }
     }
+    return $false
+}
 
-    $keyPattern = '^\s*' + [regex]::Escape($Key) + '\s*='
-    for ($i = $start + 1; $i -lt $end; $i++) {
-        if ($Lines[$i] -match $keyPattern) {
-            $Lines[$i] = $ValueLine
-            return $Lines
+function New-CodexMcpServerSection {
+    param(
+        [string]$Header,
+        [string]$Command
+    )
+
+    return @(
+        "[$Header]",
+        ("command = " + (Format-TomlLiteral $Command)),
+        'args = ["serve-stdio"]',
+        "startup_timeout_sec = 180",
+        "tool_timeout_sec = 180"
+    )
+}
+
+function Add-MissingCodexMcpServers {
+    param(
+        [string]$ConfigPath,
+        [object[]]$Servers,
+        [switch]$DryRun
+    )
+
+    $configExists = Test-Path -LiteralPath $ConfigPath -PathType Leaf
+    $raw = if ($configExists) { [System.IO.File]::ReadAllText($ConfigPath) } else { "" }
+    $lines = @($raw -split "`r?`n")
+    $sectionTexts = New-Object System.Collections.Generic.List[string]
+    $addedNames = New-Object System.Collections.Generic.List[string]
+    $skippedNames = New-Object System.Collections.Generic.List[string]
+
+    foreach ($server in @($Servers)) {
+        if (Test-TomlTableExists -Lines $lines -Header $server.Header) {
+            $skippedNames.Add([string]$server.Name) | Out-Null
+            continue
+        }
+        $section = @(New-CodexMcpServerSection -Header $server.Header -Command $server.Command)
+        $sectionTexts.Add(($section -join "`r`n")) | Out-Null
+        $addedNames.Add([string]$server.Name) | Out-Null
+    }
+
+    if ($sectionTexts.Count -gt 0 -and -not $DryRun) {
+        $parent = Split-Path -Parent $ConfigPath
+        if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+
+        $body = ($sectionTexts.ToArray() -join "`r`n`r`n") + "`r`n"
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        if (-not $configExists -or $raw.Length -eq 0) {
+            [System.IO.File]::WriteAllText($ConfigPath, $body, $utf8NoBom)
+        } else {
+            if ($raw -match '(?:\r\n|\n|\r){2}$') {
+                $prefix = ""
+            } elseif ($raw.EndsWith("`n") -or $raw.EndsWith("`r")) {
+                $prefix = "`r`n"
+            } else {
+                $prefix = "`r`n`r`n"
+            }
+            [System.IO.File]::AppendAllText($ConfigPath, $prefix + $body, $utf8NoBom)
         }
     }
 
-    if ($end -eq $Lines.Count) {
-        return @($Lines + $ValueLine)
+    return [pscustomobject]@{
+        Added = @($addedNames.ToArray())
+        Skipped = @($skippedNames.ToArray())
+        Changed = ($sectionTexts.Count -gt 0)
     }
-    return @($Lines[0..($end - 1)] + $ValueLine + $Lines[$end..($Lines.Count - 1)])
 }
 
 function Update-CodexMcpConfig {
@@ -363,42 +403,40 @@ function Update-CodexMcpConfig {
     $aePath = Resolve-McpBinaryPath -RepoRoot $RepoRoot -WindowsFileName "ae-mcp.exe" -UnixFileName "ae-mcp"
     $prPath = Resolve-McpBinaryPath -RepoRoot $RepoRoot -WindowsFileName "pr-mcp.exe" -UnixFileName "pr-mcp"
     $idPath = Resolve-McpBinaryPath -RepoRoot $RepoRoot -WindowsFileName "id-mcp.exe" -UnixFileName "id-mcp"
-    if (-not $aePath -or -not $prPath) {
+    if (-not $aePath -and -not $prPath -and -not $idPath) {
         Write-Warning "MCP binaries were not found. Skipped Codex config update."
         return
     }
 
     $configs = Get-CodexConfigPaths
     if ($configs.Count -eq 0) {
-        Write-Host "Codex config.toml was not found. Skipped Codex MCP server config update."
+        Write-Warning "Current-user Codex config path could not be resolved. Skipped Codex MCP server config update."
         return
+    }
+
+    $servers = @()
+    if ($aePath) {
+        $servers += [pscustomobject]@{ Name = "aftereffects"; Header = "mcp_servers.aftereffects"; Command = $aePath }
+    }
+    if ($prPath) {
+        $servers += [pscustomobject]@{ Name = "premiere"; Header = "mcp_servers.premiere"; Command = $prPath }
+    }
+    if ($idPath) {
+        $servers += [pscustomobject]@{ Name = "indesign"; Header = "mcp_servers.indesign"; Command = $idPath }
     }
 
     foreach ($config in $configs) {
         try {
-            $raw = Get-Content -Raw -LiteralPath $config
-            $lines = Remove-TrailingEmptyLines -Lines @($raw -split "`r?`n", -1)
-
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $aePath))
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "args" -ValueLine 'args = ["serve-stdio"]'
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.aftereffects" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $prPath))
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "args" -ValueLine 'args = ["serve-stdio"]'
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
-            $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.premiere" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
-            if ($idPath) {
-                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "command" -ValueLine ("command = " + (Format-TomlLiteral $idPath))
-                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "args" -ValueLine 'args = ["serve-stdio"]'
-                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "startup_timeout_sec" -ValueLine "startup_timeout_sec = 180"
-                $lines = Set-TomlScalar -Lines $lines -Header "mcp_servers.indesign" -Key "tool_timeout_sec" -ValueLine "tool_timeout_sec = 180"
+            $result = Add-MissingCodexMcpServers -ConfigPath $config -Servers $servers -DryRun:$DryRun
+            if ($result.Skipped.Count -gt 0) {
+                Write-Host ("Existing Codex MCP table(s) left unchanged: {0}" -f ($result.Skipped -join ", "))
             }
-
-            if ($DryRun) {
-                Write-Host "DryRun mode: Codex MCP server config would be updated: $config"
+            if (-not $result.Changed) {
+                Write-Host "Codex MCP server config already contains every available server table: $config"
+            } elseif ($DryRun) {
+                Write-Host ("DryRun mode: would add Codex MCP table(s) {0}: {1}" -f ($result.Added -join ", "), $config)
             } else {
-                Set-Content -LiteralPath $config -Value ($lines -join "`r`n") -Encoding UTF8
-                Write-Host "Codex MCP server config updated: $config"
+                Write-Host ("Codex MCP server config added missing table(s) {0}: {1}" -f ($result.Added -join ", "), $config)
             }
         } catch {
             Write-Warning "Failed to update Codex config '$config': $($_.Exception.Message)"

@@ -33,8 +33,9 @@
 3. アーティファクト公開
 4. リリースノート公開
 5. Windows MSI の初回 install が autostart を暗黙に有効化しないこと、upgrade が既存 Run key を修復すること、通常 uninstall が daemon と Run key を除去することを確認
-6. Windows/macOS artifactに`id-mcp`、InDesign Startup Script、専用installerが含まれ、macOS root postinstallがユーザーprofileを推測更新しないことを確認
-7. 専用InDesign installerのinstall/remove dry-runを確認し、固定bridge file以外を削除しないことを確認
+6. Windows/macOS artifactに`id-mcp`、InDesign Startup Script、専用installerが含まれ、macOS pkgがapplication側の`Scripts/Startup Scripts`へ固定bridgeを配置することを確認
+7. Windows/macOS installerがCodex設定の不足MCP tableだけを追加し、既存tableを保持し、再実行しても重複しないことを確認
+8. 専用InDesign installerのinstall/remove dry-runを確認し、固定bridge file以外を削除しないことを確認
 
 ## 5. リリース後
 

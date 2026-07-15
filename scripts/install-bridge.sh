@@ -52,6 +52,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOURCE_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-auto.jsx"
 SOURCE_STARTUP_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-startup.jsx"
 SOURCE_SHUTDOWN_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-shutdown.jsx"
+CODEX_CONFIG_INSTALLER="$SCRIPT_DIR/install-codex-mcp-config.sh"
 
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then
   echo "Bridge script not found: $SOURCE_SCRIPT" >&2
@@ -114,6 +115,11 @@ else
 fi
 
 if [[ "$DRY_RUN" == "true" ]]; then
+  if [[ -f "$CODEX_CONFIG_INSTALLER" ]]; then
+    bash "$CODEX_CONFIG_INSTALLER" --binary-dir "$REPO_ROOT/target/release" --dry-run
+  else
+    echo "Codex MCP config installer not found or not executable: $CODEX_CONFIG_INSTALLER"
+  fi
   echo "Dry-run mode: no copy executed."
   exit 0
 fi
@@ -247,4 +253,11 @@ else
     fi
   done
   echo "Restart InDesign; no panel or Auto-run toggle is required."
+fi
+
+echo
+if [[ -f "$CODEX_CONFIG_INSTALLER" ]]; then
+  bash "$CODEX_CONFIG_INSTALLER" --binary-dir "$REPO_ROOT/target/release"
+else
+  echo "Codex MCP config installer not found or not executable: $CODEX_CONFIG_INSTALLER"
 fi

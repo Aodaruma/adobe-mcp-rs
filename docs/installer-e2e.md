@@ -42,10 +42,11 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 3. Windows MSI の場合、インストール中に別の PowerShell ウィンドウが表示されない
 4. Windows MSI の場合、`C:\ProgramData\AfterEffectsMcp\install-report.json` で host integration の結果一覧を確認できる
 5. Windows ZIP/MSIに`id-mcp.exe`、`mcp-bridge-indesign.idjs`、`install-indesign-bridge.ps1`が収録される
-6. macOS archive/pkgに`id-mcp`と`indesign/mcp-bridge-indesign.idjs`、専用installerが収録され、root postinstallがユーザーprofileへ推測配置しない
-7. 5 host の MCP バイナリが所定の場所へ配置される
-8. 5 binary の `--help` が実行できる
-9. Windows help は `autostart` を含み `service` を含まない。macOS help は `service` を含み `autostart` を含まない
+6. macOS archive/pkgに`id-mcp`と`indesign/mcp-bridge-indesign.idjs`、専用installerが収録され、pkgが各`/Applications/Adobe InDesign YYYY/Scripts/Startup Scripts`へ固定bridgeを配置する
+7. Windows/macOSとも、対象ユーザーのCodex設定に未登録のMCP serverだけを追加し、既存の同名tableを変更しない。設定ファイルがなければ作成する
+8. 5 host の MCP バイナリが所定の場所へ配置される
+9. 5 binary の `--help` が実行できる
+10. Windows help は `autostart` を含み `service` を含まない。macOS help は `service` を含み `autostart` を含まない
 
 ## 3.2 Windows autostart / macOS service
 
@@ -73,9 +74,19 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 2. install後に固定名`mcp-bridge-indesign.idjs`だけが追加・更新される
 3. `-Remove` / `--remove`のdry-run後に削除を実行し、固定ファイルだけが消えて他のscriptと親directoryが残る
 4. Windows generic installerは現在ユーザーの既存profileだけへ配置し、未検出時はskipをreportする
-5. macOS pkgのroot postinstallは`~/Library/Preferences`へ書かず、共有bundleと明示手順だけを残す
+5. macOS pkgのroot postinstallは`~/Library/Preferences`を推測せず、検出した`/Applications/Adobe InDesign YYYY/Scripts/Startup Scripts`へ固定bridgeだけを配置する
 6. InDesign実機での起動・heartbeat・MCP commandは別途manual E2E gateを通す。package生成成功だけで実機対応済みとはしない
-## 3.5 MCP + AE ブリッジ
+
+## 3.5 Codex MCP設定
+
+1. Codex設定がない状態でinstallし、対象ユーザー所有の`config.toml`が作成される
+2. `mcp_servers.aftereffects`または`mcp_servers.indesign`の一方だけが既存の場合、既存tableがbyte単位で保持され、不足tableだけが追加される
+3. 両tableが既存の場合、install前後で設定ファイルに差分がない
+4. installerを再実行しても重複tableが増えない
+5. Windowsでは現在ユーザー以外の`config.toml`を変更しない
+6. macOS pkgでは有効なconsole userを特定できない場合、rootの設定を作らずskipを記録する
+
+## 3.6 MCP + AE ブリッジ
 
 1. MSI/pkgで導入した場合、runtimeが`ScriptUI Panels`、bootstrapが`Scripts/Startup`、cleanupが`Scripts/Shutdown`へ自動配置されることを確認
 2. ポータブル版（zip/tar.gz）の場合は3つのJSXを手動配置
