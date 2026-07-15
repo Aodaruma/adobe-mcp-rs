@@ -2,7 +2,7 @@ const { app, ScriptLanguage, UndoModes } = require("indesign");
 const fs = require("fs");
 const os = require("os");
 
-const BRIDGE_VERSION = "0.4.4";
+const BRIDGE_VERSION = "0.5.0";
 const POLL_INTERVAL_MS = 250;
 const HEARTBEAT_INTERVAL_MS = 2000;
 const instanceId =

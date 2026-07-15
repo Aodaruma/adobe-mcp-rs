@@ -14,7 +14,7 @@
 */
 
 // --- Function Definitions ---
-var AE_MCP_BRIDGE_VERSION = "0.4.4";
+var AE_MCP_BRIDGE_VERSION = "0.5.0";
 var fxDialogsSuppressed = false;
 var aeMcpBootstrapConfig = $.global.__adobeMcpBridgeBootstrapConfig || {};
 var aeMcpHeadless = aeMcpBootstrapConfig.headless === true;
