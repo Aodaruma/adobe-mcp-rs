@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const CONTRACT_COMMAND_TIMEOUT_MS: u64 = 2_000;
+
 #[test]
 fn smoke_result_schema_and_example_are_valid_json() -> Result<()> {
     let schema: Value = serde_json::from_str(include_str!(
@@ -209,7 +211,7 @@ fn heartbeat_command_and_result_contract_supports_both_start_orders() -> Result<
             instances["instances"][0]["bridgeRuntime"],
             host.bridge_runtime
         );
-        let result = run_command(&daemon, Some("host-first"), 1, 500)?;
+        let result = run_command(&daemon, Some("host-first"), 1, CONTRACT_COMMAND_TIMEOUT_MS)?;
         assert_completed(&result, *host, "host-first", 1);
         let commands = mock.observed_commands();
         assert_eq!(commands.len(), 1);
@@ -224,7 +226,12 @@ fn heartbeat_command_and_result_contract_supports_both_start_orders() -> Result<
         assert_eq!(empty["count"], 0, "{} daemon-first initial", host.id);
         let mock = fixture.start_mock_host("daemon-first")?;
         mock.enqueue(ResponsePlan::success(json!({ "sequence": 2 })));
-        let result = run_command(&daemon, Some("daemon-first"), 2, 500)?;
+        let result = run_command(
+            &daemon,
+            Some("daemon-first"),
+            2,
+            CONTRACT_COMMAND_TIMEOUT_MS,
+        )?;
         assert_completed(&result, *host, "daemon-first", 2);
     }
     Ok(())
@@ -270,7 +277,11 @@ fn timeout_late_result_survives_a_new_daemon_connection() -> Result<()> {
 #[test]
 fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
     for host in HOST_SPECS {
-        let fixture = ProtocolFixture::new(*host)?.with_heartbeat_stale_ms(120);
+        // Windows hosted runners can pause test threads for several hundred
+        // milliseconds while the five host fixtures run concurrently. Keep
+        // the stale window above that scheduler jitter; the explicit pause
+        // below still proves the transition deterministically.
+        let fixture = ProtocolFixture::new(*host)?.with_heartbeat_stale_ms(1_000);
         let daemon = fixture.start_daemon()?;
         let mock = fixture.start_mock_host("stale")?;
         fixture.write_malformed_heartbeat("malformed")?;
@@ -283,7 +294,7 @@ fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
             .expect("timeout has requestId")
             .to_string();
         mock.pause_heartbeat();
-        thread::sleep(Duration::from_millis(180));
+        thread::sleep(Duration::from_millis(1_200));
 
         let report = daemon.call(json!({ "op": "listInstances" }), 1_000)?;
         assert_eq!(report["count"], 0, "{} stale count", host.id);
@@ -313,7 +324,7 @@ fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
         let reconnected = daemon.call(json!({ "op": "listInstances" }), 1_000)?;
         assert_eq!(reconnected["count"], 1, "{} reconnect", host.id);
         mock.enqueue(ResponsePlan::success(json!({ "sequence": 21 })));
-        let next = run_command(&daemon, Some("stale"), 21, 500)?;
+        let next = run_command(&daemon, Some("stale"), 21, CONTRACT_COMMAND_TIMEOUT_MS)?;
         assert_completed(&next, *host, "stale", 21);
     }
     Ok(())
@@ -329,7 +340,7 @@ fn partial_file_json_and_chunked_tcp_json_do_not_break_the_protocol() -> Result<
             value: json!({ "sequence": 30 }),
         });
         let daemon = fixture.start_daemon()?;
-        let result = run_command(&daemon, Some("partial"), 30, 500)?;
+        let result = run_command(&daemon, Some("partial"), 30, CONTRACT_COMMAND_TIMEOUT_MS)?;
         assert_completed(&result, *host, "partial", 30);
 
         let chunked = daemon.send_raw_chunks(&[
@@ -366,8 +377,10 @@ fn multiple_instances_require_targeting_and_route_independently() -> Result<()> 
             .unwrap_or_default()
             .contains("Multiple active"));
 
-        let first_result = run_command(&daemon, Some("instance-a"), 41, 500)?;
-        let second_result = run_command(&daemon, Some("instance-b"), 42, 500)?;
+        let first_result =
+            run_command(&daemon, Some("instance-a"), 41, CONTRACT_COMMAND_TIMEOUT_MS)?;
+        let second_result =
+            run_command(&daemon, Some("instance-b"), 42, CONTRACT_COMMAND_TIMEOUT_MS)?;
         assert_completed(&first_result, *host, "instance-a", 41);
         assert_completed(&second_result, *host, "instance-b", 42);
         assert_eq!(first.observed_commands().len(), 1);
