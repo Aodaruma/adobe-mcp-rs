@@ -60,6 +60,39 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
     }
 }
 
+#[test]
+fn indesign_startup_bridge_uses_supported_uxp_file_apis() {
+    let bridge = include_str!("../../../src/indesign/uxp/mcp-bridge-indesign.idjs");
+
+    assert!(bridge.contains("fs.mkdir(path, { recursive: true }, (error) =>"));
+    assert!(bridge.contains("fs.rename(sourcePath, destinationPath, (error) =>"));
+    assert!(bridge.contains("destinationPath === bridgePaths().heartbeatFile"));
+    assert!(bridge.contains("await ensureBridgeDirectories()"));
+    assert!(bridge.contains("await writeHeartbeat("));
+    assert!(bridge.contains("await renameFile(tempPath, path)"));
+    assert!(bridge.contains("fileWriteTail.then(() => performAtomicWrite(path, text))"));
+    assert!(bridge.contains("app.addEventListener(\"beforeQuit\", handleBeforeQuit)"));
+    assert!(bridge.contains("app.removeEventListener(\"beforeQuit\", handleBeforeQuit)"));
+    assert!(bridge.contains("clearInterval(pollIntervalId)"));
+    assert!(bridge.contains("clearInterval(heartbeatIntervalId)"));
+    assert!(bridge.contains("beforeQuit does not wait for promise continuations"));
+    assert!(bridge.matches("removeHeartbeatFile();").count() >= 2);
+    assert!(bridge.contains("return lifecyclePromise"));
+
+    for unsupported in [
+        "fs.mkdirSync",
+        "fs.statSync",
+        "fs.openSync",
+        "fs.closeSync",
+        "fs.renameSync",
+    ] {
+        assert!(
+            !bridge.contains(unsupported),
+            "InDesign UXP does not expose {unsupported}"
+        );
+    }
+}
+
 fn run_command(
     daemon: &DaemonEndpoint,
     target_instance_id: Option<&str>,

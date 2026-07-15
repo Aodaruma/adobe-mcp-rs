@@ -139,9 +139,10 @@ MCP client -> id-mcp serve-stdio -> id-mcp serve-daemon
 
 制約:
 
-- repository実装は`.idjs`を`Scripts/Startup Scripts`へ配置し、未解決Promiseでbridgeを維持する設計。panelやAuto-run checkboxに依存しないことを含め、実際の常駐は実機未検証。
+- repository実装は`.idjs`を`Scripts/Startup Scripts`へ配置し、未解決Promiseでbridgeを維持する。Windows版InDesign 2026 21.4.1.4ではpanelやAuto-run checkboxなしのcold startを確認済み。
 - UXP scriptの固定permissionはfilesystem/networkへの強い権限を持つ。`unsafe`はsandboxではない。
-- Adobe APIは`Application.doScript`のString入力を記載する一方、長時間動作するStartup Scriptからのraw文字列実行は本repositoryでは実機未検証。
+- 長時間動作するStartup Scriptからの`Application.doScript` String入力、`script.setResult`、retained result、daemon再接続はWindows実機で確認済み。他version/macOSは未検証。
+- Windows実機では`UndoModes.ENTIRE_SCRIPT`の1-step undoとnormal shutdown時のheartbeat削除が未達。後者は10秒後にstale instanceとして安全に除外される。
 - Windows/macOS、InDesign/UXP version、locale、startup/restart、sleep/modal、atomic renameを[InDesign MCP PoC](indesign-mcp.md)の手順で検証するまでExperimentalから昇格しない。
 - 5 host の runtime、raw code、read / write / export、undo / modal / filesystem、lifecycle、payload、guard 方針は [capability matrix](capability-matrix.md) を参照する。
 

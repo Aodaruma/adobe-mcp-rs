@@ -2,9 +2,9 @@
 
 ## Status
 
-InDesign support is **Experimental / real-host unverified**. The Rust server, protocol-v1 bridge, contract tests, and installer path are implemented, but this repository has not yet executed them in a live InDesign process.
+InDesign support is **Experimental / Windows live-verified**. Windows 11、InDesign 2026 21.4.1.4（`Version 21.0-J/ja_JP`）では、Startup Scriptのcold start、daemon discovery、raw UXP、retained result、daemon再接続を確認済みです。macOS、複数version、sleep/modal、undo、normal shutdown cleanupは未完了です。
 
-The minimum target is InDesign 18.5. InDesign supports UXP scripts from 18.0, while Adobe's current filesystem recipe calls out 18.5 or later. The repository bridge uses a UXP Startup Script (.idjs) rather than a panel and is designed to start with InDesign without an Auto-run checkbox; that persistence behavior remains a real-host PoC gate.
+The minimum target is InDesign 18.5. InDesign supports UXP scripts from 18.0, while Adobe's current filesystem recipe calls out 18.5 or later. The repository bridge uses a UXP Startup Script (.idjs) rather than a panel and starts without an Auto-run checkbox on the verified Windows host.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ MCP client
   -> InDesign UXP DOM
 ~~~
 
-mcp-core::INDESIGN_HOST, daemon-core, the retained request registry, script-file policy, and the cross-host contract fixture are shared with the other Adobe hosts. The startup script writes protocol-v1 heartbeat, command, and result records with atomic temp-file replacement.
+mcp-core::INDESIGN_HOST, daemon-core, the retained request registry, script-file policy, and the cross-host contract fixture are shared with the other Adobe hosts. The startup script serializes writes and publishes protocol-v1 heartbeat, command, and result records by writing a same-directory temporary file and calling UXP's callback-based `fs.rename`. InDesign 2026 does not expose `mkdirSync`, `statSync`, `openSync`, `closeSync`, or `renameSync`.
 
 ## Why a Startup Script
 
@@ -29,7 +29,7 @@ Adobe documents that:
 - UXP scripts receive fixed localFileSystem: fullAccess and network permissions, while allowCodeGenerationFromStrings is false: [UXP manifest permissions for scripts](https://developer.adobe.com/indesign/uxp/resources/fundamentals/manifest/).
 - Application.doScript accepts a File, String, or JavaScript Function and a ScriptLanguage: [Application API](https://developer.adobe.com/indesign/uxp/dom/api/a/application/).
 
-Therefore run-script does **not** call eval or the Function constructor. It sends code to InDesign's documented app.doScript(..., ScriptLanguage.UXPSCRIPT, ...) host API. Adobe documents the String input, but executing that input from this long-running Startup Script has not yet been verified in a live host. Until the manual PoC passes, raw execution must not be represented as production-verified.
+Therefore run-script does **not** call eval or the Function constructor. It sends code to InDesign's documented app.doScript(..., ScriptLanguage.UXPSCRIPT, ...) host API. String input and `script.setResult` succeeded on InDesign 2026 21.4.1.4; other supported versions and macOS remain release gates.
 
 ## MCP surface
 
@@ -117,6 +117,26 @@ codex mcp add indesign -- "C:\absolute\path\target\release\id-mcp.exe" serve-std
 
 Restart InDesign after installing or updating the Startup Script.
 
+## Windows live result (2026-07-15)
+
+Verified on Windows 11 x86_64, InDesign 2026 21.4.1.4, Japanese locale, bridge/id-mcp 0.4.4.
+
+| Check | Result |
+|---|---|
+| preference-profile Startup Script cold start | pass |
+| protocol-v1 heartbeat / instance discovery / ping | pass |
+| daemon-first and host-first discovery | pass |
+| `listDocuments` with no open document | pass (`[]`) |
+| non-mutating raw `app.doScript(String, UXPSCRIPT)` | pass |
+| raw temporary document creation, rectangle creation, no-save close | pass |
+| short timeout followed by `get-script-result` | pass |
+| daemon restart while InDesign remains open | pass |
+| forced host termination followed by new instance discovery | pass |
+| one-step undo for `UndoModes.ENTIRE_SCRIPT` | fail: Ctrl+Z and enabled Undo menu action did not remove the rectangle; `undoName` remained empty |
+| normal shutdown heartbeat removal | fail: application exited, but heartbeat remained and was reported as stale after 10 seconds |
+
+Creating a new document took longer than 5 seconds in one run. Callers that intentionally use a short timeout can recover the completed result through `get-script-result`.
+
 ## Manual real-host E2E gate
 
 Record OS, InDesign version, UXP version, locale, commit, and bridge version.
@@ -134,12 +154,13 @@ Record OS, InDesign version, UXP version, locale, commit, and bridge version.
 11. Test two installed InDesign versions if available; verify targetless ambiguity and targetInstanceId routing.
 12. Test sleep/resume and a modal dialog; verify heartbeat and polling recover.
 
-The following are explicit PoC gates, not current guarantees:
+The following remain explicit PoC gates, not current guarantees:
 
-- app.doScript String execution works from the long-running UXP Startup Script.
-- script.setResult and the synchronous returned value are stable for the supported InDesign versions; Promise-returning raw code is not currently supported.
-- fs.renameSync replacement works atomically on both Windows and macOS UXP runtimes.
+- app.doScript String execution and script.setResult remain stable outside the verified Windows/InDesign 21.4.1.4 host; Promise-returning raw code is not currently supported.
+- callback-based fs.rename replacement works on macOS and other supported InDesign UXP runtimes.
 - the user preference Startup Scripts directory is honored on every supported macOS version/locale.
-- an unresolved top-level Promise remains alive without delaying or destabilizing host startup.
+- one `UndoModes.ENTIRE_SCRIPT` request produces one usable host Undo step.
+- normal host shutdown removes the heartbeat instead of relying on stale-instance detection.
+- an unresolved top-level Promise remains alive without delaying or destabilizing other supported hosts.
 
 Save results using docs/bridge-smoke-result.schema.json. Do not promote InDesign beyond Experimental until the required checks pass on both Windows and macOS.

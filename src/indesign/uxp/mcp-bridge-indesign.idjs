@@ -15,6 +15,12 @@ let pollInFlight = false;
 let currentRequestId = null;
 let lastStatus = "initializing";
 let atomicWriteCounter = 0;
+let fileWriteTail = Promise.resolve();
+let pollIntervalId = null;
+let heartbeatIntervalId = null;
+let activePollPromise = Promise.resolve();
+let lifecycleResolve = null;
+let shuttingDown = false;
 
 function nowIso() {
   return new Date().toISOString();
@@ -68,20 +74,48 @@ function pathExists(path) {
   }
 }
 
-function ensureDirectory(path) {
+async function ensureDirectory(path) {
   if (!pathExists(path)) {
-    fs.mkdirSync(path, { recursive: true });
+    await new Promise((resolve, reject) => {
+      fs.mkdir(path, { recursive: true }, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 }
 
-function ensureBridgeDirectories() {
+async function ensureBridgeDirectories() {
   const paths = bridgePaths();
-  ensureDirectory(paths.root);
-  ensureDirectory(paths.instancesRoot);
-  ensureDirectory(paths.instanceRoot);
+  await ensureDirectory(paths.root);
+  await ensureDirectory(paths.instancesRoot);
+  await ensureDirectory(paths.instanceRoot);
 }
 
-function writeTextFileAtomic(path, text) {
+function renameFile(sourcePath, destinationPath) {
+  return new Promise((resolve, reject) => {
+    fs.rename(sourcePath, destinationPath, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      if (
+        shuttingDown &&
+        destinationPath === bridgePaths().heartbeatFile
+      ) {
+        try {
+          fs.unlinkSync(destinationPath);
+        } catch (_cleanupError) {}
+      }
+      resolve();
+    });
+  });
+}
+
+async function performAtomicWrite(path, text) {
   const splitAt = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const parent = splitAt >= 0 ? path.slice(0, splitAt) : ".";
   const fileName = splitAt >= 0 ? path.slice(splitAt + 1) : path;
@@ -96,13 +130,15 @@ function writeTextFileAtomic(path, text) {
       }
       const residue = joinPath(parent, entries[index]);
       try {
-        const stat = fs.statSync(residue);
+        const stat = fs.lstatSync(residue);
         const modifiedAt =
           typeof stat.mtimeMs === "number"
             ? stat.mtimeMs
-            : stat.mtime && stat.mtime.getTime
-              ? stat.mtime.getTime()
-              : now;
+            : typeof stat.mtime === "number"
+              ? stat.mtime
+              : stat.mtime && stat.mtime.getTime
+                ? stat.mtime.getTime()
+                : now;
         if (now - modifiedAt >= 60 * 60 * 1000) {
           fs.unlinkSync(residue);
         }
@@ -121,27 +157,19 @@ function writeTextFileAtomic(path, text) {
       "-" +
       Math.random().toString(36).slice(2, 10),
   );
-  let descriptor = null;
   try {
-    descriptor = fs.openSync(tempPath, "wx");
-    fs.writeFileSync(descriptor, text, { encoding: "utf-8" });
-    if (fs.fsyncSync) {
-      fs.fsyncSync(descriptor);
-    }
-    fs.closeSync(descriptor);
-    descriptor = null;
+    fs.writeFileSync(tempPath, text, { encoding: "utf-8" });
 
     let renameError = null;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
-        fs.renameSync(tempPath, path);
+        await renameFile(tempPath, path);
         renameError = null;
         break;
       } catch (error) {
         renameError = error;
         if (attempt < 4) {
-          const waitUntil = Date.now() + 10;
-          while (Date.now() < waitUntil) {}
+          await new Promise((resolve) => setTimeout(resolve, 10));
         }
       }
     }
@@ -149,11 +177,6 @@ function writeTextFileAtomic(path, text) {
       throw renameError;
     }
   } catch (error) {
-    if (descriptor !== null) {
-      try {
-        fs.closeSync(descriptor);
-      } catch (_closeError) {}
-    }
     try {
       fs.unlinkSync(tempPath);
     } catch (_removeError) {}
@@ -161,8 +184,14 @@ function writeTextFileAtomic(path, text) {
   }
 }
 
-function writeJson(path, value) {
-  writeTextFileAtomic(path, JSON.stringify(value, null, 2));
+function writeTextFileAtomic(path, text) {
+  const operation = fileWriteTail.then(() => performAtomicWrite(path, text));
+  fileWriteTail = operation.catch(() => {});
+  return operation;
+}
+
+async function writeJson(path, value) {
+  await writeTextFileAtomic(path, JSON.stringify(value, null, 2));
 }
 
 function readJson(path) {
@@ -448,28 +477,31 @@ function findPendingCommand() {
   return null;
 }
 
-function updateCommandStatus(path, payload, status) {
+async function updateCommandStatus(path, payload, status) {
   const next = {};
   Object.keys(payload).forEach((key) => {
     next[key] = payload[key];
   });
   next.status = status;
-  writeJson(path, next);
+  await writeJson(path, next);
 }
 
-function writeResult(context, result) {
+async function writeResult(context, result) {
   const paths = bridgePaths();
-  writeJson(context.resultFile, result);
+  await writeJson(context.resultFile, result);
   if (context.resultFile !== paths.resultFile) {
-    writeJson(paths.resultFile, result);
+    await writeJson(paths.resultFile, result);
   }
 }
 
-function writeHeartbeat(status, lastError) {
+async function writeHeartbeat(status, lastError) {
+  if (shuttingDown) {
+    return;
+  }
   const paths = bridgePaths();
   const document = activeDocument();
   const timestamp = nowIso();
-  writeJson(paths.heartbeatFile, {
+  await writeJson(paths.heartbeatFile, {
     protocolVersion: 1,
     instanceId,
     hostId: "indesign",
@@ -503,8 +535,8 @@ async function executePendingCommand(context) {
   const requestId = payload.requestId || payload.request_id || null;
   currentRequestId = requestId;
   lastStatus = "running";
-  writeHeartbeat("running", null);
-  updateCommandStatus(context.commandFile, payload, "running");
+  await writeHeartbeat("running", null);
+  await updateCommandStatus(context.commandFile, payload, "running");
 
   let result;
   try {
@@ -519,21 +551,24 @@ async function executePendingCommand(context) {
       message: errorText(error),
     });
   }
-  writeResult(context, result);
+  await writeResult(context, result);
   const finalStatus = result.status === "error" ? "error" : "completed";
-  updateCommandStatus(context.commandFile, payload, finalStatus);
+  await updateCommandStatus(context.commandFile, payload, finalStatus);
   currentRequestId = null;
   lastStatus = finalStatus;
-  writeHeartbeat(finalStatus, finalStatus === "error" ? result.message : null);
+  await writeHeartbeat(
+    finalStatus,
+    finalStatus === "error" ? result.message : null,
+  );
 }
 
 async function pollOnce() {
-  if (pollInFlight) {
+  if (shuttingDown || pollInFlight) {
     return;
   }
   pollInFlight = true;
   try {
-    ensureBridgeDirectories();
+    await ensureBridgeDirectories();
     const context = findPendingCommand();
     if (context) {
       await executePendingCommand(context);
@@ -543,7 +578,7 @@ async function pollOnce() {
   } catch (error) {
     lastStatus = "error";
     try {
-      writeHeartbeat("error", errorText(error));
+      await writeHeartbeat("error", errorText(error));
     } catch (_heartbeatError) {}
     console.error("InDesign MCP bridge poll failed:", error);
   } finally {
@@ -551,24 +586,74 @@ async function pollOnce() {
   }
 }
 
+function schedulePoll() {
+  if (shuttingDown || pollInFlight) {
+    return;
+  }
+  activePollPromise = pollOnce();
+  activePollPromise.catch((error) => console.error(error));
+}
+
+function removeHeartbeatFile() {
+  const path = bridgePaths().heartbeatFile;
+  try {
+    fs.unlinkSync(path);
+  } catch (_error) {}
+}
+
+function finishShutdown() {
+  removeHeartbeatFile();
+  if (lifecycleResolve) {
+    const resolve = lifecycleResolve;
+    lifecycleResolve = null;
+    resolve();
+  }
+}
+
+function handleBeforeQuit() {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  if (pollIntervalId !== null) {
+    clearInterval(pollIntervalId);
+    pollIntervalId = null;
+  }
+  if (heartbeatIntervalId !== null) {
+    clearInterval(heartbeatIntervalId);
+    heartbeatIntervalId = null;
+  }
+  // beforeQuit does not wait for promise continuations. Remove the published
+  // heartbeat synchronously, then repeat after any in-flight write settles.
+  removeHeartbeatFile();
+  try {
+    app.removeEventListener("beforeQuit", handleBeforeQuit);
+  } catch (_error) {}
+
+  Promise.resolve(activePollPromise)
+    .catch(() => {})
+    .then(() => fileWriteTail)
+    .then(finishShutdown, finishShutdown);
+}
+
 async function runForever() {
-  ensureBridgeDirectories();
-  writeHeartbeat("initializing", null);
+  await ensureBridgeDirectories();
+  await writeHeartbeat("initializing", null);
   await pollOnce();
-  setInterval(() => {
-    pollOnce().catch((error) => console.error(error));
-  }, POLL_INTERVAL_MS);
-  setInterval(() => {
-    try {
-      writeHeartbeat(lastStatus, null);
-    } catch (error) {
-      console.error("InDesign MCP heartbeat failed:", error);
-    }
+  const lifecyclePromise = new Promise((resolve) => {
+    lifecycleResolve = resolve;
+  });
+  app.addEventListener("beforeQuit", handleBeforeQuit);
+  pollIntervalId = setInterval(schedulePoll, POLL_INTERVAL_MS);
+  heartbeatIntervalId = setInterval(() => {
+    writeHeartbeat(lastStatus, null).catch((error) =>
+      console.error("InDesign MCP heartbeat failed:", error),
+    );
   }, HEARTBEAT_INTERVAL_MS);
 
   // Startup scripts exit when their top-level promise resolves. Keeping this
   // promise pending makes the bridge available for the full InDesign session.
-  return new Promise(() => {});
+  return lifecyclePromise;
 }
 
 await runForever();
