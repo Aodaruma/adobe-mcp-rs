@@ -33,10 +33,11 @@ packagerは`~/.dotnet/tools/wix.exe`をmachine-wide PATHより優先する。rep
 
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
+MACOS_SIGNING_MODE=unsigned REQUIRE_PKG=true \
+  ./scripts/package-macos.sh ./dist/macos
 ```
 
-packagerは5 binaryを`aarch64-apple-darwin`と`x86_64-apple-darwin`向けに別々にビルドし、`lipo`でuniversal2へ結合する。archiveのstage、pkgroot、生成pkgを展開したpayloadの各段階で、全binaryに`arm64`と`x86_64`が含まれることを検証する。Xcode Command Line Toolsの`lipo`、`pkgbuild`、`pkgutil`が必要となる。
+packagerは5 binaryを`aarch64-apple-darwin`と`x86_64-apple-darwin`向けに別々にビルドし、`lipo`でuniversal2へ結合する。archiveのstage、pkgroot、生成pkgを展開したpayloadの各段階で、全binaryに`arm64`と`x86_64`が含まれることを検証する。既定の`MACOS_SIGNING_MODE=unsigned`は開発検証用であり、配布時は[署名・公証・RC運用ガイド](signing-and-rc.md)に従ってDeveloper ID Application/Installerを分離した`release` modeを使う。Xcode Command Line Toolsの`lipo`、`pkgbuild`、`productbuild`、`pkgutil`が必要となる。
 
 ## 3. E2E 検証チェックリスト
 
@@ -114,6 +115,7 @@ packagerは5 binaryを`aarch64-apple-darwin`と`x86_64-apple-darwin`向けに別
    - `rustup target list --installed`で`aarch64-apple-darwin`と`x86_64-apple-darwin`を確認
    - `xcode-select -p`と`lipo -archs <binary>`を確認
    - `pkgbuild --version` を確認
+   - `productbuild --help`を確認
 3. AE結果が返らない:
    - `~/Documents/ae-mcp-bridge/ae_command.json` の `status` を確認
 4. Windows MSI で host integration の実行結果が確認できない:

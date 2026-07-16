@@ -104,7 +104,8 @@ jobs:
       MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
       MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
       MAC_KEYCHAIN_PASSWORD: ${{ secrets.MAC_KEYCHAIN_PASSWORD }}
-      MAC_CODESIGN_IDENTITY: ${{ secrets.MAC_CODESIGN_IDENTITY }}
+      MAC_APPLICATION_IDENTITY: ${{ secrets.MAC_APPLICATION_IDENTITY }}
+      MAC_INSTALLER_IDENTITY: ${{ secrets.MAC_INSTALLER_IDENTITY }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -117,13 +118,24 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Build macOS installer artifacts
+      - name: Select macOS signing mode
+        id: signing
         run: |
-          chmod +x ./scripts/package-macos.sh ./scripts/notarize-macos.sh
-          REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
+          if [[ -n "$MAC_CERT_P12_BASE64" && -n "$MAC_CERT_PASSWORD" && \
+                -n "$MAC_APPLICATION_IDENTITY" && -n "$MAC_INSTALLER_IDENTITY" && \
+                -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && \
+                -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "::error::Tagged macOS releases require both Developer ID identities, the certificate bundle, and notarization credentials."
+            exit 1
+          else
+            echo "mode=unsigned" >> "$GITHUB_OUTPUT"
+            echo "::warning::Building explicit unsigned macOS development artifacts."
+          fi
 
       - name: Import Apple certificate
-        if: ${{ env.MAC_CERT_P12_BASE64 != '' && env.MAC_CERT_PASSWORD != '' }}
+        if: ${{ steps.signing.outputs.mode == 'release' }}
         run: |
           KEYCHAIN_PASS="${MAC_KEYCHAIN_PASSWORD:-temp-pass}"
           CERT_PATH="$RUNNER_TEMP/macos-cert.p12"
@@ -133,18 +145,20 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/productsign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
-      - name: Notarize macOS artifacts
-        if: ${{ env.MAC_CODESIGN_IDENTITY != '' && env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' }}
+      - name: Build macOS installer artifacts
+        run: |
+          chmod +x ./scripts/package-macos.sh ./scripts/notarize-macos.sh
+          MACOS_SIGNING_MODE="${{ steps.signing.outputs.mode }}" \
+            REQUIRE_PKG=true \
+            ./scripts/package-macos.sh ./dist/macos
+
+      - name: Notarize macOS product package
+        if: ${{ steps.signing.outputs.mode == 'release' }}
         run: |
           ./scripts/notarize-macos.sh ./dist/macos
-
-      - name: Warn when macOS notarization is skipped
-        if: ${{ env.MAC_CODESIGN_IDENTITY == '' || env.APPLE_ID == '' || env.APPLE_TEAM_ID == '' || env.APPLE_APP_SPECIFIC_PASSWORD == '' }}
-        run: |
-          echo "::warning::macOS notarization skipped. Set MAC_CODESIGN_IDENTITY, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_SPECIFIC_PASSWORD."
 
       - name: Upload macOS RC artifacts
         uses: actions/upload-artifact@v7
