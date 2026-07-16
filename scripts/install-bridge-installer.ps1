@@ -20,7 +20,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$PackageVersion = "0.5.0"
+$PackageVersion = "0.5.1"
 $InstallerStateRoot = Join-Path $env:ProgramData "AfterEffectsMcp"
 $InstallSelectionPath = Join-Path $InstallerStateRoot "install-selection.json"
 $InstallReportPath = Join-Path $InstallerStateRoot "install-report.json"

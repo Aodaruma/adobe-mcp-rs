@@ -1,5 +1,5 @@
 (function () {
-  var BRIDGE_VERSION = "0.5.0";
+  var BRIDGE_VERSION = "0.5.1";
   var fs = safeRequire("fs");
   var os = safeRequire("os");
   var uxp = safeRequire("uxp");

@@ -1,6 +1,6 @@
 /* Illustrator MCP Bridge (CEP) ExtendScript */
 
-var AI_MCP_BRIDGE_VERSION = "0.5.0";
+var AI_MCP_BRIDGE_VERSION = "0.5.1";
 
 if (typeof JSON === "undefined") {
     JSON = {};
