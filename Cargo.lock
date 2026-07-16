@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ae-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bridge-core",
@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "ai-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "mcp-core",
  "serde",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "ai-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ai-core",
  "anyhow",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-contract-tests"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ai-core",
  "anyhow",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "daemon-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bridge-core",
@@ -418,7 +418,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "id-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "mcp-core",
  "serde",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "id-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bridge-core",
@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -572,7 +572,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "platform-service"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "pr-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "mcp-core",
  "serde",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "pr-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bridge-core",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "ps-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "mcp-core",
  "serde",
@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "ps-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bridge-core",

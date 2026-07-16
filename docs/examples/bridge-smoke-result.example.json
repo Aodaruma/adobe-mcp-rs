@@ -19,13 +19,13 @@
     "lifecycleMode": "startup-headless",
     "runtimeId": "redacted-runtime",
     "runtimeStartedAt": "2026-07-15T11:59:55Z",
-    "bridgeVersion": "0.5.0",
+    "bridgeVersion": "0.5.1",
     "instanceId": "redacted-instance",
     "capabilities": ["ping", "run-jsx"]
   },
   "daemon": {
     "binary": "ae-mcp",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "address": "127.0.0.1:47655",
     "startOrder": "host-first"
   },
