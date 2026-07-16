@@ -575,6 +575,7 @@ name = "platform-service"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "libc",
 ]
 
 [[package]]

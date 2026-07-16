@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::process::Stdio;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {
@@ -92,18 +94,42 @@ fn status(cfg: &ServiceConfig) -> Result<String> {
 fn install(cfg: &ServiceConfig) -> Result<String> {
     let plist_path = plist_path(&cfg.service_name)?;
     let plist_body = build_launchd_plist(cfg)?;
-    std::fs::write(&plist_path, plist_body)
-        .with_context(|| format!("failed to write plist: {}", plist_path.display()))?;
+    ensure_launch_agents_dir(&plist_path)?;
 
-    let output = Command::new("launchctl")
-        .args(["load", "-w", plist_path.to_string_lossy().as_ref()])
-        .output()
-        .with_context(|| "failed to execute 'launchctl load'")?;
-    if !output.status.success() {
-        return Err(anyhow!(render_output("launchctl load", output)));
+    let plist_changed = match std::fs::read_to_string(&plist_path) {
+        Ok(existing) => existing != plist_body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read plist: {}", plist_path.display()));
+        }
+    };
+    if plist_changed {
+        std::fs::write(&plist_path, plist_body)
+            .with_context(|| format!("failed to write plist: {}", plist_path.display()))?;
     }
+
+    let domain = launchd_domain();
+    let target = launchd_service_target(&domain, &cfg.service_name);
+    let was_loaded = launchd_service_details(&target)?.is_some();
+    if was_loaded && plist_changed {
+        bootout(&target)?;
+    }
+    if !was_loaded || plist_changed {
+        bootstrap(&domain, &plist_path)?;
+    }
+
+    // kickstart without `-k` starts an idle job but does not replace a running
+    // daemon, so repeated install calls do not create a duplicate process.
+    kickstart(&target)?;
+
+    let verb = if was_loaded && !plist_changed {
+        "already installed"
+    } else {
+        "installed"
+    };
     Ok(format!(
-        "launch agent installed at {}",
+        "launch agent {verb} and loaded at {}",
         plist_path.display()
     ))
 }
@@ -111,58 +137,82 @@ fn install(cfg: &ServiceConfig) -> Result<String> {
 #[cfg(target_os = "macos")]
 fn uninstall(cfg: &ServiceConfig) -> Result<String> {
     let plist_path = plist_path(&cfg.service_name)?;
-    let _ = Command::new("launchctl")
-        .args(["unload", "-w", plist_path.to_string_lossy().as_ref()])
-        .output();
-    if plist_path.exists() {
+    let domain = launchd_domain();
+    let target = launchd_service_target(&domain, &cfg.service_name);
+    let was_loaded = bootout_if_loaded(&target)?;
+    let had_plist = plist_path.exists();
+    if had_plist {
         std::fs::remove_file(&plist_path)
             .with_context(|| format!("failed to remove plist: {}", plist_path.display()))?;
     }
-    Ok("launch agent uninstalled".to_string())
+    if was_loaded || had_plist {
+        Ok("launch agent stopped and uninstalled".to_string())
+    } else {
+        Ok("launch agent already uninstalled".to_string())
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn start(cfg: &ServiceConfig) -> Result<String> {
-    let output = Command::new("launchctl")
-        .args(["start", &cfg.service_name])
-        .output()
-        .with_context(|| "failed to execute 'launchctl start'")?;
-    if !output.status.success() {
-        return Err(anyhow!(render_output("launchctl start", output)));
+    let plist_path = plist_path(&cfg.service_name)?;
+    if !plist_path.is_file() {
+        return Err(anyhow!(
+            "launch agent is not installed at {}; run `service install` first",
+            plist_path.display()
+        ));
     }
-    Ok("launch agent started".to_string())
+
+    let domain = launchd_domain();
+    let target = launchd_service_target(&domain, &cfg.service_name);
+    let was_loaded = launchd_service_details(&target)?.is_some();
+    if !was_loaded {
+        bootstrap(&domain, &plist_path)?;
+    }
+    kickstart(&target)?;
+
+    if was_loaded {
+        Ok("launch agent already loaded; ensured it is running".to_string())
+    } else {
+        Ok("launch agent loaded and started".to_string())
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn stop(cfg: &ServiceConfig) -> Result<String> {
-    let output = Command::new("launchctl")
-        .args(["stop", &cfg.service_name])
-        .output()
-        .with_context(|| "failed to execute 'launchctl stop'")?;
-    if !output.status.success() {
-        return Err(anyhow!(render_output("launchctl stop", output)));
+    let domain = launchd_domain();
+    let target = launchd_service_target(&domain, &cfg.service_name);
+    if bootout_if_loaded(&target)? {
+        Ok("launch agent stopped and unloaded".to_string())
+    } else {
+        Ok("launch agent already stopped (not loaded)".to_string())
     }
-    Ok("launch agent stopped".to_string())
 }
 
 #[cfg(target_os = "macos")]
 fn status(cfg: &ServiceConfig) -> Result<String> {
-    let output = Command::new("launchctl")
-        .args(["list"])
-        .output()
-        .with_context(|| "failed to execute 'launchctl list'")?;
-    if !output.status.success() {
-        return Err(anyhow!(render_output("launchctl list", output)));
-    }
-    let all = String::from_utf8_lossy(&output.stdout).to_string();
-    let lines = all
-        .lines()
-        .filter(|line| line.contains(&cfg.service_name))
-        .collect::<Vec<_>>();
-    if lines.is_empty() {
-        Ok(format!("{}: not listed", cfg.service_name))
+    let plist_path = plist_path(&cfg.service_name)?;
+    let installation = if plist_path.is_file() {
+        "installed"
     } else {
-        Ok(lines.join("\n"))
+        "not installed"
+    };
+    let domain = launchd_domain();
+    let target = launchd_service_target(&domain, &cfg.service_name);
+    match launchd_service_details(&target)? {
+        Some(details) => {
+            let state = launchd_detail_value(&details, "state").unwrap_or("unknown");
+            let pid = launchd_detail_value(&details, "pid")
+                .map(|value| format!(", pid={value}"))
+                .unwrap_or_default();
+            Ok(format!(
+                "{}: loaded, state={state}{pid}, plist={installation}",
+                cfg.service_name
+            ))
+        }
+        None => Ok(format!(
+            "{}: stopped (not loaded), plist={installation}",
+            cfg.service_name
+        )),
     }
 }
 
@@ -409,17 +459,130 @@ fn autostart_status(_cfg: &AutostartConfig) -> Result<String> {
 #[cfg(target_os = "macos")]
 fn plist_path(service_name: &str) -> Result<PathBuf> {
     let home = std::env::var("HOME").with_context(|| "HOME is not set")?;
-    Ok(std::path::Path::new(&home)
-        .join("Library")
+    Ok(plist_path_for_home(
+        std::path::Path::new(&home),
+        service_name,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn plist_path_for_home(home: &std::path::Path, service_name: &str) -> PathBuf {
+    home.join("Library")
         .join("LaunchAgents")
-        .join(format!("{service_name}.plist")))
+        .join(format!("{service_name}.plist"))
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_launch_agents_dir(plist_path: &std::path::Path) -> Result<()> {
+    let parent = plist_path
+        .parent()
+        .ok_or_else(|| anyhow!("launch agent plist path has no parent"))?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create launch agent directory: {}",
+            parent.display()
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_domain() -> String {
+    // SAFETY: geteuid takes no pointers and has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    format!("gui/{uid}")
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_service_target(domain: &str, service_name: &str) -> String {
+    format!("{domain}/{service_name}")
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_service_details(target: &str) -> Result<Option<String>> {
+    let output = Command::new("launchctl")
+        .args(["print", target])
+        .output()
+        .with_context(|| "failed to execute 'launchctl print'")?;
+    if output.status.success() {
+        return Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()));
+    }
+    if launchd_service_not_found(&output) {
+        return Ok(None);
+    }
+    Err(anyhow!(render_output("launchctl print", output)))
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_service_not_found(output: &std::process::Output) -> bool {
+    output.status.code() == Some(113)
+        && String::from_utf8_lossy(&output.stderr).contains("Could not find service")
+}
+
+#[cfg(target_os = "macos")]
+fn bootstrap(domain: &str, plist_path: &std::path::Path) -> Result<()> {
+    let output = Command::new("launchctl")
+        .arg("bootstrap")
+        .arg(domain)
+        .arg(plist_path)
+        .output()
+        .with_context(|| "failed to execute 'launchctl bootstrap'")?;
+    if !output.status.success() {
+        return Err(anyhow!(render_output("launchctl bootstrap", output)));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn bootout(target: &str) -> Result<()> {
+    let output = Command::new("launchctl")
+        .args(["bootout", target])
+        .output()
+        .with_context(|| "failed to execute 'launchctl bootout'")?;
+    if !output.status.success() && !launchd_service_not_found(&output) {
+        return Err(anyhow!(render_output("launchctl bootout", output)));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn bootout_if_loaded(target: &str) -> Result<bool> {
+    if launchd_service_details(target)?.is_none() {
+        return Ok(false);
+    }
+    bootout(target)?;
+    if launchd_service_details(target)?.is_some() {
+        return Err(anyhow!(
+            "launchctl bootout returned successfully, but {target} is still loaded"
+        ));
+    }
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+fn kickstart(target: &str) -> Result<()> {
+    let output = Command::new("launchctl")
+        .args(["kickstart", target])
+        .output()
+        .with_context(|| "failed to execute 'launchctl kickstart'")?;
+    if !output.status.success() {
+        return Err(anyhow!(render_output("launchctl kickstart", output)));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_detail_value<'a>(details: &'a str, key: &str) -> Option<&'a str> {
+    details.lines().find_map(|line| {
+        let (candidate, value) = line.trim().split_once(" = ")?;
+        (candidate == key).then_some(value.trim())
+    })
 }
 
 #[cfg(target_os = "macos")]
 fn build_launchd_plist(cfg: &ServiceConfig) -> Result<String> {
     let args = std::iter::once(cfg.binary_path.to_string_lossy().to_string())
         .chain(cfg.args.iter().cloned())
-        .map(|x| format!("<string>{x}</string>"))
+        .map(|x| format!("<string>{}</string>", escape_xml(&x)))
         .collect::<Vec<_>>()
         .join("\n        ");
 
@@ -441,9 +604,19 @@ fn build_launchd_plist(cfg: &ServiceConfig) -> Result<String> {
 </dict>
 </plist>
 "#,
-        label = cfg.service_name,
+        label = escape_xml(&cfg.service_name),
         args = args
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn render_output(command: &str, output: std::process::Output) -> String {
@@ -634,6 +807,71 @@ mod tests {
         assert!(rendered.contains("dummy failed"));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_agents_directory_is_created_for_a_new_home() {
+        let home = unique_test_dir();
+        let plist = plist_path_for_home(&home, "com.example.AdobeMcpTest");
+        assert!(!plist.parent().expect("plist parent").exists());
+
+        ensure_launch_agents_dir(&plist).expect("create LaunchAgents directory");
+
+        assert!(home.join("Library/LaunchAgents").is_dir());
+        std::fs::remove_dir_all(home).expect("remove test home");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchd_plist_escapes_program_arguments() {
+        let cfg = ServiceConfig {
+            service_name: "com.example.Adobe&Mcp".to_string(),
+            display_name: "test".to_string(),
+            description: "test".to_string(),
+            binary_path: PathBuf::from("/Applications/A&B/<daemon>"),
+            args: vec!["--config=a&b\"c".to_string()],
+        };
+
+        let plist = build_launchd_plist(&cfg).expect("build plist");
+
+        assert!(plist.contains("com.example.Adobe&amp;Mcp"));
+        assert!(plist.contains("/Applications/A&amp;B/&lt;daemon&gt;"));
+        assert!(plist.contains("--config=a&amp;b&quot;c"));
+        assert!(plist.contains("<key>KeepAlive</key>\n    <true/>"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchd_details_report_top_level_state_and_pid() {
+        let details = concat!(
+            "gui/501/com.example.AdobeMcpTest = {\n",
+            "\tstate = running\n",
+            "\tpid = 4321\n",
+            "}\n"
+        );
+
+        assert_eq!(launchd_detail_value(details, "state"), Some("running"));
+        assert_eq!(launchd_detail_value(details, "pid"), Some("4321"));
+        assert_eq!(launchd_detail_value(details, "id"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchd_not_found_is_distinguished_from_other_failures() {
+        let missing = std::process::Output {
+            status: failure_status(113),
+            stdout: vec![],
+            stderr: b"Could not find service \"com.example.missing\" in domain".to_vec(),
+        };
+        let unrelated = std::process::Output {
+            status: failure_status(113),
+            stdout: vec![],
+            stderr: b"bootstrap failed: 113".to_vec(),
+        };
+
+        assert!(launchd_service_not_found(&missing));
+        assert!(!launchd_service_not_found(&unrelated));
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn build_windows_command_line_quotes_spaces() {
@@ -791,5 +1029,24 @@ mod tests {
     fn success_status() -> std::process::ExitStatus {
         use std::os::unix::process::ExitStatusExt;
         std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn failure_status(code: i32) -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code << 8)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn unique_test_dir() -> PathBuf {
+        let unique = format!(
+            "adobe-mcp-platform-service-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        );
+        std::env::temp_dir().join(unique)
     }
 }
