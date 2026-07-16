@@ -1,6 +1,6 @@
 # GAリリースチェックリスト（Stage 7）
 
-- 最終更新: 2026-07-15
+- 最終更新: 2026-07-16
 
 ## 1. 事前確認
 
@@ -15,12 +15,16 @@
 
 ## 2. 署名・公証
 
+signed modeでは、次の1〜6を確認する。
+
 1. Windows署名済み（`.exe` / `.msi`）
 2. macOSの5 universal2 binaryがDeveloper ID Applicationで署名され、`codesign --verify --strict --verbose=2`に成功
 3. 最終pkgが別のDeveloper ID Installer identityで署名され、`pkgutil --check-signature`に成功
 4. 署名済み最終pkgの`notarytool submit --wait`、`stapler staple`、`stapler validate`、`spctl --assess --type install`に成功
 5. Application/Installer identity、binary 5件、最終pkg、公証submission IDを含む検証結果を保存
-6. unsigned modeのartifactをGA/RC releaseへ使用していないことを確認
+6. signed modeではunsigned artifactが混入していないことを確認
+7. 一時的なunsigned例外では、OSごとに必須署名secretがすべて未設定であることを確認。同じOSのsecretが一部だけ設定された状態ではリリースしない
+8. unsigned成果物では、該当asset名の`-unsigned`、リリースノートのGatekeeper / Microsoft Defender SmartScreen警告、Issue #31への参照を確認
 
 ## 3. ドキュメント
 
@@ -40,9 +44,11 @@
 6. Windows/macOS artifactに`id-mcp`、InDesign Startup Script、専用installerが含まれ、macOS pkgがapplication側の`Scripts/Startup Scripts`へ固定bridgeを配置することを確認
 7. Windows/macOS installerがCodex設定の不足MCP tableだけを追加し、既存tableを保持し、再実行しても重複しないことを確認
 8. 専用InDesign installerのinstall/remove dry-runを確認し、固定bridge file以外を削除しないことを確認
+9. unsigned modeでは、該当OSの全asset名が`-unsigned`で識別でき、リリースノートが未署名配布とOS警告を明記していることを確認
 
 ## 5. リリース後
 
 1. 初期ユーザーの導入可否確認
 2. 重大不具合（P1）監視
 3. Hotfix要否判断
+4. Issue #31でDeveloper ID / Authenticode署名への移行状況を追跡
