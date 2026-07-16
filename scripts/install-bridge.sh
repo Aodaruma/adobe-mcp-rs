@@ -4,28 +4,38 @@ set -euo pipefail
 AE_PATH=""
 DRY_RUN="false"
 AE_PATHS=()
+AE_PATH_COUNT=0
 PREMIERE_PATHS=()
+PREMIERE_PATH_COUNT=0
+# Used by the isolated regression test; normal installs keep the macOS defaults.
+APPLICATIONS_DIR="${ADOBE_MCP_APPLICATIONS_DIR:-/Applications}"
 
 add_unique_path() {
   local candidate="$1"
   local existing
-  for existing in "${AE_PATHS[@]}"; do
-    if [[ "$existing" == "$candidate" ]]; then
-      return
-    fi
-  done
+  if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
+    for existing in "${AE_PATHS[@]}"; do
+      if [[ "$existing" == "$candidate" ]]; then
+        return
+      fi
+    done
+  fi
   AE_PATHS+=("$candidate")
+  AE_PATH_COUNT=$((AE_PATH_COUNT + 1))
 }
 
 add_unique_premiere_path() {
   local candidate="$1"
   local existing
-  for existing in "${PREMIERE_PATHS[@]}"; do
-    if [[ "$existing" == "$candidate" ]]; then
-      return
-    fi
-  done
+  if [[ "$PREMIERE_PATH_COUNT" -gt 0 ]]; then
+    for existing in "${PREMIERE_PATHS[@]}"; do
+      if [[ "$existing" == "$candidate" ]]; then
+        return
+      fi
+    done
+  fi
   PREMIERE_PATHS+=("$candidate")
+  PREMIERE_PATH_COUNT=$((PREMIERE_PATH_COUNT + 1))
 }
 
 while [[ $# -gt 0 ]]; do
@@ -75,16 +85,16 @@ if [[ -n "$AE_PATH" ]]; then
   add_unique_path "$AE_PATH"
 else
   CANDIDATES=(
-    "/Applications/Adobe After Effects 2030"
-    "/Applications/Adobe After Effects 2029"
-    "/Applications/Adobe After Effects 2028"
-    "/Applications/Adobe After Effects 2027"
-    "/Applications/Adobe After Effects 2026"
-    "/Applications/Adobe After Effects 2025"
-    "/Applications/Adobe After Effects 2024"
-    "/Applications/Adobe After Effects 2023"
-    "/Applications/Adobe After Effects 2022"
-    "/Applications/Adobe After Effects 2021"
+    "$APPLICATIONS_DIR/Adobe After Effects 2030"
+    "$APPLICATIONS_DIR/Adobe After Effects 2029"
+    "$APPLICATIONS_DIR/Adobe After Effects 2028"
+    "$APPLICATIONS_DIR/Adobe After Effects 2027"
+    "$APPLICATIONS_DIR/Adobe After Effects 2026"
+    "$APPLICATIONS_DIR/Adobe After Effects 2025"
+    "$APPLICATIONS_DIR/Adobe After Effects 2024"
+    "$APPLICATIONS_DIR/Adobe After Effects 2023"
+    "$APPLICATIONS_DIR/Adobe After Effects 2022"
+    "$APPLICATIONS_DIR/Adobe After Effects 2021"
   )
 
   for path in "${CANDIDATES[@]}"; do
@@ -94,15 +104,15 @@ else
   done
 
   while IFS= read -r path; do
-    case "$path" in
-      /Applications/Adobe\ After\ Effects\ [0-9][0-9][0-9][0-9])
+    case "${path##*/}" in
+      Adobe\ After\ Effects\ [0-9][0-9][0-9][0-9])
         add_unique_path "$path"
         ;;
     esac
-  done < <(find /Applications -maxdepth 1 -type d -name "Adobe After Effects *" 2>/dev/null | sort -r)
+  done < <(find "$APPLICATIONS_DIR" -maxdepth 1 -type d -name "Adobe After Effects *" 2>/dev/null | sort -r)
 fi
 
-if [[ "${#AE_PATHS[@]}" -eq 0 ]]; then
+if [[ "$AE_PATH_COUNT" -eq 0 ]]; then
   echo "After Effects path not found. Skipping AE bridge install."
 else
   echo "Source      : $SOURCE_SCRIPT"
@@ -124,7 +134,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
   exit 0
 fi
 
-if [[ "${#AE_PATHS[@]}" -gt 0 ]]; then
+if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
   for ae in "${AE_PATHS[@]}"; do
     DEST_DIR="$ae/Scripts/ScriptUI Panels"
     DEST_FILE="$DEST_DIR/mcp-bridge-auto.jsx"
@@ -152,9 +162,9 @@ if [[ "${#AE_PATHS[@]}" -gt 0 ]]; then
   done
 fi
 
-if [[ "${#AE_PATHS[@]}" -gt 0 ]]; then
+if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
   echo
-  echo "Bridge script installed to ${#AE_PATHS[@]} location(s)."
+  echo "Bridge script installed to $AE_PATH_COUNT location(s)."
   for ae in "${AE_PATHS[@]}"; do
     echo "  - $ae/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx"
     echo "  - $ae/Scripts/Startup/mcp-bridge-startup.jsx"
@@ -172,13 +182,13 @@ PREMIERE_SOURCE="$REPO_ROOT/src/premiere/cep/mcp-bridge-premiere"
 PREMIERE_UXP_MANIFEST="$REPO_ROOT/src/premiere/uxp/mcp-bridge-premiere/manifest.json"
 if [[ -d "$PREMIERE_SOURCE" ]]; then
   PREMIERE_CANDIDATES=(
-    "/Applications/Adobe Premiere Pro 2030"
-    "/Applications/Adobe Premiere Pro 2029"
-    "/Applications/Adobe Premiere Pro 2028"
-    "/Applications/Adobe Premiere Pro 2027"
-    "/Applications/Adobe Premiere Pro 2026"
-    "/Applications/Adobe Premiere Pro 2025"
-    "/Applications/Adobe Premiere Pro 2024"
+    "$APPLICATIONS_DIR/Adobe Premiere Pro 2030"
+    "$APPLICATIONS_DIR/Adobe Premiere Pro 2029"
+    "$APPLICATIONS_DIR/Adobe Premiere Pro 2028"
+    "$APPLICATIONS_DIR/Adobe Premiere Pro 2027"
+    "$APPLICATIONS_DIR/Adobe Premiere Pro 2026"
+    "$APPLICATIONS_DIR/Adobe Premiere Pro 2025"
+    "$APPLICATIONS_DIR/Adobe Premiere Pro 2024"
   )
 
   for path in "${PREMIERE_CANDIDATES[@]}"; do
@@ -188,18 +198,22 @@ if [[ -d "$PREMIERE_SOURCE" ]]; then
   done
 
   while IFS= read -r path; do
-    case "$path" in
-      /Applications/Adobe\ Premiere\ Pro\ [0-9][0-9][0-9][0-9])
+    case "${path##*/}" in
+      Adobe\ Premiere\ Pro\ [0-9][0-9][0-9][0-9])
         add_unique_premiere_path "$path"
         ;;
     esac
-  done < <(find /Applications -maxdepth 1 -type d -name "Adobe Premiere Pro *" 2>/dev/null | sort -r)
+  done < <(find "$APPLICATIONS_DIR" -maxdepth 1 -type d -name "Adobe Premiere Pro *" 2>/dev/null | sort -r)
 
-  if [[ "${#PREMIERE_PATHS[@]}" -eq 0 ]]; then
+  if [[ "$PREMIERE_PATH_COUNT" -eq 0 ]]; then
     echo
     echo "No Adobe Premiere Pro installation detected. Skipped Premiere bridge install."
   else
-    if [[ "$(id -u)" -eq 0 ]]; then
+    echo
+    echo "Detected Adobe Premiere Pro installations: $PREMIERE_PATH_COUNT"
+    if [[ -n "${ADOBE_MCP_CEP_ROOT:-}" ]]; then
+      CEP_ROOT="$ADOBE_MCP_CEP_ROOT"
+    elif [[ "$(id -u)" -eq 0 ]]; then
       CEP_ROOT="/Library/Application Support/Adobe/CEP/extensions"
     else
       CEP_ROOT="$HOME/Library/Application Support/Adobe/CEP/extensions"
@@ -229,16 +243,18 @@ fi
 INDESIGN_SOURCE="$REPO_ROOT/src/indesign/uxp/mcp-bridge-indesign.idjs"
 INDESIGN_PREFERENCE_ROOT="$HOME/Library/Preferences/Adobe InDesign"
 INDESIGN_TARGETS=()
+INDESIGN_TARGET_COUNT=0
 if [[ -f "$INDESIGN_SOURCE" && -d "$INDESIGN_PREFERENCE_ROOT" ]]; then
   while IFS= read -r locale_dir; do
     INDESIGN_TARGETS+=("$locale_dir/Scripts/Startup Scripts")
+    INDESIGN_TARGET_COUNT=$((INDESIGN_TARGET_COUNT + 1))
   done < <(find "$INDESIGN_PREFERENCE_ROOT" -mindepth 2 -maxdepth 2 -type d -path '*/Version */??_??' 2>/dev/null | sort)
 fi
 
 echo
 if [[ ! -f "$INDESIGN_SOURCE" ]]; then
   echo "InDesign UXP startup bridge source not found. Skipped InDesign deployment."
-elif [[ "${#INDESIGN_TARGETS[@]}" -eq 0 ]]; then
+elif [[ "$INDESIGN_TARGET_COUNT" -eq 0 ]]; then
   echo "No existing InDesign preference profile was detected. Skipped InDesign deployment."
   echo "See docs/setup-codex-mcp.md for the manual Startup Scripts path."
 else
