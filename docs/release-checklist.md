@@ -11,6 +11,7 @@
 5. 5 binary の OS 別 help を確認（Windows は `autostart` のみ、macOS は `service` のみ）
 6. Windows は各 binary で `autostart install|start|status|stop|uninstall`、macOS は `service install|start|status|stop|uninstall` を確認
 7. unsupported なサブコマンドと起動・停止未完了が成功終了しないことを確認
+8. macOS archiveのstageとpkg展開後payloadにある5 binaryが、すべて`arm64`と`x86_64`を含むuniversal2であることを`lipo -archs`で確認
 
 ## 2. 署名・公証
 

@@ -118,6 +118,8 @@ fn installers_package_ae_and_indesign_and_only_add_missing_codex_tables() {
     let macos_package = include_str!("../../../scripts/package-macos.sh");
     let macos_repo_installer = include_str!("../../../scripts/install-bridge.sh");
     let macos_codex_installer = include_str!("../../../scripts/install-codex-mcp-config.sh");
+    let installer_workflow = include_str!("../../../.github/workflows/installer-build.yml");
+    let rc_workflow = include_str!("../../../.github/workflows/rc-release.yml");
 
     for required in [
         "ae-mcp.exe",
@@ -171,6 +173,24 @@ fn installers_package_ae_and_indesign_and_only_add_missing_codex_tables() {
     assert!(macos_codex_installer.contains("mcp_servers.$server"));
     assert!(macos_codex_installer.contains("aftereffects"));
     assert!(macos_codex_installer.contains("indesign"));
+
+    for required in [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "lipo -create",
+        "assert_universal_directory \"$STAGE_DIR\" \"stage\"",
+        "assert_universal_directory \"$INSTALL_BIN_DIR\" \"pkgroot payload\"",
+        "pkgutil --expand",
+        "assert_universal_directory \"$PKG_VERIFY_ROOT/payload/usr/local/bin\" \"pkg payload\"",
+    ] {
+        assert!(
+            macos_package.contains(required),
+            "macOS package is missing universal2 contract: {required}"
+        );
+    }
+    for workflow in [installer_workflow, rc_workflow] {
+        assert!(workflow.contains("targets: aarch64-apple-darwin,x86_64-apple-darwin"));
+    }
 }
 
 fn run_command(
