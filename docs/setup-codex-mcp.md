@@ -375,6 +375,14 @@ Windows MSI は初回インストール時に autostart を勝手に有効化し
 
 `service` はユーザーの `~/Library/LaunchAgents` に launchd plist を配置し、`install|start|status|stop|uninstall` を操作します。
 
+- `install`: plistを作成または更新し、現在ユーザーの`gui/<uid>` domainへ`bootstrap`してdaemonを起動する。登録済みの同一設定へ反復実行してもdaemonを置き換えない
+- `start`: plistを保持したまま停止しているjobを再度`bootstrap`し、非`-k`の`kickstart`で稼働を保証する。既に稼働しているdaemonは置き換えない
+- `status`: `launchctl print`を使い、jobのloaded状態、実行状態、PID、plistの有無を表示する
+- `stop`: `bootout`でjobをdomainから外す。plistは保持するため`start`で再開でき、`KeepAlive`による即時再起動は発生しない
+- `uninstall`: loaded状態なら`bootout`した後、plistを削除する
+
+各操作は反復実行できる。`stop`後の`status`は`stopped (not loaded)`、`uninstall`後はこれに`plist=not installed`を併記する。
+
 ## 9. よくあるトラブル
 
 1. `get-results` が stale warning を返す
