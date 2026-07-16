@@ -1,7 +1,7 @@
-# 署名・公証・RC運用ガイド（Stage 6）
+# 署名・公証・タグリリース運用ガイド（Stage 6）
 
 - 最終更新: 2026-07-16
-- 対象: `v*-rc*` タグでの RC リリース運用
+- 対象: `v*` タグでの RC / GA リリース運用
 
 ## 1. 概要
 
@@ -9,7 +9,7 @@ Stage 6 では、配布物の信頼性向上のため以下を実施します。
 
 1. Windows: Authenticode 署名
 2. macOS: Developer ID署名 + Notarization + staple
-3. RCタグでのCI自動化
+3. RC / GAタグでのCI自動化
 
 関連ワークフロー:
 
@@ -69,7 +69,7 @@ MAC_INSTALLER_IDENTITY="Developer ID Installer: Example Org (TEAMID)" \
 3. keychain内のDeveloper ID Installer identity
 4. Apple notarization用資格情報
 
-証明書がない開発環境では、次のようにunsigned経路を明示する。これはuniversal2生成とpkg payload検証には利用できるが、配布可能なrelease artifactではない。
+証明書がない開発環境では、次のようにunsigned経路を明示する。これはuniversal2生成とpkg payload検証に利用できる。通常の一般配布に使用する最終形態ではないが、後述の一時的なunsignedタグリリース例外では警告と識別子を付けて公開できる。
 
 ```bash
 MACOS_SIGNING_MODE=unsigned REQUIRE_PKG=true \
@@ -86,7 +86,7 @@ MACOS_SIGNING_MODE=unsigned REQUIRE_PKG=true \
 4. `APPLE_TEAM_ID`
 5. `APPLE_APP_SPECIFIC_PASSWORD`
 
-RC tag releaseで必須:
+macOS signed releaseで必須:
 
 1. `MAC_CERT_P12_BASE64`
 2. `MAC_CERT_PASSWORD`
@@ -95,16 +95,44 @@ RC tag releaseで必須:
 
 1. `MAC_KEYCHAIN_PASSWORD`。未指定時はworkflow内の固定された一時値を使う
 
-`MAC_CERT_P12_BASE64`は、上記2つのidentityと秘密鍵をCI keychainへimportできるPKCS #12 bundleとする。RC workflowはtag実行時に署名・公証用secretが1つでも不足していれば失敗し、unsigned artifactをreleaseへ進めない。`workflow_dispatch`ではsecret不足時に明示的なunsigned開発artifactを生成する。
+`MAC_CERT_P12_BASE64`は、上記2つのidentityと秘密鍵をCI keychainへimportできるPKCS #12 bundleとする。
 
-## 4. RC リリース手順
+## 4. タグリリースの署名モード
 
-1. `vX.Y.Z-rcN` タグを作成して push
+`RC Release` workflowは、タグ実行時にWindowsとmacOSの署名モードをOSごとに判定する。`WIN_SIGN_TIMESTAMP_URL`と`MAC_KEYCHAIN_PASSWORD`は任意値のため、状態判定には含めない。
+
+Windowsは`WIN_SIGN_PFX_BASE64`と`WIN_SIGN_PFX_PASSWORD`の2 secretを次のように扱う。
+
+1. **signed**: 2 secretがすべて設定済み。Authenticode署名を実行する。
+2. **unsigned**: 2 secretがすべて未設定。一時的な例外としてunsigned成果物を生成する。
+3. **invalid**: 1 secretだけが設定済み。ビルド前に失敗させる。
+
+macOSは`MAC_CERT_P12_BASE64`、`MAC_CERT_PASSWORD`、2つのidentity、3つの公証資格情報の合計7 secretを同じ原則で扱う。
+
+1. **release**: 7 secretがすべて設定済み。Developer ID署名と公証を実行する。
+2. **unsigned**: 7 secretがすべて未設定。一時的な例外としてunsigned成果物を生成する。
+3. **invalid**: 1〜6 secretだけが設定済み。ビルド前に失敗させる。
+
+それぞれのOSでsecretグループが不完全な場合のみ無効とする。そのため、一方のOSで必要なsecretがすべて設定済みで、もう一方のOSですべて未設定の場合は、署名済み成果物と`-unsigned`成果物が同じリリースに含まれる。
+
+unsigned modeと判定されたOSでは、公開するすべての成果物名に`-unsigned`を付ける。例:
+
+- `adobe-mcp-rs-windows-x86_64-unsigned.zip`
+- `adobe-mcp-rs-windows-x86_64-unsigned.msi`
+- `adobe-mcp-rs-macos-universal-unsigned.tar.gz`
+- `adobe-mcp-rs-macos-universal-unsigned.pkg`
+
+リリースノートにもunsigned配布であることを明記し、macOSではGatekeeper、WindowsではMicrosoft Defender SmartScreenの警告や実行ブロックが発生し得ることを利用者へ案内する。この例外はv0.5.1の早期公開に適用し、Developer ID / Authenticodeによる通常の署名配布への移行はIssue #31で追跡する。unsigned成果物は、一般配布の最終状態ではない。
+
+## 5. RC / GA リリース手順
+
+1. RCでは`vX.Y.Z-rcN`、GAでは`vX.Y.Z`タグを作成してpush
 2. `RC Release` workflow を確認
 3. 生成物（Windows/macOS）をダウンロード
-4. 署名/公証がスキップされていないことを確認
+4. signed modeでは署名/公証が完了したことを確認
+5. いずれかのOSがunsigned modeの場合は、該当OSの成果物名にある`-unsigned`、リリースノートの警告、Issue #31への参照を確認
 
-## 5. 注意事項
+## 6. 注意事項
 
 1. `notarize-macos.sh`はbinaryやpkgを署名しない。署名済み最終pkgの公証、staple、validate、`spctl --assess --type install`のみを行う。
 2. 実identityを使う前に`security find-identity -v`でApplication/Installerの両identityを確認する。

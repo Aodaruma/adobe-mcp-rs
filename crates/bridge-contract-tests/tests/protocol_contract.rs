@@ -234,6 +234,68 @@ fn installers_package_ae_and_indesign_and_only_add_missing_codex_tables() {
     assert!(macos_notarize.contains("macos_assess_installer_package"));
 }
 
+#[test]
+fn tag_release_requires_complete_signing_secret_groups_and_labels_unsigned_assets() {
+    let workflow = include_str!("../../../.github/workflows/rc-release.yml");
+
+    for required in [
+        "Select Windows signing mode",
+        "mode=signed",
+        "mode=unsigned",
+        "Windows signing secrets are only partially configured.",
+        "Label unsigned Windows artifacts",
+        "adobe-mcp-rs-windows-x86_64-unsigned.zip",
+        "adobe-mcp-rs-windows-x86_64-unsigned.msi",
+        "Select macOS signing mode",
+        "mode=release",
+        "macOS signing and notarization secrets are only partially configured.",
+        "Label unsigned macOS artifacts",
+        "adobe-mcp-rs-macos-universal-unsigned.pkg",
+        "adobe-mcp-rs-macos-universal-unsigned.tar.gz",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "tag release workflow is missing signing-mode contract: {required}"
+        );
+    }
+
+    assert!(
+        workflow.contains("$hasPfx = -not [string]::IsNullOrWhiteSpace($env:WIN_SIGN_PFX_BASE64)")
+    );
+    assert!(workflow.contains("elseif (-not $hasPfx -and -not $hasPassword)"));
+    for secret in [
+        "MAC_CERT_P12_BASE64",
+        "MAC_CERT_PASSWORD",
+        "MAC_APPLICATION_IDENTITY",
+        "MAC_INSTALLER_IDENTITY",
+        "APPLE_ID",
+        "APPLE_TEAM_ID",
+        "APPLE_APP_SPECIFIC_PASSWORD",
+    ] {
+        assert!(
+            workflow.contains(&format!("-z \"${secret}\"")),
+            "macOS unsigned mode must require {secret} to be empty"
+        );
+    }
+
+    for required in [
+        "WINDOWS_SIGNING_MODE: ${{ needs.windows-rc.outputs.signing_mode }}",
+        "MACOS_SIGNING_MODE: ${{ needs.macos-rc.outputs.signing_mode }}",
+        "Unsigned release artifacts",
+        "Gatekeeper",
+        "Microsoft Defender SmartScreen",
+        "#31",
+        "<!-- unsigned-artifacts-warning -->",
+        "--verify-tag",
+        "--notes-file \"$notes_file\"",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "tag release workflow is missing unsigned release-note contract: {required}"
+        );
+    }
+}
+
 fn run_command(
     daemon: &DaemonEndpoint,
     target_instance_id: Option<&str>,
