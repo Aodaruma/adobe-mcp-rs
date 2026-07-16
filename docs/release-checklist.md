@@ -16,8 +16,11 @@
 ## 2. 署名・公証
 
 1. Windows署名済み（`.exe` / `.msi`）
-2. macOS署名+Notarization済み（`.pkg`）
-3. 検証コマンド結果を保存
+2. macOSの5 universal2 binaryがDeveloper ID Applicationで署名され、`codesign --verify --strict --verbose=2`に成功
+3. 最終pkgが別のDeveloper ID Installer identityで署名され、`pkgutil --check-signature`に成功
+4. 署名済み最終pkgの`notarytool submit --wait`、`stapler staple`、`stapler validate`、`spctl --assess --type install`に成功
+5. Application/Installer identity、binary 5件、最終pkg、公証submission IDを含む検証結果を保存
+6. unsigned modeのartifactをGA/RC releaseへ使用していないことを確認
 
 ## 3. ドキュメント
 

@@ -59,6 +59,10 @@ jobs:
         if: runner.os == 'macOS'
         run: /bin/bash ./scripts/tests/install-bridge-macos-bash32.sh
 
+      - name: Test macOS signing and notarization control flow
+        if: runner.os == 'macOS'
+        run: /bin/bash ./scripts/tests/test-macos-release-flow.sh
+
       - name: Test bridge protocol contracts
         run: cargo test -p bridge-contract-tests
 

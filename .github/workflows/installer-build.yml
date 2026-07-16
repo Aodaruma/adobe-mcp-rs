@@ -49,7 +49,7 @@ jobs:
       - name: Build macOS installer artifacts
         run: |
           chmod +x ./scripts/package-macos.sh
-          REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
+          MACOS_SIGNING_MODE=unsigned REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7

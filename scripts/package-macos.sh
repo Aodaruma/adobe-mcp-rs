@@ -3,6 +3,9 @@ set -euo pipefail
 
 OUTPUT_DIR="${1:-./dist/macos}"
 REQUIRE_PKG="${REQUIRE_PKG:-false}"
+MACOS_SIGNING_MODE="${MACOS_SIGNING_MODE:-unsigned}"
+MAC_APPLICATION_IDENTITY="${MAC_APPLICATION_IDENTITY:-}"
+MAC_INSTALLER_IDENTITY="${MAC_INSTALLER_IDENTITY:-}"
 
 RUST_TARGETS=(
   "aarch64-apple-darwin"
@@ -30,10 +33,26 @@ CARGO_PACKAGES=(
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=macos-release-tools.sh
+source "$SCRIPT_DIR/macos-release-tools.sh"
+
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 pushd "$REPO_ROOT" >/dev/null
+
+case "$MACOS_SIGNING_MODE" in
+  release)
+    macos_validate_release_identities "$MAC_APPLICATION_IDENTITY" "$MAC_INSTALLER_IDENTITY"
+    ;;
+  unsigned)
+    echo "macOS signing mode: unsigned (Developer ID signing and notarization are not implied)."
+    ;;
+  *)
+    echo "Unsupported MACOS_SIGNING_MODE: $MACOS_SIGNING_MODE (expected release or unsigned)" >&2
+    exit 1
+    ;;
+esac
 
 if ! command -v lipo >/dev/null 2>&1; then
   echo "lipo is required to create macOS universal2 binaries." >&2
@@ -145,6 +164,10 @@ for binary in "${BINARIES[@]}"; do
   chmod +x "$STAGE_DIR/$binary"
 done
 assert_universal_directory "$STAGE_DIR" "stage"
+if [[ "$MACOS_SIGNING_MODE" == "release" ]]; then
+  macos_sign_application_binaries "$STAGE_DIR" "$MAC_APPLICATION_IDENTITY"
+  assert_universal_directory "$STAGE_DIR" "signed stage"
+fi
 cp "$BRIDGE_PANEL_PATH" "$STAGE_DIR/mcp-bridge-auto.jsx"
 cp "$BRIDGE_STARTUP_PATH" "$STAGE_DIR/mcp-bridge-startup.jsx"
 cp "$BRIDGE_SHUTDOWN_PATH" "$STAGE_DIR/mcp-bridge-shutdown.jsx"
@@ -167,16 +190,18 @@ ARCHIVE_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.tar.gz"
 tar -C "$STAGE_DIR" -czf "$ARCHIVE_PATH" .
 echo "Created archive: $ARCHIVE_PATH"
 
-if ! command -v pkgbuild >/dev/null 2>&1; then
-  MSG="pkgbuild is not available; skipped pkg generation."
-  if [[ "$REQUIRE_PKG" == "true" ]]; then
-    echo "$MSG" >&2
-    exit 1
+for package_command in pkgbuild "$MACOS_PRODUCTBUILD_COMMAND" "$MACOS_PKGUTIL_COMMAND"; do
+  if ! command -v "$package_command" >/dev/null 2>&1; then
+    MSG="$package_command is not available; skipped pkg generation."
+    if [[ "$REQUIRE_PKG" == "true" ]]; then
+      echo "$MSG" >&2
+      exit 1
+    fi
+    echo "$MSG"
+    popd >/dev/null
+    exit 0
   fi
-  echo "$MSG"
-  popd >/dev/null
-  exit 0
-fi
+done
 
 PKG_ROOT="$OUTPUT_DIR/pkgroot"
 rm -rf "$PKG_ROOT"
@@ -207,8 +232,12 @@ chmod +x "$INSTALL_SHARE_DIR/indesign/install-indesign-bridge.sh"
 cp "$STAGE_DIR/install-codex-mcp-config.sh" "$INSTALL_SHARE_DIR/install-codex-mcp-config.sh"
 chmod +x "$INSTALL_SHARE_DIR/install-codex-mcp-config.sh"
 assert_universal_directory "$INSTALL_BIN_DIR" "pkgroot payload"
+if [[ "$MACOS_SIGNING_MODE" == "release" ]]; then
+  macos_verify_application_binaries "$INSTALL_BIN_DIR" "$MAC_APPLICATION_IDENTITY"
+fi
 
 PKG_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.pkg"
+rm -f "$PKG_PATH"
 PKG_SCRIPTS_DIR="$OUTPUT_DIR/pkgscripts"
 mkdir -p "$PKG_SCRIPTS_DIR"
 cat > "$PKG_SCRIPTS_DIR/postinstall" <<'POSTINSTALL'
@@ -375,21 +404,39 @@ esac
 POSTINSTALL
 chmod +x "$PKG_SCRIPTS_DIR/postinstall"
 
+PACKAGE_BUILD_ROOT="$(mktemp -d "$OUTPUT_DIR/package-build.XXXXXX")"
+trap 'rm -rf "$PACKAGE_BUILD_ROOT"' EXIT
+COMPONENT_PKG_PATH="$PACKAGE_BUILD_ROOT/adobe-mcp-rs-component.pkg"
 pkgbuild \
   --root "$PKG_ROOT" \
   --scripts "$PKG_SCRIPTS_DIR" \
   --identifier "io.github.aodaruma.adobe-mcp-rs" \
   --version "0.5.0" \
   --install-location "/" \
-  "$PKG_PATH"
+  "$COMPONENT_PKG_PATH"
+
+macos_build_product_package \
+  "$COMPONENT_PKG_PATH" \
+  "$PKG_PATH" \
+  "$MACOS_SIGNING_MODE" \
+  "$MAC_INSTALLER_IDENTITY"
 
 PKG_VERIFY_ROOT="$(mktemp -d "$OUTPUT_DIR/pkg-verify.XXXXXX")"
-trap 'rm -rf "$PKG_VERIFY_ROOT"' EXIT
-pkgutil --expand "$PKG_PATH" "$PKG_VERIFY_ROOT/expanded"
+trap 'rm -rf "$PACKAGE_BUILD_ROOT" "$PKG_VERIFY_ROOT"' EXIT
+"$MACOS_PKGUTIL_COMMAND" --expand "$PKG_PATH" "$PKG_VERIFY_ROOT/expanded"
 mkdir -p "$PKG_VERIFY_ROOT/payload"
-tar -xf "$PKG_VERIFY_ROOT/expanded/Payload" -C "$PKG_VERIFY_ROOT/payload"
+PKG_PAYLOAD_PATH="$(find "$PKG_VERIFY_ROOT/expanded" -type f -name Payload -print -quit)"
+if [[ -z "$PKG_PAYLOAD_PATH" ]]; then
+  echo "Expanded product package does not contain a component Payload: $PKG_PATH" >&2
+  exit 1
+fi
+tar -xf "$PKG_PAYLOAD_PATH" -C "$PKG_VERIFY_ROOT/payload"
 assert_universal_directory "$PKG_VERIFY_ROOT/payload/usr/local/bin" "pkg payload"
-rm -rf "$PKG_VERIFY_ROOT"
+if [[ "$MACOS_SIGNING_MODE" == "release" ]]; then
+  macos_verify_application_binaries "$PKG_VERIFY_ROOT/payload/usr/local/bin" "$MAC_APPLICATION_IDENTITY"
+  macos_verify_installer_package "$PKG_PATH" "$MAC_INSTALLER_IDENTITY"
+fi
+rm -rf "$PACKAGE_BUILD_ROOT" "$PKG_VERIFY_ROOT"
 trap - EXIT
 
 echo "Created package: $PKG_PATH"

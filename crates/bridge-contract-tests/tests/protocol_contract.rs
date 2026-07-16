@@ -116,6 +116,8 @@ fn installers_package_ae_and_indesign_and_only_add_missing_codex_tables() {
     let windows_repo_installer = include_str!("../../../scripts/install-bridge.ps1");
     let windows_msi_installer = include_str!("../../../scripts/install-bridge-installer.ps1");
     let macos_package = include_str!("../../../scripts/package-macos.sh");
+    let macos_release_tools = include_str!("../../../scripts/macos-release-tools.sh");
+    let macos_notarize = include_str!("../../../scripts/notarize-macos.sh");
     let macos_repo_installer = include_str!("../../../scripts/install-bridge.sh");
     let macos_codex_installer = include_str!("../../../scripts/install-codex-mcp-config.sh");
     let installer_workflow = include_str!("../../../.github/workflows/installer-build.yml");
@@ -180,7 +182,7 @@ fn installers_package_ae_and_indesign_and_only_add_missing_codex_tables() {
         "lipo -create",
         "assert_universal_directory \"$STAGE_DIR\" \"stage\"",
         "assert_universal_directory \"$INSTALL_BIN_DIR\" \"pkgroot payload\"",
-        "pkgutil --expand",
+        "--expand \"$PKG_PATH\"",
         "assert_universal_directory \"$PKG_VERIFY_ROOT/payload/usr/local/bin\" \"pkg payload\"",
     ] {
         assert!(
@@ -191,6 +193,45 @@ fn installers_package_ae_and_indesign_and_only_add_missing_codex_tables() {
     for workflow in [installer_workflow, rc_workflow] {
         assert!(workflow.contains("targets: aarch64-apple-darwin,x86_64-apple-darwin"));
     }
+
+    for binary in ["ae-mcp", "pr-mcp", "ps-mcp", "ai-mcp", "id-mcp"] {
+        assert!(macos_release_tools.contains(binary));
+    }
+    for required in [
+        "Developer ID Application: ",
+        "--options runtime",
+        "--verify --strict --verbose=2",
+        "Authority=$application_identity",
+        "Developer ID Installer: ",
+        "--check-signature",
+    ] {
+        assert!(
+            macos_release_tools.contains(required),
+            "macOS release tooling is missing signing contract: {required}"
+        );
+    }
+    let sign_binaries = macos_package
+        .find("macos_sign_application_binaries")
+        .expect("macOS package should sign application binaries");
+    let create_archive = macos_package
+        .find("ARCHIVE_PATH=")
+        .expect("macOS package should create an archive");
+    let create_component = macos_package
+        .rfind("pkgbuild \\")
+        .expect("macOS package should create a component package");
+    let create_product = macos_package
+        .find("macos_build_product_package")
+        .expect("macOS package should create a product package");
+    assert!(sign_binaries < create_archive);
+    assert!(create_component < create_product);
+    assert!(macos_package.contains("MACOS_SIGNING_MODE:-unsigned"));
+    assert!(!macos_notarize.contains("codesign"));
+    assert!(macos_notarize.contains("notarytool submit"));
+    assert!(macos_notarize.contains("stapler staple"));
+    assert!(macos_notarize.contains("stapler validate"));
+    assert!(macos_notarize.contains("notarytool-submit.json"));
+    assert!(macos_notarize.contains("notarytool log <submission-id>"));
+    assert!(macos_notarize.contains("macos_assess_installer_package"));
 }
 
 fn run_command(
