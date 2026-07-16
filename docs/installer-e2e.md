@@ -116,7 +116,8 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 
 ## 5. CI
 
-- GitHub Actions: `.github/workflows/installer-build.yml`
-- 実行方法:
+- インストーラbuild: `.github/workflows/installer-build.yml`
+- macOS portable installer regression: `.github/workflows/ci.yml`で`/bin/bash ./scripts/tests/install-bridge-macos-bash32.sh`を実行
+- インストーラbuildの実行方法:
 1. `workflow_dispatch` で手動実行
 2. `v*` タグPushで自動実行

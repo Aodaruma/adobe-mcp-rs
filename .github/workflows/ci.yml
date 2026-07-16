@@ -55,6 +55,10 @@ jobs:
       - name: Check workspace and all targets
         run: cargo check --workspace --all-targets
 
+      - name: Test macOS bridge installer with system Bash
+        if: runner.os == 'macOS'
+        run: /bin/bash ./scripts/tests/install-bridge-macos-bash32.sh
+
       - name: Test bridge protocol contracts
         run: cargo test -p bridge-contract-tests
 
