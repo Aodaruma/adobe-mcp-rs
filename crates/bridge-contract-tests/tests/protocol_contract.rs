@@ -259,8 +259,10 @@ fn tag_release_requires_complete_signing_secret_groups_and_labels_unsigned_asset
         );
     }
 
-    assert!(workflow
-        .contains("elseif (-not $env:WIN_SIGN_PFX_BASE64 -and -not $env:WIN_SIGN_PFX_PASSWORD)"));
+    assert!(
+        workflow.contains("$hasPfx = -not [string]::IsNullOrWhiteSpace($env:WIN_SIGN_PFX_BASE64)")
+    );
+    assert!(workflow.contains("elseif (-not $hasPfx -and -not $hasPassword)"));
     for secret in [
         "MAC_CERT_P12_BASE64",
         "MAC_CERT_PASSWORD",
@@ -283,6 +285,8 @@ fn tag_release_requires_complete_signing_secret_groups_and_labels_unsigned_asset
         "Gatekeeper",
         "Microsoft Defender SmartScreen",
         "#31",
+        "<!-- unsigned-artifacts-warning -->",
+        "--verify-tag",
         "--notes-file \"$notes_file\"",
     ] {
         assert!(

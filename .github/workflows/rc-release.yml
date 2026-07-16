@@ -41,6 +41,8 @@ jobs:
     needs: verify-tag-source
     if: ${{ needs.verify-tag-source.outputs.on_main == 'true' }}
     runs-on: windows-latest
+    outputs:
+      signing_mode: ${{ steps.signing.outputs.mode }}
     env:
       WIN_SIGN_PFX_BASE64: ${{ secrets.WIN_SIGN_PFX_BASE64 }}
       WIN_SIGN_PFX_PASSWORD: ${{ secrets.WIN_SIGN_PFX_PASSWORD }}
@@ -51,6 +53,22 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Select Windows signing mode
+        id: signing
+        shell: pwsh
+        run: |
+          $hasPfx = -not [string]::IsNullOrWhiteSpace($env:WIN_SIGN_PFX_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WIN_SIGN_PFX_PASSWORD)
+          if ($hasPfx -and $hasPassword) {
+            "mode=signed" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } elseif (-not $hasPfx -and -not $hasPassword) {
+            "mode=unsigned" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Warning "Building explicit unsigned Windows release artifacts."
+          } else {
+            Write-Error "Windows signing secrets are only partially configured. Set both WIN_SIGN_PFX_BASE64 and WIN_SIGN_PFX_PASSWORD, or leave both empty."
+            exit 1
+          }
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -69,7 +87,7 @@ jobs:
           .\scripts\package-windows.ps1 -OutputDir .\dist\windows -RequireMsi
 
       - name: Decode signing certificate
-        if: ${{ env.WIN_SIGN_PFX_BASE64 != '' }}
+        if: ${{ steps.signing.outputs.mode == 'signed' }}
         shell: pwsh
         run: |
           $bytes = [Convert]::FromBase64String("$env:WIN_SIGN_PFX_BASE64")
@@ -78,17 +96,26 @@ jobs:
           "WIN_SIGN_PFX_PATH=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Sign Windows artifacts
-        if: ${{ env.WIN_SIGN_PFX_BASE64 != '' && env.WIN_SIGN_PFX_PASSWORD != '' }}
+        if: ${{ steps.signing.outputs.mode == 'signed' }}
         shell: pwsh
         run: |
           $timestamp = if ($env:WIN_SIGN_TIMESTAMP_URL) { $env:WIN_SIGN_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
           .\scripts\sign-windows.ps1 -ArtifactDir .\dist\windows -PfxPath $env:WIN_SIGN_PFX_PATH -PfxPassword $env:WIN_SIGN_PFX_PASSWORD -TimestampUrl $timestamp
 
-      - name: Warn when Windows signing is skipped
-        if: ${{ env.WIN_SIGN_PFX_BASE64 == '' || env.WIN_SIGN_PFX_PASSWORD == '' }}
+      - name: Label unsigned Windows artifacts
+        if: ${{ steps.signing.outputs.mode == 'unsigned' }}
         shell: pwsh
         run: |
-          Write-Warning "Windows signing skipped. Set WIN_SIGN_PFX_BASE64 and WIN_SIGN_PFX_PASSWORD secrets."
+          $renames = @{
+            ".\dist\windows\adobe-mcp-rs-windows-x86_64.zip" = ".\dist\windows\adobe-mcp-rs-windows-x86_64-unsigned.zip"
+            ".\dist\windows\adobe-mcp-rs-windows-x86_64.msi" = ".\dist\windows\adobe-mcp-rs-windows-x86_64-unsigned.msi"
+          }
+          foreach ($entry in $renames.GetEnumerator()) {
+            if (-not (Test-Path -LiteralPath $entry.Key)) {
+              throw "Unsigned Windows artifact not found: $($entry.Key)"
+            }
+            Move-Item -LiteralPath $entry.Key -Destination $entry.Value
+          }
 
       - name: Upload Windows RC artifacts
         uses: actions/upload-artifact@v7
@@ -100,6 +127,8 @@ jobs:
     needs: verify-tag-source
     if: ${{ needs.verify-tag-source.outputs.on_main == 'true' }}
     runs-on: macos-14
+    outputs:
+      signing_mode: ${{ steps.signing.outputs.mode }}
     env:
       MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
       MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
@@ -126,12 +155,15 @@ jobs:
                 -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && \
                 -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
             echo "mode=release" >> "$GITHUB_OUTPUT"
-          elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            echo "::error::Tagged macOS releases require both Developer ID identities, the certificate bundle, and notarization credentials."
-            exit 1
-          else
+          elif [[ -z "$MAC_CERT_P12_BASE64" && -z "$MAC_CERT_PASSWORD" && \
+                  -z "$MAC_APPLICATION_IDENTITY" && -z "$MAC_INSTALLER_IDENTITY" && \
+                  -z "$APPLE_ID" && -z "$APPLE_TEAM_ID" && \
+                  -z "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
             echo "mode=unsigned" >> "$GITHUB_OUTPUT"
-            echo "::warning::Building explicit unsigned macOS development artifacts."
+            echo "::warning::Building explicit unsigned macOS release artifacts."
+          else
+            echo "::error::macOS signing and notarization secrets are only partially configured. Set all required secrets, or leave all of them empty."
+            exit 1
           fi
 
       - name: Import Apple certificate
@@ -159,6 +191,16 @@ jobs:
         if: ${{ steps.signing.outputs.mode == 'release' }}
         run: |
           ./scripts/notarize-macos.sh ./dist/macos
+
+      - name: Label unsigned macOS artifacts
+        if: ${{ steps.signing.outputs.mode == 'unsigned' }}
+        run: |
+          mv \
+            ./dist/macos/adobe-mcp-rs-macos-universal.pkg \
+            ./dist/macos/adobe-mcp-rs-macos-universal-unsigned.pkg
+          mv \
+            ./dist/macos/adobe-mcp-rs-macos-universal.tar.gz \
+            ./dist/macos/adobe-mcp-rs-macos-universal-unsigned.tar.gz
 
       - name: Upload macOS RC artifacts
         uses: actions/upload-artifact@v7
@@ -190,6 +232,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          WINDOWS_SIGNING_MODE: ${{ needs.windows-rc.outputs.signing_mode }}
+          MACOS_SIGNING_MODE: ${{ needs.macos-rc.outputs.signing_mode }}
         run: |
           set -euo pipefail
 
@@ -210,12 +254,39 @@ jobs:
           printf "Release assets:\n"
           printf "  - %s\n" "${files[@]}"
 
-          if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            create_args=(release create "$tag" --repo "$repo" --title "$tag" --generate-notes)
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          : > "$notes_file"
+          if [[ "$WINDOWS_SIGNING_MODE" == "unsigned" || "$MACOS_SIGNING_MODE" == "unsigned" ]]; then
+            cat >> "$notes_file" <<'EOF'
+          <!-- unsigned-artifacts-warning -->
+          > [!WARNING]
+          > **Unsigned release artifacts:** Files with `-unsigned` in their name are not trusted-distribution artifacts.
+
+          EOF
+            if [[ "$MACOS_SIGNING_MODE" == "unsigned" ]]; then
+              echo '> macOS packages are not Developer ID signed or notarized, so Gatekeeper may warn or block them.' >> "$notes_file"
+            fi
+            if [[ "$WINDOWS_SIGNING_MODE" == "unsigned" ]]; then
+              echo '> Windows packages are not Authenticode-signed, so Microsoft Defender SmartScreen may warn or block them.' >> "$notes_file"
+            fi
+            echo '> Use these files only if you understand and accept that limitation, or build from source. Trusted signed/notarized distribution remains tracked in #31.' >> "$notes_file"
+            echo >> "$notes_file"
+          fi
+
+          if generated_notes="$(gh api --method POST "repos/$repo/releases/generate-notes" -f tag_name="$tag" --jq '.body')"; then
+            printf '%s\n' "$generated_notes" >> "$notes_file"
+          else
+            echo "::warning::GitHub release-note generation failed; using the explicit release warning only."
+            printf 'Release %s.\n' "$tag" >> "$notes_file"
+          fi
+
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$repo" --title "$tag" --notes-file "$notes_file"
+            gh release upload "$tag" "${files[@]}" --clobber --repo "$repo"
+          else
+            create_args=(release create "$tag" "${files[@]}" --repo "$repo" --verify-tag --title "$tag" --notes-file "$notes_file")
             if [[ "$tag" == *"-rc"* ]]; then
               create_args+=(--prerelease)
             fi
             gh "${create_args[@]}"
           fi
-
-          gh release upload "$tag" "${files[@]}" --clobber --repo "$repo"
