@@ -4,41 +4,77 @@ set -euo pipefail
 OUTPUT_DIR="${1:-./dist/macos}"
 REQUIRE_PKG="${REQUIRE_PKG:-false}"
 
+RUST_TARGETS=(
+  "aarch64-apple-darwin"
+  "x86_64-apple-darwin"
+)
+UNIVERSAL_ARCHES=(
+  "arm64"
+  "x86_64"
+)
+BINARIES=(
+  "ae-mcp"
+  "pr-mcp"
+  "ps-mcp"
+  "ai-mcp"
+  "id-mcp"
+)
+CARGO_PACKAGES=(
+  -p "ae-mcp"
+  -p "pr-mcp"
+  -p "ps-mcp"
+  -p "ai-mcp"
+  -p "id-mcp"
+)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 pushd "$REPO_ROOT" >/dev/null
 
-echo "Building release binaries..."
-cargo build --release -p ae-mcp -p pr-mcp -p ps-mcp -p ai-mcp -p id-mcp
+if ! command -v lipo >/dev/null 2>&1; then
+  echo "lipo is required to create macOS universal2 binaries." >&2
+  exit 1
+fi
 
-BIN_PATH_AE="$REPO_ROOT/target/release/ae-mcp"
-if [[ ! -f "$BIN_PATH_AE" ]]; then
-  echo "Release binary not found: $BIN_PATH_AE" >&2
-  exit 1
-fi
-BIN_PATH_PR="$REPO_ROOT/target/release/pr-mcp"
-if [[ ! -f "$BIN_PATH_PR" ]]; then
-  echo "Release binary not found: $BIN_PATH_PR" >&2
-  exit 1
-fi
-BIN_PATH_PS="$REPO_ROOT/target/release/ps-mcp"
-if [[ ! -f "$BIN_PATH_PS" ]]; then
-  echo "Release binary not found: $BIN_PATH_PS" >&2
-  exit 1
-fi
-BIN_PATH_AI="$REPO_ROOT/target/release/ai-mcp"
-if [[ ! -f "$BIN_PATH_AI" ]]; then
-  echo "Release binary not found: $BIN_PATH_AI" >&2
-  exit 1
-fi
-BIN_PATH_ID="$REPO_ROOT/target/release/id-mcp"
-if [[ ! -f "$BIN_PATH_ID" ]]; then
-  echo "Release binary not found: $BIN_PATH_ID" >&2
-  exit 1
-fi
+assert_universal_binary() {
+  local binary_path="$1"
+  local context="$2"
+  local arches
+  local required_arch
+
+  if [[ ! -f "$binary_path" ]]; then
+    echo "$context binary not found: $binary_path" >&2
+    exit 1
+  fi
+
+  arches="$(lipo -archs "$binary_path")"
+  for required_arch in "${UNIVERSAL_ARCHES[@]}"; do
+    if [[ " $arches " != *" $required_arch "* ]]; then
+      echo "$context binary is not universal2: $binary_path (architectures: $arches)" >&2
+      exit 1
+    fi
+  done
+  echo "Verified $context universal2 binary: $binary_path ($arches)"
+}
+
+assert_universal_directory() {
+  local directory="$1"
+  local context="$2"
+  local binary
+
+  for binary in "${BINARIES[@]}"; do
+    assert_universal_binary "$directory/$binary" "$context"
+  done
+}
+
+for rust_target in "${RUST_TARGETS[@]}"; do
+  echo "Building release binaries for $rust_target..."
+  cargo build --release --target "$rust_target" "${CARGO_PACKAGES[@]}"
+done
 BRIDGE_PANEL_PATH="$REPO_ROOT/src/scripts/mcp-bridge-auto.jsx"
 if [[ ! -f "$BRIDGE_PANEL_PATH" ]]; then
   echo "Bridge panel script not found: $BRIDGE_PANEL_PATH" >&2
@@ -91,17 +127,24 @@ if [[ ! -f "$CODEX_CONFIG_INSTALLER_PATH" ]]; then
 fi
 
 STAGE_DIR="$OUTPUT_DIR/stage"
+rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
-cp "$BIN_PATH_AE" "$STAGE_DIR/ae-mcp"
-chmod +x "$STAGE_DIR/ae-mcp"
-cp "$BIN_PATH_PR" "$STAGE_DIR/pr-mcp"
-chmod +x "$STAGE_DIR/pr-mcp"
-cp "$BIN_PATH_PS" "$STAGE_DIR/ps-mcp"
-chmod +x "$STAGE_DIR/ps-mcp"
-cp "$BIN_PATH_AI" "$STAGE_DIR/ai-mcp"
-chmod +x "$STAGE_DIR/ai-mcp"
-cp "$BIN_PATH_ID" "$STAGE_DIR/id-mcp"
-chmod +x "$STAGE_DIR/id-mcp"
+for binary in "${BINARIES[@]}"; do
+  arm64_binary="$REPO_ROOT/target/aarch64-apple-darwin/release/$binary"
+  x86_64_binary="$REPO_ROOT/target/x86_64-apple-darwin/release/$binary"
+  if [[ ! -f "$arm64_binary" ]]; then
+    echo "arm64 release binary not found: $arm64_binary" >&2
+    exit 1
+  fi
+  if [[ ! -f "$x86_64_binary" ]]; then
+    echo "x86_64 release binary not found: $x86_64_binary" >&2
+    exit 1
+  fi
+
+  lipo -create "$arm64_binary" "$x86_64_binary" -output "$STAGE_DIR/$binary"
+  chmod +x "$STAGE_DIR/$binary"
+done
+assert_universal_directory "$STAGE_DIR" "stage"
 cp "$BRIDGE_PANEL_PATH" "$STAGE_DIR/mcp-bridge-auto.jsx"
 cp "$BRIDGE_STARTUP_PATH" "$STAGE_DIR/mcp-bridge-startup.jsx"
 cp "$BRIDGE_SHUTDOWN_PATH" "$STAGE_DIR/mcp-bridge-shutdown.jsx"
@@ -136,6 +179,7 @@ if ! command -v pkgbuild >/dev/null 2>&1; then
 fi
 
 PKG_ROOT="$OUTPUT_DIR/pkgroot"
+rm -rf "$PKG_ROOT"
 INSTALL_BIN_DIR="$PKG_ROOT/usr/local/bin"
 INSTALL_SHARE_DIR="$PKG_ROOT/usr/local/share/ae-mcp"
 mkdir -p "$INSTALL_BIN_DIR"
@@ -162,6 +206,7 @@ cp "$STAGE_DIR/indesign/install-indesign-bridge.sh" "$INSTALL_SHARE_DIR/indesign
 chmod +x "$INSTALL_SHARE_DIR/indesign/install-indesign-bridge.sh"
 cp "$STAGE_DIR/install-codex-mcp-config.sh" "$INSTALL_SHARE_DIR/install-codex-mcp-config.sh"
 chmod +x "$INSTALL_SHARE_DIR/install-codex-mcp-config.sh"
+assert_universal_directory "$INSTALL_BIN_DIR" "pkgroot payload"
 
 PKG_PATH="$OUTPUT_DIR/adobe-mcp-rs-macos-universal.pkg"
 PKG_SCRIPTS_DIR="$OUTPUT_DIR/pkgscripts"
@@ -337,6 +382,15 @@ pkgbuild \
   --version "0.5.0" \
   --install-location "/" \
   "$PKG_PATH"
+
+PKG_VERIFY_ROOT="$(mktemp -d "$OUTPUT_DIR/pkg-verify.XXXXXX")"
+trap 'rm -rf "$PKG_VERIFY_ROOT"' EXIT
+pkgutil --expand "$PKG_PATH" "$PKG_VERIFY_ROOT/expanded"
+mkdir -p "$PKG_VERIFY_ROOT/payload"
+tar -xf "$PKG_VERIFY_ROOT/expanded/Payload" -C "$PKG_VERIFY_ROOT/payload"
+assert_universal_directory "$PKG_VERIFY_ROOT/payload/usr/local/bin" "pkg payload"
+rm -rf "$PKG_VERIFY_ROOT"
+trap - EXIT
 
 echo "Created package: $PKG_PATH"
 popd >/dev/null

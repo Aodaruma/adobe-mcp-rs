@@ -32,8 +32,11 @@ packagerは`~/.dotnet/tools/wix.exe`をmachine-wide PATHより優先する。rep
 生成コマンド:
 
 ```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
 REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 ```
+
+packagerは5 binaryを`aarch64-apple-darwin`と`x86_64-apple-darwin`向けに別々にビルドし、`lipo`でuniversal2へ結合する。archiveのstage、pkgroot、生成pkgを展開したpayloadの各段階で、全binaryに`arm64`と`x86_64`が含まれることを検証する。Xcode Command Line Toolsの`lipo`、`pkgbuild`、`pkgutil`が必要となる。
 
 ## 3. E2E 検証チェックリスト
 
@@ -47,8 +50,9 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
 6. macOS archive/pkgに`id-mcp`と`indesign/mcp-bridge-indesign.idjs`、専用installerが収録され、pkgが各`/Applications/Adobe InDesign YYYY/Scripts/Startup Scripts`へ固定bridgeを配置する
 7. Windows/macOSとも、対象ユーザーのCodex設定に未登録のMCP serverだけを追加し、既存の同名tableを変更しない。設定ファイルがなければ作成する
 8. 5 host の MCP バイナリが所定の場所へ配置される
-9. 5 binary の `--help` が実行できる
-10. Windows help は `autostart` を含み `service` を含まない。macOS help は `service` を含み `autostart` を含まない
+9. macOS archive/pkgの5 binaryについて`lipo -archs`が`arm64 x86_64`を含む
+10. 5 binary の `--help` が実行できる
+11. Windows help は `autostart` を含み`service`を含まない。macOS helpは`service`を含み`autostart`を含まない
 
 ## 3.2 Windows autostart / macOS service
 
@@ -107,6 +111,8 @@ REQUIRE_PKG=true ./scripts/package-macos.sh ./dist/macos
    - `ae-mcp autostart status` を確認
    - 必要なら `ae-mcp autostart install` と `ae-mcp autostart start` を再実行
 2. macOSでpkg生成失敗:
+   - `rustup target list --installed`で`aarch64-apple-darwin`と`x86_64-apple-darwin`を確認
+   - `xcode-select -p`と`lipo -archs <binary>`を確認
    - `pkgbuild --version` を確認
 3. AE結果が返らない:
    - `~/Documents/ae-mcp-bridge/ae_command.json` の `status` を確認
