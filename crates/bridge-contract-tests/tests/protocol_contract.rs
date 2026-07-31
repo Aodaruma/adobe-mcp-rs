@@ -33,7 +33,7 @@ fn smoke_result_schema_and_example_are_valid_json() -> Result<()> {
 fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
     let startup = include_str!("../../../src/scripts/mcp-bridge-startup.jsx");
     let shutdown = include_str!("../../../src/scripts/mcp-bridge-shutdown.jsx");
-    let runtime = include_str!("../../../src/scripts/mcp-bridge-auto.jsx");
+    let runtime = include_str!("../../../src/scripts/mcp-bridge-auto.jsx").replace("\r\n", "\n");
     let windows_installer = include_str!("../../../scripts/install-bridge.ps1");
     let packaged_installer = include_str!("../../../scripts/install-bridge-installer.ps1");
     let macos_installer = include_str!("../../../scripts/install-bridge.sh");
