@@ -98,3 +98,7 @@ macOS 版 CLI に Windows 用 `autostart` は存在しない。
 1. 実行コマンドと出力（stdout/stderr）
 2. `ae_command.json` / `ae_mcp_result.json` の内容
 3. AEバージョン、OSバージョン、実行ユーザー権限
+4. AEは必要な期間だけ `configure-bridge-diagnostics` の `enabled: true`、またはdiagnostics panelの `Write diagnostic debug log` を有効にする
+5. `get-bridge-diagnostics` でinstance状態、`ae_mcp_scheduler_diagnostic.json`、debug log末尾を取得する
+
+AEのverbose debug logは既定OFF。調査終了後は `configure-bridge-diagnostics` の `enabled: false` へ戻す。

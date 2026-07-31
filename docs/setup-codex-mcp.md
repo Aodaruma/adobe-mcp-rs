@@ -221,12 +221,14 @@ enabled = true
 
 ## 6. After Effectsの公開MCP surface
 
-`tools/list` が公開するAfter Effects Toolは次の9個です。
+`tools/list` が公開するAfter Effectsの主要な実行・運用Toolは次のとおりです。
 
 - `run-jsx`
 - `run-jsx-file`
 - `get-jsx-result`
 - `list-ae-instances`
+- `configure-bridge-diagnostics`
+- `get-bridge-diagnostics`
 - `get-results`
 - `get-help`
 - `save-frame-png`

@@ -57,6 +57,8 @@ pub const PUBLIC_TOOL_NAMES: &[&str] = &[
     "run-jsx-file",
     "get-jsx-result",
     "list-ae-instances",
+    "configure-bridge-diagnostics",
+    "get-bridge-diagnostics",
     "get-results",
     "get-help",
     "save-frame-png",
@@ -773,6 +775,34 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "configure-bridge-diagnostics",
+            description:
+                "Enable or disable the After Effects bridge diagnostic debug log (disabled by default)",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "enabled": { "type": "boolean" }
+                },
+                "required": ["enabled"]
+            }),
+        },
+        ToolSpec {
+            name: "get-bridge-diagnostics",
+            description:
+                "Read After Effects bridge diagnostic settings, the latest scheduler incident, and an optional debug log tail",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "tailLines": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 200,
+                        "default": 40
+                    }
+                }
+            }),
+        },
+        ToolSpec {
             name: "get-results",
             description:
                 "Get the latest retained request result, or a specific result by requestId",
@@ -1047,6 +1077,8 @@ Public tools (the exact `tools/list` contract):
 - run-jsx-file
 - get-jsx-result
 - list-ae-instances
+- configure-bridge-diagnostics
+- get-bridge-diagnostics
 - get-results
 - get-help
 - save-frame-png
@@ -1060,6 +1092,7 @@ Public tools (the exact `tools/list` contract):
 
 Best practices:
 - Use list-ae-instances when multiple After Effects versions are open
+- Keep bridge diagnostics disabled during normal operation; enable them temporarily with configure-bridge-diagnostics and inspect them with get-bridge-diagnostics
 - Specify targetInstanceId or targetVersion when more than one AE instance is active
 - Prefer compId/layerId when available to avoid index drift
 - Use get-jsx-result with requestId after a timeout

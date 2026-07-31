@@ -126,6 +126,10 @@
             var existingState = existing.getState();
             if (!existingState.running && existing.start) {
                 existingState = existing.start();
+            } else if (existing.ensureHealthy) {
+                existingState = existing.ensureHealthy({
+                    reason: "startup-bootstrap"
+                });
             } else if (existing.writeHeartbeat) {
                 existing.writeHeartbeat();
             }
@@ -167,6 +171,10 @@
         var loadedState = loaded.getState();
         if (!loadedState.running && loaded.start) {
             loadedState = loaded.start();
+        } else if (loaded.ensureHealthy) {
+            loadedState = loaded.ensureHealthy({
+                reason: "startup-bootstrap-loaded"
+            });
         }
         publish("running", loadedState);
     } catch (error) {

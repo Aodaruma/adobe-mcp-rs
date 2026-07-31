@@ -8,6 +8,8 @@ use mcp_core::{
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
@@ -15,6 +17,11 @@ use tokio::io::{
 use tracing::{debug, error, info};
 
 const MAX_JSX_BYTES: usize = 1_048_576;
+const DIAGNOSTIC_CONFIG_FILE: &str = "ae_mcp_debug_config.json";
+const DIAGNOSTIC_LOG_FILE: &str = "ae_mcp_debug.log";
+const SCHEDULER_DIAGNOSTIC_FILE: &str = "ae_mcp_scheduler_diagnostic.json";
+const DIAGNOSTIC_LOG_READ_BYTES: u64 = 1_048_576;
+const DIAGNOSTIC_INACTIVE_INSTANCE_LIMIT: usize = 10;
 
 #[derive(Debug, Clone, Copy)]
 enum MessageFormat {
@@ -271,6 +278,8 @@ fn dispatch_tool_inner(
         "get-capabilities" => get_capabilities_tool(cfg),
         "cancel-script-request" => cancel_script_request_tool(cfg, args),
         "list-ae-instances" => list_ae_instances_tool(cfg),
+        "configure-bridge-diagnostics" => configure_bridge_diagnostics_tool(cfg, args),
+        "get-bridge-diagnostics" => get_bridge_diagnostics_tool(cfg, args),
         "run-script" if args.get("code").is_some() => run_jsx_tool(cfg, bridge, args, false),
         "run-script" => {
             let script = args
@@ -808,6 +817,202 @@ fn list_ae_instances_tool(cfg: &AppConfig) -> Result<Value> {
     Ok(tool_json(value)?)
 }
 
+fn diagnostic_config_path(cfg: &AppConfig) -> PathBuf {
+    cfg.bridge.root_dir.join(DIAGNOSTIC_CONFIG_FILE)
+}
+
+fn diagnostic_log_path(cfg: &AppConfig) -> PathBuf {
+    cfg.bridge.root_dir.join(DIAGNOSTIC_LOG_FILE)
+}
+
+fn scheduler_diagnostic_path(cfg: &AppConfig) -> PathBuf {
+    cfg.bridge.root_dir.join(SCHEDULER_DIAGNOSTIC_FILE)
+}
+
+fn default_diagnostic_config(cfg: &AppConfig) -> Value {
+    json!({
+        "enabled": false,
+        "logPath": diagnostic_log_path(cfg).display().to_string()
+    })
+}
+
+fn read_diagnostic_config(cfg: &AppConfig) -> Result<Value> {
+    let path = diagnostic_config_path(cfg);
+    if !path.exists() {
+        return Ok(default_diagnostic_config(cfg));
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read diagnostic config: {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse diagnostic config: {}", path.display()))
+}
+
+fn configure_bridge_diagnostics_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
+    let enabled = args
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| anyhow!("'enabled' must be a boolean"))?;
+    fs::create_dir_all(&cfg.bridge.root_dir).with_context(|| {
+        format!(
+            "failed to create bridge root: {}",
+            cfg.bridge.root_dir.display()
+        )
+    })?;
+    let config_path = diagnostic_config_path(cfg);
+    let log_path = diagnostic_log_path(cfg);
+    let config = json!({
+        "enabled": enabled,
+        "logPath": log_path.display().to_string()
+    });
+    let encoded = serde_json::to_string_pretty(&config)?;
+    fs::write(&config_path, encoded).with_context(|| {
+        format!(
+            "failed to write diagnostic config: {}",
+            config_path.display()
+        )
+    })?;
+
+    tool_json(json!({
+        "enabled": enabled,
+        "defaultEnabled": false,
+        "configPath": config_path,
+        "logPath": log_path,
+        "schedulerDiagnosticPath": scheduler_diagnostic_path(cfg),
+        "applies": "The running bridge reloads this setting on its next scheduler tick; a stale bridge applies it immediately after restart."
+    }))
+}
+
+fn read_log_tail(path: &Path, tail_lines: usize) -> Result<(Vec<String>, u64, bool)> {
+    if tail_lines == 0 || !path.exists() {
+        return Ok((Vec::new(), 0, false));
+    }
+
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open diagnostic log: {}", path.display()))?;
+    let size = file.metadata()?.len();
+    let start = size.saturating_sub(DIAGNOSTIC_LOG_READ_BYTES);
+    if start > 0 {
+        file.seek(SeekFrom::Start(start))?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let mut raw = String::from_utf8_lossy(&bytes).into_owned();
+    if start > 0 {
+        if let Some(first_newline) = raw.find('\n') {
+            raw = raw[first_newline + 1..].to_string();
+        }
+    }
+    let lines = raw.lines().map(str::to_owned).collect::<Vec<_>>();
+    let keep_from = lines.len().saturating_sub(tail_lines);
+    Ok((lines[keep_from..].to_vec(), size, start > 0))
+}
+
+fn is_readable_bridge_local_path(root: &Path, path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let Ok(canonical_root) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(canonical_path) = path.canonicalize() else {
+        return false;
+    };
+    canonical_path.starts_with(canonical_root)
+}
+
+fn compact_instance_diagnostics(mut instances: Value) -> Value {
+    let Some(instance_object) = instances.as_object_mut() else {
+        return instances;
+    };
+    let Some(inactive) = instance_object
+        .get_mut("inactiveInstances")
+        .and_then(Value::as_array_mut)
+    else {
+        return instances;
+    };
+
+    let inactive_count = inactive.len();
+    if inactive_count > DIAGNOSTIC_INACTIVE_INSTANCE_LIMIT {
+        let keep_from = inactive_count - DIAGNOSTIC_INACTIVE_INSTANCE_LIMIT;
+        inactive.drain(0..keep_from);
+    }
+    instance_object.insert("inactiveInstanceCount".to_string(), json!(inactive_count));
+    instance_object.insert(
+        "inactiveInstancesTruncated".to_string(),
+        json!(inactive_count > DIAGNOSTIC_INACTIVE_INSTANCE_LIMIT),
+    );
+    instances
+}
+
+fn get_bridge_diagnostics_tool(cfg: &AppConfig, args: Value) -> Result<Value> {
+    let tail_lines = args.get("tailLines").and_then(Value::as_u64).unwrap_or(40);
+    if tail_lines > 200 {
+        return Err(anyhow!("'tailLines' must be between 0 and 200"));
+    }
+
+    let config_path = diagnostic_config_path(cfg);
+    let config = read_diagnostic_config(cfg)?;
+    let enabled = config
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let configured_log_path = config
+        .get("logPath")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| diagnostic_log_path(cfg));
+    let log_is_bridge_local =
+        is_readable_bridge_local_path(&cfg.bridge.root_dir, &configured_log_path);
+    let (log_tail, log_size_bytes, log_tail_truncated) = if log_is_bridge_local {
+        read_log_tail(&configured_log_path, tail_lines as usize)?
+    } else {
+        (Vec::new(), 0, false)
+    };
+
+    let scheduler_path = scheduler_diagnostic_path(cfg);
+    let scheduler_diagnostic = if scheduler_path.exists() {
+        let raw = fs::read_to_string(&scheduler_path).with_context(|| {
+            format!(
+                "failed to read scheduler diagnostic: {}",
+                scheduler_path.display()
+            )
+        })?;
+        serde_json::from_str::<Value>(&raw).with_context(|| {
+            format!(
+                "failed to parse scheduler diagnostic: {}",
+                scheduler_path.display()
+            )
+        })?
+    } else {
+        Value::Null
+    };
+    let instances = compact_instance_diagnostics(
+        daemon_core::call_daemon(cfg, json!({ "op": "listInstances" }), cfg.result_timeout_ms)
+            .unwrap_or_else(|error| {
+                json!({
+                    "status": "offline",
+                    "error": error.to_string()
+                })
+            }),
+    );
+
+    tool_json(json!({
+        "enabled": enabled,
+        "defaultEnabled": false,
+        "configPath": config_path,
+        "configExists": config_path.exists(),
+        "logPath": configured_log_path,
+        "logPathReadableByTool": log_is_bridge_local,
+        "logExists": configured_log_path.exists(),
+        "logSizeBytes": log_size_bytes,
+        "logTailTruncatedToLastMiB": log_tail_truncated,
+        "logTail": log_tail,
+        "schedulerDiagnosticPath": scheduler_path,
+        "schedulerDiagnostic": scheduler_diagnostic,
+        "instances": instances
+    }))
+}
+
 fn run_daemon_command(
     cfg: &AppConfig,
     command: &str,
@@ -1110,6 +1315,92 @@ mod tests {
         assert!(tools
             .iter()
             .any(|t| t.get("name").and_then(Value::as_str) == Some("run-jsx")));
+    }
+
+    #[test]
+    fn bridge_diagnostics_are_off_by_default_and_mcp_can_enable_them() {
+        let root = std::env::temp_dir().join(format!(
+            "ae-mcp-diagnostics-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let mut cfg = AppConfig::default();
+        cfg.bridge.root_dir = root.clone();
+        cfg.bridge.command_file = root.join("ae_command.json");
+        cfg.bridge.result_file = root.join("ae_mcp_result.json");
+
+        let defaults = read_diagnostic_config(&cfg).expect("default diagnostic config");
+        assert_eq!(defaults["enabled"], false);
+        assert_eq!(
+            defaults["logPath"],
+            diagnostic_log_path(&cfg).display().to_string()
+        );
+        assert!(!diagnostic_config_path(&cfg).exists());
+
+        configure_bridge_diagnostics_tool(&cfg, json!({ "enabled": true }))
+            .expect("enable diagnostics");
+        let enabled = read_diagnostic_config(&cfg).expect("enabled diagnostic config");
+        assert_eq!(enabled["enabled"], true);
+        assert_eq!(
+            enabled["logPath"],
+            diagnostic_log_path(&cfg).display().to_string()
+        );
+
+        fs::write(diagnostic_log_path(&cfg), "one\ntwo\nthree\n").expect("write diagnostic log");
+        let (tail, size, truncated) =
+            read_log_tail(&diagnostic_log_path(&cfg), 2).expect("read diagnostic tail");
+        assert_eq!(tail, vec!["two", "three"]);
+        assert!(size > 0);
+        assert!(!truncated);
+        assert!(is_readable_bridge_local_path(
+            &root,
+            &diagnostic_log_path(&cfg)
+        ));
+        let outside_log = root.with_extension("outside.log");
+        fs::write(&outside_log, "outside").expect("write outside diagnostic test file");
+        assert!(!is_readable_bridge_local_path(
+            &root,
+            &root
+                .join("..")
+                .join(outside_log.file_name().expect("outside file name"))
+        ));
+
+        configure_bridge_diagnostics_tool(&cfg, json!({ "enabled": false }))
+            .expect("disable diagnostics");
+        let disabled = read_diagnostic_config(&cfg).expect("disabled diagnostic config");
+        assert_eq!(disabled["enabled"], false);
+
+        let _ = fs::remove_file(outside_log);
+        let _ = fs::remove_dir_all(PathBuf::from(root));
+    }
+
+    #[test]
+    fn bridge_diagnostics_limit_inactive_instance_history() {
+        let inactive = (0..(DIAGNOSTIC_INACTIVE_INSTANCE_LIMIT + 3))
+            .map(|index| json!({ "instanceId": format!("inactive-{index}") }))
+            .collect::<Vec<_>>();
+        let compacted = compact_instance_diagnostics(json!({
+            "count": 1,
+            "instances": [{ "instanceId": "active" }],
+            "inactiveInstances": inactive
+        }));
+
+        assert_eq!(
+            compacted["inactiveInstanceCount"],
+            DIAGNOSTIC_INACTIVE_INSTANCE_LIMIT + 3
+        );
+        assert_eq!(compacted["inactiveInstancesTruncated"], true);
+        assert_eq!(
+            compacted["inactiveInstances"]
+                .as_array()
+                .expect("inactive instances")
+                .len(),
+            DIAGNOSTIC_INACTIVE_INSTANCE_LIMIT
+        );
+        assert_eq!(
+            compacted["inactiveInstances"][0]["instanceId"],
+            "inactive-3"
+        );
     }
 
     #[test]

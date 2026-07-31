@@ -7,7 +7,7 @@
 
 ## 公開Tool
 
-`tools/list`は次の9 Toolだけを返します。通常のAE実行は`serve-stdio`から`serve-daemon`へ転送され、instance routing、FIFO、timeout後のresult retentionを共通brokerが処理します。
+`tools/list`は次の実行・運用Toolを返します。通常のAE実行は`serve-stdio`から`serve-daemon`へ転送され、instance routing、FIFO、timeout後のresult retentionを共通brokerが処理します。
 
 | Tool | 用途 |
 |---|---|
@@ -15,6 +15,8 @@
 | `run-jsx-file` | allowed root内の`unsafe`、またはpath/SHA-256 allowlist済みの`trusted`ローカルJSXファイルを同期実行 |
 | `get-jsx-result` | `requestId`でretained resultを回収 |
 | `list-ae-instances` | daemonが認識するAE instanceを列挙 |
+| `configure-bridge-diagnostics` | 既定OFFのBridge debug logを手動でON/OFF |
+| `get-bridge-diagnostics` | 設定、instance状態、scheduler incident、debug log末尾を取得 |
 | `get-results` | 最新または指定`requestId`のretained resultを回収 |
 | `get-help` | この公開surfaceと運用上の注意を取得 |
 | `save-frame-png` | 単一frameのPNG previewを保存 |
