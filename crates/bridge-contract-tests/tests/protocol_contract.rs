@@ -43,6 +43,14 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
     assert!(startup.contains("delete $.global.__adobeMcpBridgeBootstrapConfig"));
     assert!(startup.contains("ae_mcp_bootstrap.json"));
     assert!(startup.contains("writeBootstrapDiagnostic(state)"));
+    let execute_jsx = runtime
+        .split("function executeJsx(args)")
+        .nth(1)
+        .and_then(|tail| tail.split("function executeJsxFile(args)").next())
+        .expect("executeJsx function");
+    assert!(execute_jsx.contains("app.beginUndoGroup(description)"));
+    assert!(execute_jsx.contains("args.undoGroup !== false"));
+    assert!(!execute_jsx.contains("app.endUndoGroup();"));
     assert!(startup.contains("typeof value === \"boolean\""));
     assert!(startup.contains("typeof value === \"object\" && value.valueOf"));
     assert!(startup.contains("var primitive = value.valueOf()"));

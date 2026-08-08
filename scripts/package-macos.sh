@@ -411,7 +411,7 @@ pkgbuild \
   --root "$PKG_ROOT" \
   --scripts "$PKG_SCRIPTS_DIR" \
   --identifier "io.github.aodaruma.adobe-mcp-rs" \
-  --version "0.5.2" \
+  --version "0.5.3" \
   --install-location "/" \
   "$COMPONENT_PKG_PATH"
 

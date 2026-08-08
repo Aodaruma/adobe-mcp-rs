@@ -705,6 +705,7 @@ fn run_jsx_tool(
 ) -> Result<Value> {
     let code = required_non_empty_string(&args, "code")?.to_string();
     validate_unsafe_mode(&args)?;
+    let undo_group = requested_undo_group(&args)?;
     let limit = if legacy {
         MAX_JSX_BYTES as u64
     } else {
@@ -720,6 +721,7 @@ fn run_jsx_tool(
         "args": prepared.input,
         "mode": "unsafe",
         "description": prepared.description,
+        "undoGroup": undo_group,
     });
     let timeout_ms = prepared.timeout_ms;
     let audit = serde_json::to_value(&prepared.audit)?;
@@ -739,6 +741,7 @@ fn run_jsx_tool(
 fn run_jsx_file_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Result<Value> {
     let path = required_non_empty_string(&args, "path")?;
     let mode = required_non_empty_string(&args, "mode")?;
+    let undo_group = requested_undo_group(&args)?;
     let validated = validate_and_read_script_file(cfg, path, mode)?;
     let prepared = prepare_script(
         cfg,
@@ -759,6 +762,7 @@ fn run_jsx_file_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Re
         "args": prepared.input,
         "mode": mode,
         "description": prepared.description,
+        "undoGroup": undo_group,
         "sourcePath": prepared.audit.source_path,
         "sourceSha256": prepared.audit.source_sha256,
         "sourceSizeBytes": prepared.audit.source_size_bytes,
@@ -775,6 +779,14 @@ fn run_jsx_file_tool(cfg: &AppConfig, _bridge: &BridgeClient, args: Value) -> Re
         Some(audit),
         "Error running JSX file",
     )
+}
+
+fn requested_undo_group(args: &Value) -> Result<bool> {
+    match args.get("undoGroup") {
+        None => Ok(true),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(anyhow!("undoGroup must be a boolean")),
+    }
 }
 
 fn get_capabilities_tool(cfg: &AppConfig) -> Result<Value> {
@@ -1315,6 +1327,13 @@ mod tests {
         assert!(tools
             .iter()
             .any(|t| t.get("name").and_then(Value::as_str) == Some("run-jsx")));
+    }
+
+    #[test]
+    fn undo_group_defaults_to_enabled_and_accepts_explicit_opt_out() {
+        assert!(requested_undo_group(&json!({})).unwrap());
+        assert!(!requested_undo_group(&json!({ "undoGroup": false })).unwrap());
+        assert!(requested_undo_group(&json!({ "undoGroup": "false" })).is_err());
     }
 
     #[test]

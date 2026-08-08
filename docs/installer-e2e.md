@@ -60,11 +60,12 @@ packagerは5 binaryを`aarch64-apple-darwin`と`x86_64-apple-darwin`向けに別
 各 host binary で次を確認する。
 
 1. Windows: 初期 `autostart status` は `not installed` を返す
-2. Windows: `autostart install` 後、現在ユーザーの Run key が現在の絶対 exe パスと `serve-daemon` を保持する
-3. Windows: `autostart start` を2回実行し、2回目は新規 process を作らず `already running` を返す
-4. Windows: `autostart stop` 後に `not running`、`autostart uninstall` 後に `not installed` になる
-5. Windows: stale PID は除去され、別 exe の生存 PID は勝手に除去・上書きされず `start` が失敗する
-6. macOS: 専用labelと未使用portで`service install`、`start`、`status`、`stop`、`start`、`uninstall`を順に実行する。各操作を2回実行して成功すること、`stop`後はplistを保持したままjobがnot loadedになり`KeepAlive`でPIDが再生成されないこと、`uninstall`後はjobとplistが残らないことも確認する
+2. Windows: `autostart install` 後、現在ユーザーの Run key が `wscript.exe //B //NoLogo` とhost別の `daemon-autostart.vbs` を保持し、launcher内に現在の絶対 exe パスと `serve-daemon` が記録される
+3. Windows: 登録済み状態でログインし直してもterminal windowが表示されず、daemonが起動する
+4. Windows: `autostart start` を2回実行し、2回目は新規 process を作らず `already running` を返す
+5. Windows: `autostart stop` 後に `not running`、`autostart uninstall` 後に `not installed` になり、`daemon-autostart.vbs` も削除される
+6. Windows: stale PID は除去され、別 exe の生存 PID は勝手に除去・上書きされず `start` が失敗する
+7. macOS: 専用labelと未使用portで`service install`、`start`、`status`、`stop`、`start`、`uninstall`を順に実行する。各操作を2回実行して成功すること、`stop`後はplistを保持したままjobがnot loadedになり`KeepAlive`でPIDが再生成されないこと、`uninstall`後はjobとplistが残らないことも確認する
 
 ## 3.3 Windows MSI の install / upgrade / uninstall
 

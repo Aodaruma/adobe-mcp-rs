@@ -355,7 +355,7 @@ After Effects MCP を使う際は、通常は non-interactive で実行するこ
 .\target\release\<host>-mcp.exe autostart uninstall
 ```
 
-- `install`: 現在のユーザーの `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` へ次回ログイン用コマンドを登録または更新する。daemon は起動しない
+- `install`: 現在のユーザーの `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` へ、端末を表示しない `wscript.exe` launcherを登録または更新する。daemon は起動しない
 - `start`: daemon を即時起動する。同じ実行ファイルの daemon が稼働中なら二重起動せず `already running` を返す
 - `status`: Run key の登録コマンドと PID ファイルを検証する。exe の移動後に登録が古い場合は `outdated` を表示する
 - `stop`: PID ファイルに記録された実行ファイルと実プロセスを照合して停止する。移動前の exe が稼働中でも対象を取り違えない

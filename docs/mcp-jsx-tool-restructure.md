@@ -100,7 +100,7 @@
 | `description` | yes | 監査ログ、Undo group名、ユーザー説明に使う |
 | `args` | no | JSXへ渡すJSON引数 |
 | `timeoutMs` | no | MCP呼び出しが待つ最大時間 |
-| `undoGroup` | no | `app.beginUndoGroup(description)` でwrapするか |
+| `undoGroup` | no | `app.beginUndoGroup(description)` でwrapするか（既定 `true`）。自己管理するJSXは `false` を指定 |
 | `resultRetentionSeconds` | no | 結果・状態をrequest registryに残す秒数。上限を超える値はreject |
 
 `wait` は原則不要。同期実行を基本にし、待ちきれない場合はtimeoutとして返す。
@@ -130,7 +130,7 @@
 | `description` | yes | 監査ログ、Undo group名、ユーザー説明に使う |
 | `args` | no | JSXへ渡すJSON引数 |
 | `timeoutMs` | no | MCP呼び出しが待つ最大時間 |
-| `undoGroup` | no | Undo groupでwrapするか |
+| `undoGroup` | no | Undo groupでwrapするか（既定 `true`）。自己管理するJSXは `false` を指定 |
 | `resultRetentionSeconds` | no | 結果・状態をrequest registryに残す秒数。上限を超える値はreject |
 
 `run-jsx-file` はRust側で以下を検証できる。
@@ -374,15 +374,12 @@ function main(args, mcp) {
 
 ## Undo / Redo
 
-`run-jsx` / `run-jsx-file` は既定で以下のようにwrapする。
+`run-jsx` / `run-jsx-file` は既定で `app.beginUndoGroup(description)` を呼ぶ。AEは単一のUndo groupをスクリプト呼び出し終了時に自動で閉じるため、bridgeから `app.endUndoGroup()` は呼ばない。これにより、ユーザーJSX内のネストまたは自己管理されたUndo groupと外側の明示終了が競合して `undo group mismatch` になることを避ける。
 
 ```javascript
 app.beginUndoGroup(description);
-try {
-  // user JSX
-} finally {
-  app.endUndoGroup();
-}
+// user JSX
+// AE closes the group when the scheduled script invocation returns.
 ```
 
 これにより、AEのUndo stack上では1つの操作としてまとまりやすくなる。
