@@ -3456,32 +3456,41 @@ function executeJsx(args) {
         };
 
         logToPanel("executeJsx started: " + description + (sourcePath ? " (" + sourcePath + ")" : ""));
+        var startedUndo = false;
         if (useUndoGroup) {
-            app.beginUndoGroup(description);
+            try {
+                app.beginUndoGroup(description);
+                startedUndo = true;
+            } catch (beginErr) {
+                logToPanel("executeJsx beginUndoGroup error: " + beginErr.toString());
+            }
         }
-        var result = (function (args, mcp) {
-            return eval(code);
-        })(userArgs, mcp);
+        try {
+            var result = (function (args, mcp) {
+                return eval(code);
+            })(userArgs, mcp);
 
-        // A scheduled callback is one After Effects script invocation. AE closes
-        // its single open undo group automatically when that invocation returns.
-        // Do not call endUndoGroup() here: user JSX may contain nested/self-managed
-        // groups, and an explicit outer close can otherwise become an unmatched
-        // close that triggers AE's "undo group mismatch" recovery.
-        logToPanel("executeJsx completed: " + description);
-        return JSON.stringify({
-            status: "success",
-            description: description,
-            mode: mode,
-            undoGroup: useUndoGroup,
-            sourcePath: sourcePath,
-            sourceSha256: args.sourceSha256 || "",
-            sourceSizeBytes: args.sourceSizeBytes,
-            result: fxMakeJsonSafe(result)
-        }, null, 2);
+            logToPanel("executeJsx completed: " + description);
+            return JSON.stringify({
+                status: "success",
+                description: description,
+                mode: mode,
+                undoGroup: useUndoGroup,
+                sourcePath: sourcePath,
+                sourceSha256: args.sourceSha256 || "",
+                sourceSizeBytes: args.sourceSizeBytes,
+                result: fxMakeJsonSafe(result)
+            }, null, 2);
+        } finally {
+            if (startedUndo) {
+                try {
+                    app.endUndoGroup();
+                } catch (endErr) {
+                    logToPanel("executeJsx endUndoGroup warning: " + endErr.toString());
+                }
+            }
+        }
     } catch (error) {
-        // If this invocation opened an undo group, AE closes it automatically
-        // after the scheduled callback returns through executeCommand().
         logToPanel("executeJsx error: " + error.toString());
         return JSON.stringify({
             status: "error",
