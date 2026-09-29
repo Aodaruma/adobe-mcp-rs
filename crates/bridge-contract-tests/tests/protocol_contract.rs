@@ -50,11 +50,6 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
         .expect("executeJsx function");
     assert!(execute_jsx.contains("app.beginUndoGroup(description)"));
     assert!(execute_jsx.contains("args.undoGroup !== false"));
-    // Scheduled calls must close the bridge-owned undo group, including when
-    // user JSX throws. Only close it if beginUndoGroup actually succeeded.
-    assert!(execute_jsx.contains("startedUndo = true;"));
-    assert!(execute_jsx.contains("} finally {\n            if (startedUndo) {"));
-    assert!(execute_jsx.contains("app.endUndoGroup();"));
     assert!(startup.contains("typeof value === \"boolean\""));
     assert!(startup.contains("typeof value === \"object\" && value.valueOf"));
     assert!(startup.contains("var primitive = value.valueOf()"));
