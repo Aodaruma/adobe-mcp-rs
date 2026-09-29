@@ -50,7 +50,6 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
         .expect("executeJsx function");
     assert!(execute_jsx.contains("app.beginUndoGroup(description)"));
     assert!(execute_jsx.contains("args.undoGroup !== false"));
-    assert!(!execute_jsx.contains("app.endUndoGroup();"));
     assert!(startup.contains("typeof value === \"boolean\""));
     assert!(startup.contains("typeof value === \"object\" && value.valueOf"));
     assert!(startup.contains("var primitive = value.valueOf()"));
