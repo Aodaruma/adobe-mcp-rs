@@ -253,7 +253,8 @@ pub fn run_autostart(action: AutostartAction, cfg: &AutostartConfig) -> Result<S
 
 #[cfg(target_os = "windows")]
 fn autostart_install(cfg: &AutostartConfig) -> Result<String> {
-    let command_line = build_windows_command_line(&cfg.binary_path, &cfg.args);
+    write_windows_autostart_launcher(cfg)?;
+    let command_line = build_windows_autostart_command(cfg);
     let output = Command::new("reg")
         .args([
             "add",
@@ -280,6 +281,7 @@ fn autostart_install(cfg: &AutostartConfig) -> Result<String> {
 #[cfg(target_os = "windows")]
 fn autostart_uninstall(cfg: &AutostartConfig) -> Result<String> {
     if read_autostart_command(cfg)?.is_none() {
+        remove_windows_autostart_launcher(cfg)?;
         return Ok(format!(
             "autostart already removed for current user: {}",
             cfg.app_name
@@ -300,6 +302,7 @@ fn autostart_uninstall(cfg: &AutostartConfig) -> Result<String> {
     if !output.status.success() {
         return Err(anyhow!(render_output("reg delete", output)));
     }
+    remove_windows_autostart_launcher(cfg)?;
 
     Ok(format!(
         "autostart removed for current user: {}",
@@ -400,10 +403,17 @@ fn autostart_stop(cfg: &AutostartConfig) -> Result<String> {
 
 #[cfg(target_os = "windows")]
 fn autostart_status(cfg: &AutostartConfig) -> Result<String> {
-    let expected_command = build_windows_command_line(&cfg.binary_path, &cfg.args);
+    let expected_command = build_windows_autostart_command(cfg);
     let registered_command = read_autostart_command(cfg)?;
     let install_state = match registered_command {
-        Some(ref command) if command == &expected_command => "installed".to_string(),
+        Some(ref command)
+            if command == &expected_command && windows_autostart_launcher_path(cfg).is_file() =>
+        {
+            "installed".to_string()
+        }
+        Some(ref command) if command == &expected_command => {
+            "incomplete (hidden launcher is missing); run `autostart install`".to_string()
+        }
         Some(command) => format!(
             "outdated (registered=`{command}`, expected=`{expected_command}`); run `autostart install`"
         ),
@@ -648,6 +658,72 @@ fn build_windows_command_line(binary_path: &std::path::Path, args: &[String]) ->
 }
 
 #[cfg(target_os = "windows")]
+fn windows_autostart_launcher_path(cfg: &AutostartConfig) -> PathBuf {
+    cfg.pid_file.with_file_name("daemon-autostart.vbs")
+}
+
+#[cfg(target_os = "windows")]
+fn build_windows_autostart_command(cfg: &AutostartConfig) -> String {
+    let windows_dir = std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    build_windows_command_line(
+        &windows_dir.join("System32").join("wscript.exe"),
+        &[
+            "//B".to_string(),
+            "//NoLogo".to_string(),
+            windows_autostart_launcher_path(cfg)
+                .as_os_str()
+                .to_string_lossy()
+                .to_string(),
+        ],
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn render_windows_autostart_launcher(cfg: &AutostartConfig) -> String {
+    let daemon_command = build_windows_command_line(&cfg.binary_path, &cfg.args);
+    let vbs_command = daemon_command.replace('"', "\"\"");
+    format!(
+        "Option Explicit\r\nDim shell\r\nSet shell = CreateObject(\"WScript.Shell\")\r\nshell.Run \"{vbs_command}\", 0, False\r\nSet shell = Nothing\r\n"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn write_windows_autostart_launcher(cfg: &AutostartConfig) -> Result<()> {
+    let launcher_path = windows_autostart_launcher_path(cfg);
+    let parent = launcher_path
+        .parent()
+        .ok_or_else(|| anyhow!("autostart launcher path has no parent"))?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create autostart launcher directory `{}`",
+            parent.display()
+        )
+    })?;
+    std::fs::write(&launcher_path, render_windows_autostart_launcher(cfg)).with_context(|| {
+        format!(
+            "failed to write hidden autostart launcher `{}`",
+            launcher_path.display()
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn remove_windows_autostart_launcher(cfg: &AutostartConfig) -> Result<()> {
+    let launcher_path = windows_autostart_launcher_path(cfg);
+    if launcher_path.exists() {
+        std::fs::remove_file(&launcher_path).with_context(|| {
+            format!(
+                "failed to remove autostart launcher `{}`",
+                launcher_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn quote_windows_arg(arg: &str) -> String {
     if !arg.contains([' ', '\t', '"']) {
         return arg.to_string();
@@ -884,6 +960,32 @@ mod tests {
         );
         assert!(command.contains(r#""C:\Program Files\AfterEffectsMcp\ae-mcp.exe""#));
         assert!(command.contains(r#""C:\Users\foo bar\ae-mcp.toml""#));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_autostart_uses_a_hidden_wscript_launcher() {
+        let mut cfg = test_autostart_config(PathBuf::from(
+            r"C:\Program Files\AfterEffectsMcp\ae-mcp.exe",
+        ));
+        cfg.args = vec![
+            "--config".to_string(),
+            r"C:\Users\foo bar\ae-mcp.toml".to_string(),
+            "serve-daemon".to_string(),
+        ];
+
+        let registration = build_windows_autostart_command(&cfg);
+        assert!(registration.to_ascii_lowercase().contains("wscript.exe"));
+        assert!(registration.contains("//B //NoLogo"));
+        assert!(registration.contains("daemon-autostart.vbs"));
+        assert!(!registration.contains("ae-mcp.exe"));
+
+        let launcher = render_windows_autostart_launcher(&cfg);
+        assert!(launcher.contains("WScript.Shell"));
+        assert!(launcher.contains(", 0, False"));
+        assert!(launcher.contains(
+            r#"""C:\Program Files\AfterEffectsMcp\ae-mcp.exe"" --config ""C:\Users\foo bar\ae-mcp.toml"" serve-daemon"#
+        ));
     }
 
     #[cfg(target_os = "windows")]

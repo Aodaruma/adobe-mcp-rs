@@ -454,7 +454,7 @@ pub fn validate_json_size(label: &str, value: &Value, max: u64) -> Result<()> {
 }
 
 pub fn canonical_script_tool_specs(host: HostSpec) -> Vec<ToolSpec> {
-    let common = json!({
+    let mut common = json!({
         "code": { "type": "string", "minLength": 1, "maxLength": DEFAULT_INLINE_SCRIPT_MAX_BYTES },
         "runtime": { "type": "string", "enum": ["auto", host.bridge_runtime] },
         "input": {},
@@ -469,6 +469,12 @@ pub fn canonical_script_tool_specs(host: HostSpec) -> Vec<ToolSpec> {
         "resultRetentionSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
         "confirmationToken": { "type": "string", "minLength": 1 }
     });
+    if host.id == "aftereffects" {
+        common.as_object_mut().expect("properties object").insert(
+            "undoGroup".to_string(),
+            json!({ "type": "boolean", "default": true }),
+        );
+    }
     let mut file = common.clone();
     let object = file.as_object_mut().expect("properties object");
     object.remove("code");
@@ -730,6 +736,18 @@ mod tests {
             inline.input_schema["properties"]["riskPolicy"]["default"],
             "analyze"
         );
+        assert_eq!(
+            inline.input_schema["properties"]["undoGroup"]["default"],
+            true
+        );
+        let premiere = canonical_script_tool_specs(super::super::PREMIERE_PRO_HOST);
+        let premiere_inline = premiere
+            .iter()
+            .find(|tool| tool.name == "run-script")
+            .unwrap();
+        assert!(premiere_inline.input_schema["properties"]
+            .get("undoGroup")
+            .is_none());
         assert!(tools.iter().any(|tool| tool.name == "get-capabilities"));
         assert!(tools
             .iter()

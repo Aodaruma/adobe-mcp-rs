@@ -69,7 +69,7 @@ InDesign だけは「raw-first = inline `eval`」ではありません。公式�
 
 | Host | Undo / transaction | Modal / user interaction | Filesystem / network |
 |---|---|---|---|
-| After Effects | `app.beginUndoGroup` / `endUndoGroup` でまとめられるが、file、render、save、quit は完全 rollback できない | dialog suppression API はあるが、任意 plugin dialog や長時間 script の一律制御はできない | ExtendScript の file / network access は host preference の許可が必要 |
+| After Effects | `app.beginUndoGroup` とscript終了時の自動closeでまとめられるが、file、render、save、quit は完全 rollback できない | dialog suppression API はあるが、任意 plugin dialog や長時間 script の一律制御はできない | ExtendScript の file / network access は host preference の許可が必要 |
 | Premiere Pro | UXP の `Project.executeTransaction` と `lockedAccess` を使用。すべての API が同じ transaction model とは限らない | UXP modal dialog は UI を block する。raw code は原則 non-interactive にする | UXP manifest の filesystem / network permission。CEP fallback は別の権限モデル |
 | Photoshop | `executeAsModal` の execution context と history suspension を使用。すべての外部副作用は戻せない | document 変更は modal scope が必要。キャンセルは Promise 待機点など interruptible な code に限られる | UXP manifest permission と OS permission の積。`batchPlay` 自体は filesystem sandbox ではない |
 | Illustrator | `app.undo()` / host undo stack の best effort。外部 file 操作は戻せない | ExtendScript dialog と host modal state は自動復旧を妨げうる | CEP / ExtendScript の host permission と OS permission |
