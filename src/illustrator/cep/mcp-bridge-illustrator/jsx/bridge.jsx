@@ -225,10 +225,14 @@ function aiWriteFile(file, text) {
         aiEnsureFolder(file.parent);
     }
     aiCleanupAtomicResidues(file);
+    // File.rename mutates the ExtendScript File object's name/path. Capture the
+    // destination name before preserving the current target so the subsequent
+    // publish and rollback still address the original file.
+    var targetName = file.name;
     aiAtomicWriteCounter += 1;
     var suffix = new Date().getTime() + "-" + aiAtomicWriteCounter + "-" +
         Math.floor(Math.random() * 0x7fffffff).toString(16);
-    var tempFile = new File(file.parent.fsName + "/." + file.name + ".tmp-" + suffix);
+    var tempFile = new File(file.parent.fsName + "/." + targetName + ".tmp-" + suffix);
     tempFile.encoding = "UTF-8";
     if (!tempFile.open("w")) {
         throw new Error("Failed to open temporary file: " + tempFile.fsName);
@@ -243,25 +247,28 @@ function aiWriteFile(file, text) {
         throw new Error("Failed to flush temporary file: " + tempFile.fsName);
     }
 
-    if (tempFile.rename(file.name)) {
+    if (tempFile.rename(targetName)) {
         return;
     }
 
-    var backupFile = new File(file.parent.fsName + "/." + file.name + ".bak-" + suffix);
+    var backupPath = file.parent.fsName + "/." + targetName + ".bak-" + suffix;
+    var backupFile = new File(backupPath);
     var hadTarget = file.exists;
     if (hadTarget && !file.rename(backupFile.name)) {
         try { tempFile.remove(); } catch (_targetRemoveErr) {}
         throw new Error("Failed to preserve previous file: " + file.fsName);
     }
-    if (!tempFile.rename(file.name)) {
-        if (hadTarget && backupFile.exists) {
-            try { backupFile.rename(file.name); } catch (_rollbackErr) {}
+    if (!tempFile.rename(targetName)) {
+        var rollbackFile = new File(backupPath);
+        if (hadTarget && rollbackFile.exists) {
+            try { rollbackFile.rename(targetName); } catch (_rollbackErr) {}
         }
         try { tempFile.remove(); } catch (_publishRemoveErr) {}
         throw new Error("Failed to publish temporary file: " + file.fsName);
     }
-    if (backupFile.exists) {
-        try { backupFile.remove(); } catch (_backupRemoveErr) {}
+    var publishedBackup = new File(backupPath);
+    if (publishedBackup.exists) {
+        try { publishedBackup.remove(); } catch (_backupRemoveErr) {}
     }
 }
 
