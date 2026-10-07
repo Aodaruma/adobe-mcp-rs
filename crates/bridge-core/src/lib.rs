@@ -589,7 +589,12 @@ impl BridgeClient {
 
     pub fn mark_request_timeout(&self, request_id: &str, message: String) -> Result<RequestRecord> {
         self.update_request_record(request_id, |record| {
-            if is_terminal_request_status(&record.status) {
+            if is_terminal_request_status(&record.status)
+                || matches!(
+                    record.status.as_str(),
+                    "cancelRequested" | "unknown" | "lost"
+                )
+            {
                 return false;
             }
             record.status = "timeout".to_string();
@@ -726,9 +731,31 @@ impl BridgeClient {
             thread::sleep(options.poll_interval);
         }
 
-        record.status = "dispatched".to_string();
-        record.updated_at = chrono_like_timestamp();
-        self.write_request_record(&record)?;
+        // Claim dispatch under the same lock used by cancellation. A request
+        // cancelled before this point must never reach the command mailbox.
+        let mut claimed = false;
+        record = self.update_request_record(request_id, |record| {
+            if is_terminal_request_status(&record.status) {
+                return false;
+            }
+            if record.status == "cancelRequested" {
+                record.status = "cancelled".to_string();
+                record.message = Some("Cancelled before dispatch.".to_string());
+            } else {
+                claimed = true;
+                if !matches!(record.status.as_str(), "timeout" | "unknown" | "lost") {
+                    record.status = "dispatched".to_string();
+                }
+            }
+            record.updated_at = chrono_like_timestamp();
+            true
+        })?;
+        if !claimed {
+            return Ok(BridgeRunOutcome {
+                record,
+                registry_path,
+            });
+        }
 
         self.write_instance_waiting_result(&instance, request_id)?;
         self.write_current_request(&instance, request_id, command)?;
@@ -749,7 +776,7 @@ impl BridgeClient {
                 record.message = None;
                 self.write_request_record(&record)?;
                 record = self.read_request_record(request_id)?;
-                self.clear_current_request(&instance)?;
+                self.clear_current_request_if_matches(&instance, request_id)?;
                 return Ok(BridgeRunOutcome {
                     record,
                     registry_path,
@@ -779,10 +806,7 @@ impl BridgeClient {
 
     pub fn get_request_record(&self, request_id: &str) -> Result<RequestRecord> {
         let mut record = self.read_request_record(request_id)?;
-        if matches!(
-            record.status.as_str(),
-            "completed" | "failed" | "lost" | "cancelled"
-        ) {
+        if is_terminal_request_status(&record.status) {
             return Ok(record);
         }
 
@@ -798,16 +822,15 @@ impl BridgeClient {
                 self.write_request_record(&record)?;
                 record = self.read_request_record(request_id)?;
                 self.clear_current_request_if_matches(&instance, request_id)?;
-            } else if self.is_instance_stale(&instance)? {
-                record.status = "lost".to_string();
+            } else if self.is_instance_stale(&instance)? && record.status != "cancelRequested" {
+                record.status = "unknown".to_string();
                 record.updated_at = chrono_like_timestamp();
                 record.message = Some(format!(
-                    "The target {} instance heartbeat is stale; the request may have been lost.",
+                    "The target {} instance heartbeat is stale; execution may still be running. Check this requestId again instead of resubmitting the command.",
                     self.host.display_name
                 ));
                 self.write_request_record(&record)?;
                 record = self.read_request_record(request_id)?;
-                self.clear_current_request_if_matches(&instance, request_id)?;
             }
         }
 
@@ -944,7 +967,12 @@ impl BridgeClient {
             status: "running".to_string(),
             dispatched_at: chrono_like_timestamp(),
         };
-        write_json_file(&instance_current_request_path(instance), &payload)
+        let path = instance_current_request_path(instance);
+        let lock = request_record_update_lock(&path)?;
+        let _guard = lock
+            .lock()
+            .map_err(|_| anyhow!("current request lock poisoned"))?;
+        write_json_file(&path, &payload)
     }
 
     fn read_current_request(&self, instance: &HostInstance) -> Result<Option<CurrentRequest>> {
@@ -952,18 +980,13 @@ impl BridgeClient {
         if !path.exists() {
             return Ok(None);
         }
-        let current = read_json_file_with_retry(&path)
-            .with_context(|| format!("failed to read current request: {}", path.display()))?;
-        Ok(Some(current))
-    }
-
-    fn clear_current_request(&self, instance: &HostInstance) -> Result<()> {
-        let path = instance_current_request_path(instance);
-        if path.exists() {
-            fs::remove_file(&path)
-                .with_context(|| format!("failed to remove current request: {}", path.display()))?;
+        match read_json_file_with_retry(&path) {
+            Ok(current) => Ok(Some(current)),
+            // A concurrent result reader may have cleared the reservation.
+            Err(_) if !path.exists() => Ok(None),
+            Err(error) => Err(error)
+                .with_context(|| format!("failed to read current request: {}", path.display())),
         }
-        Ok(())
     }
 
     fn clear_current_request_if_matches(
@@ -971,9 +994,22 @@ impl BridgeClient {
         instance: &HostInstance,
         request_id: &str,
     ) -> Result<()> {
+        let path = instance_current_request_path(instance);
+        let lock = request_record_update_lock(&path)?;
+        let _guard = lock
+            .lock()
+            .map_err(|_| anyhow!("current request lock poisoned"))?;
         if let Some(current) = self.read_current_request(instance)? {
             if current.request_id == request_id {
-                self.clear_current_request(instance)?;
+                match fs::remove_file(&path) {
+                    Ok(()) => (),
+                    Err(error) if error.kind() == ErrorKind::NotFound => (),
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("failed to remove current request: {}", path.display())
+                        })
+                    }
+                }
             }
         }
         Ok(())
@@ -995,22 +1031,24 @@ impl BridgeClient {
                 record.message = None;
                 let _ = self.write_request_record(&record);
             }
-            self.clear_current_request(instance)?;
+            self.clear_current_request_if_matches(instance, &current.request_id)?;
             return Ok(false);
         }
 
         if self.is_instance_stale(instance)? {
             if let Ok(mut record) = self.read_request_record(&current.request_id) {
-                record.status = "lost".to_string();
+                if record.status != "cancelRequested" {
+                    record.status = "unknown".to_string();
+                }
                 record.updated_at = chrono_like_timestamp();
                 record.message = Some(format!(
-                    "The target {} instance heartbeat is stale; the request may have been lost.",
+                    "The target {} instance heartbeat is stale; execution may still be running. The instance remains reserved until its result is recovered.",
                     self.host.display_name
                 ));
                 let _ = self.write_request_record(&record);
             }
-            self.clear_current_request(instance)?;
-            return Ok(false);
+            // A synchronous host script can prevent heartbeat callbacks. Stale
+            // liveness is not evidence of completion: keep the mailbox reserved.
         }
 
         Ok(true)
@@ -1148,6 +1186,15 @@ impl BridgeClient {
                 Ok(value) => value,
                 Err(_) => continue,
             };
+            if !value
+                .get("status")
+                .and_then(Value::as_str)
+                .map(is_terminal_request_status)
+                .unwrap_or(false)
+            {
+                // Never expire the only record of queued or still-running work.
+                continue;
+            }
             let Some(expires_at) = value.get("expiresAt").and_then(Value::as_str) else {
                 continue;
             };
@@ -1197,7 +1244,8 @@ fn request_record_update_lock(path: &Path) -> Result<Arc<Mutex<()>>> {
 }
 
 fn is_terminal_request_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "lost" | "cancelled")
+    // Legacy `lost` records are also recoverable if a late host result arrives.
+    matches!(status, "completed" | "failed" | "cancelled")
 }
 
 // A client timeout is recoverable, but a completed/error result is final.
@@ -1205,6 +1253,12 @@ fn is_terminal_request_status(status: &str) -> bool {
 // timeout marker, so those writes must not move the registry backwards.
 fn should_preserve_current_record(current: &RequestRecord, proposed: &RequestRecord) -> bool {
     is_terminal_request_status(&current.status)
+        || (current.status == "cancelRequested" && !is_terminal_request_status(&proposed.status))
+        || (matches!(current.status.as_str(), "unknown" | "lost")
+            && matches!(
+                proposed.status.as_str(),
+                "queued" | "dispatched" | "running" | "timeout"
+            ))
         || (current.status == "timeout"
             && matches!(
                 proposed.status.as_str(),
@@ -1222,7 +1276,9 @@ pub fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .with_context(|| format!("failed to atomically write file: {}", path.display()))
 }
 
-fn write_atomic_text_file(path: &Path, contents: &[u8]) -> Result<()> {
+/// Replace a local text file through a temporary sibling, preserving the old
+/// contents if publishing the replacement fails.
+pub fn write_atomic_text_file(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .filter(|value| !value.as_os_str().is_empty())
@@ -1800,6 +1856,23 @@ mod tests {
         bridge
             .request_cancellation(&prepared.record.request_id)
             .unwrap();
+        assert_eq!(
+            bridge
+                .mark_request_timeout(&prepared.record.request_id, "client stopped waiting".into())
+                .unwrap()
+                .status,
+            "cancelRequested"
+        );
+        // A worker may still hold an older copy read before cancellation.
+        bridge.write_request_record(&prepared.record).unwrap();
+        assert_eq!(
+            bridge
+                .read_request_record(&prepared.record.request_id)
+                .unwrap()
+                .status,
+            "cancelRequested"
+        );
+        let command_path = instance_command_path(&instance);
         let outcome = bridge
             .run_prepared_request_on_instance(
                 &prepared.record.request_id,
@@ -1816,6 +1889,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome.record.status, "cancelled");
+        assert!(
+            !command_path.exists(),
+            "cancelled work must never be dispatched"
+        );
 
         let terminal = bridge.prepare_request("executeJsx", 60, None).unwrap();
         bridge
@@ -2097,6 +2174,93 @@ mod tests {
         let recovered = bridge.get_request_record(&request_id).expect("recover");
         assert_eq!(recovered.status, "completed");
         assert!(recovered.result.is_some());
+    }
+
+    #[test]
+    fn missing_heartbeat_keeps_instance_reserved_and_late_results_recover() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let instance = write_test_instance(&cfg, "stale-running");
+        let prepared = bridge
+            .prepare_request("ping", 60, Some(instance.clone()))
+            .unwrap();
+        let id = &prepared.record.request_id;
+        bridge.write_current_request(&instance, id, "ping").unwrap();
+        bridge
+            .mark_request_timeout(id, "client timeout".into())
+            .unwrap();
+        fs::remove_file(instance_heartbeat_path(&instance)).unwrap();
+
+        assert_eq!(bridge.get_request_record(id).unwrap().status, "unknown");
+        assert!(bridge.is_instance_busy(&instance).unwrap());
+        assert!(instance_current_request_path(&instance).exists());
+        assert_eq!(
+            bridge
+                .mark_request_timeout(id, "late timeout".into())
+                .unwrap()
+                .status,
+            "unknown"
+        );
+
+        write_json_file(
+            &instance_result_path(&instance),
+            &json!({
+                "status": "success", "_commandExecuted": "ping", "_requestId": id
+            }),
+        )
+        .unwrap();
+        assert_eq!(bridge.get_request_record(id).unwrap().status, "completed");
+        assert!(!bridge.is_instance_busy(&instance).unwrap());
+    }
+
+    #[test]
+    fn legacy_lost_records_can_recover_late_results() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let instance = write_test_instance(&cfg, "legacy-lost");
+        let mut prepared = bridge
+            .prepare_request("ping", 60, Some(instance.clone()))
+            .unwrap();
+        prepared.record.status = "lost".into();
+        write_json_file(&prepared.registry_path, &prepared.record).unwrap();
+        write_json_file(&instance_result_path(&instance), &json!({
+            "status": "success", "_commandExecuted": "ping", "_requestId": prepared.record.request_id
+        })).unwrap();
+        assert_eq!(
+            bridge
+                .get_request_record(&prepared.record.request_id)
+                .unwrap()
+                .status,
+            "completed"
+        );
+    }
+
+    #[test]
+    fn retention_cleanup_does_not_delete_unresolved_work() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg).unwrap();
+        let mut unresolved_paths = Vec::new();
+        for status in [
+            "queued",
+            "running",
+            "timeout",
+            "cancelRequested",
+            "unknown",
+            "lost",
+        ] {
+            let mut prepared = bridge.prepare_request("ping", 60, None).unwrap();
+            prepared.record.status = status.into();
+            prepared.record.expires_at = "2000-01-01T00:00:00Z".into();
+            bridge.write_request_record(&prepared.record).unwrap();
+            unresolved_paths.push(prepared.registry_path);
+        }
+        let mut finished = bridge.prepare_request("ping", 60, None).unwrap();
+        finished.record.status = "completed".into();
+        finished.record.expires_at = "2000-01-01T00:00:00Z".into();
+        bridge.write_request_record(&finished.record).unwrap();
+        bridge.cleanup_registry().unwrap();
+        assert!(unresolved_paths.iter().all(|path| path.exists()));
+        assert!(!finished.registry_path.exists());
     }
 
     #[test]

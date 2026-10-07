@@ -47,6 +47,12 @@ pub const INDESIGN_HOST: HostSpec = HostSpec {
 
 `cancelRequest`はqueue中のrequestを`cancelled`にできます。dispatch済みhost codeは強制停止せず`cancelRequested`となり、協調的に停止しないcodeは最終結果を返す場合があります。共通payload、risk、audit契約は[共通 raw script 契約](script-contract.md)を参照してください。
 
+`timeoutMs`はclientの待機上限です。timeout後もworkerはhostの最終結果を待ち、instanceのFIFOとglobal排他を保持します。`cancelRequested`をtimeoutや古いworkerの状態で上書きせず、dispatch前に受理したキャンセルはcommand fileへ送信しません。
+
+heartbeatが途絶えた未完了requestは`unknown`（結果不明）として扱い、instanceの予約を保持します。同期scriptがheartbeat更新も止める場合があるため、途絶だけで終了扱いにはしません。旧`lost`も含め、同じ`requestId`への後着結果を回収できます。registry cleanupは`completed` / `failed` / `cancelled`だけを期限削除し、未解決requestは保持します。hostが終了して結果が返らない場合の復旧は[Runbook](operations-runbook.md)を参照してください。
+
+`ping`にはdaemonの`version`と`processId`を含めます。これは応答したdaemonの情報であり、stdioプロセスやAdobe内で読み込み済みのbridgeの版は別途確認が必要です。
+
 ## ディレクトリ
 
 ```text

@@ -112,6 +112,155 @@ struct DaemonState {
     cfg: AppConfig,
     bridge: BridgeClient,
     scheduler: InstanceScheduler,
+    lifecycle: Arc<Mutex<Lifecycle>>,
+}
+
+struct Lifecycle {
+    accepting: bool,
+    pending_jobs: usize,
+}
+
+impl Default for Lifecycle {
+    fn default() -> Self {
+        Self {
+            accepting: true,
+            pending_jobs: 0,
+        }
+    }
+}
+
+// Acquired before preparing a request, moved into its worker, and released even
+// on early errors. A client timeout must never release the host's work permit.
+struct JobPermit(Arc<Mutex<Lifecycle>>);
+
+impl JobPermit {
+    fn acquire(lifecycle: &Arc<Mutex<Lifecycle>>) -> Result<Self> {
+        let mut status = lifecycle.lock().expect("lifecycle mutex poisoned");
+        if !status.accepting {
+            return Err(anyhow!("runtime is draining; new commands are paused"));
+        }
+        status.pending_jobs += 1;
+        Ok(Self(Arc::clone(lifecycle)))
+    }
+}
+
+impl Drop for JobPermit {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .expect("lifecycle mutex poisoned")
+            .pending_jobs -= 1;
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSnapshot {
+    pub host_id: String,
+    pub accepting: bool,
+    pub pending_jobs: usize,
+    pub connected_instances: usize,
+}
+
+/// A broker owned by the desktop app, without spawning a daemon process.
+/// Dropping the handle requests a drain; the worker keeps accepted jobs alive.
+pub struct ManagedDaemon {
+    state: Arc<DaemonState>,
+    thread: thread::JoinHandle<Result<()>>,
+}
+
+impl ManagedDaemon {
+    pub fn begin_shutdown(&self) {
+        self.state
+            .lifecycle
+            .lock()
+            .expect("lifecycle mutex poisoned")
+            .accepting = false;
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.thread.is_finished()
+    }
+
+    pub fn snapshot(&self) -> Result<RuntimeSnapshot> {
+        let instances = self.state.bridge.discover_instances(Duration::from_millis(
+            self.state.cfg.instance_heartbeat_stale_ms,
+        ))?;
+        let status = self
+            .state
+            .lifecycle
+            .lock()
+            .expect("lifecycle mutex poisoned");
+        Ok(RuntimeSnapshot {
+            host_id: self.state.cfg.host_id.clone(),
+            accepting: status.accepting,
+            pending_jobs: status.pending_jobs,
+            connected_instances: instances.instances.len(),
+        })
+    }
+}
+
+impl Drop for ManagedDaemon {
+    fn drop(&mut self) {
+        self.begin_shutdown();
+    }
+}
+
+/// Bind before publishing ownership. Never take over an existing standalone
+/// daemon, and use a separate PID file so legacy stop commands cannot kill the
+/// entire desktop app through one host's daemon.pid.
+pub fn start_embedded_server(cfg: AppConfig) -> Result<ManagedDaemon> {
+    let listener = bind_listener(&cfg)?;
+    start_embedded_with_listener(cfg, listener)
+}
+
+fn start_embedded_with_listener(cfg: AppConfig, listener: TcpListener) -> Result<ManagedDaemon> {
+    listener.set_nonblocking(true)?;
+    let state = make_state(cfg)?;
+    let pid_file = DaemonPidFile::create(state.cfg.bridge.root_dir.join("app-runtime.pid"))?;
+    let worker_state = Arc::clone(&state);
+    let thread = thread::Builder::new()
+        .name(format!("{}-broker", state.cfg.host_id))
+        .spawn(move || {
+            let _pid_file = pid_file;
+            loop {
+                {
+                    let status = worker_state
+                        .lifecycle
+                        .lock()
+                        .expect("lifecycle mutex poisoned");
+                    if !status.accepting && status.pending_jobs == 0 {
+                        return Ok(());
+                    }
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => spawn_client(stream, &worker_state),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        })?;
+    Ok(ManagedDaemon { state, thread })
+}
+
+fn make_state(cfg: AppConfig) -> Result<Arc<DaemonState>> {
+    Ok(Arc::new(DaemonState {
+        bridge: BridgeClient::new(cfg.clone())?,
+        cfg,
+        scheduler: InstanceScheduler::default(),
+        lifecycle: Arc::new(Mutex::new(Lifecycle::default())),
+    }))
+}
+
+fn spawn_client(stream: TcpStream, state: &Arc<DaemonState>) {
+    let state = Arc::clone(state);
+    thread::spawn(move || {
+        if let Err(error) = handle_client(stream, state) {
+            error!("daemon client error: {error}");
+        }
+    });
 }
 
 /// Run a host-neutral local TCP request broker.
@@ -134,12 +283,7 @@ fn bind_listener(cfg: &AppConfig) -> Result<TcpListener> {
 }
 
 fn run_daemon_with_listener(cfg: AppConfig, listener: TcpListener) -> Result<()> {
-    let bridge = BridgeClient::new(cfg.clone())?;
-    let state = Arc::new(DaemonState {
-        cfg,
-        bridge,
-        scheduler: InstanceScheduler::default(),
-    });
+    let state = make_state(cfg)?;
 
     info!(
         "{} serve-daemon listening on {}",
@@ -147,14 +291,7 @@ fn run_daemon_with_listener(cfg: AppConfig, listener: TcpListener) -> Result<()>
     );
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => {
-                let state = Arc::clone(&state);
-                thread::spawn(move || {
-                    if let Err(error) = handle_client(stream, state) {
-                        error!("daemon client error: {error}");
-                    }
-                });
-            }
+            Ok(stream) => spawn_client(stream, &state),
             Err(error) => error!("daemon accept error: {error}"),
         }
     }
@@ -172,6 +309,8 @@ pub fn run_daemon_server_with_listener(cfg: AppConfig, listener: TcpListener) ->
 }
 
 fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>) -> Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut line = String::new();
     BufReader::new(stream.try_clone()?)
         .read_line(&mut line)
@@ -207,6 +346,8 @@ fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Va
     match request.op.as_str() {
         "ping" => Ok(json!({
             "status": "ok",
+            "version": env!("CARGO_PKG_VERSION"),
+            "processId": std::process::id(),
             "hostId": state.cfg.host_id,
             "daemonAddr": state.cfg.daemon_addr
         })),
@@ -249,6 +390,7 @@ fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Va
 }
 
 fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Value> {
+    let permit = JobPermit::acquire(&state.lifecycle)?;
     let command = request
         .command
         .clone()
@@ -326,7 +468,10 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
     let instance_id = instance.instance_id.clone();
     let options = BridgeRunOptions {
         target,
-        timeout: Duration::from_millis(timeout_ms),
+        // Only the client wait below is bounded. Host execution cannot be
+        // stopped by that timeout, so the worker must retain its FIFO slot and
+        // global read/write guard until the host returns a result.
+        timeout: Duration::MAX,
         poll_interval: Duration::from_millis(poll_interval_ms),
         retention_seconds,
     };
@@ -335,6 +480,7 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
     let task_request_id = request_id.clone();
     let task_command = command;
     let task = Box::new(move || {
+        let _permit = permit;
         match bridge.run_prepared_request_on_instance(
             &task_request_id,
             &task_command,
@@ -703,6 +849,75 @@ mod tests {
     }
 
     #[test]
+    fn embedded_shutdown_drains_after_client_timeout_and_retains_result() {
+        let (cfg, _dir, listener) = test_config();
+        let instance = write_instance(&cfg, "drain");
+        let runtime = start_embedded_with_listener(cfg.clone(), listener).unwrap();
+        // The legacy daemon PID must not point to the unified app process.
+        assert!(!cfg.bridge.root_dir.join("daemon.pid").exists());
+        assert!(cfg.bridge.root_dir.join("app-runtime.pid").exists());
+        let response = call_daemon(
+            &cfg,
+            json!({
+                "op": "runCommand", "command": "ping", "timeoutMs": 30,
+                "targetInstanceId": "drain", "args": {},
+            }),
+            500,
+        )
+        .unwrap();
+        assert_eq!(response["status"], "timeout");
+        let command = wait_for_command(&PathBuf::from(&instance.command_file), None);
+        runtime.begin_shutdown();
+        let snapshot = runtime.snapshot().unwrap();
+        assert!(!snapshot.accepting);
+        assert_eq!(snapshot.pending_jobs, 1);
+        assert!(!runtime.is_finished());
+        let rejected =
+            call_daemon(&cfg, json!({ "op": "runCommand", "command": "ping" }), 500).unwrap_err();
+        assert!(rejected.to_string().contains("draining"));
+        assert_eq!(
+            call_daemon(&cfg, json!({ "op": "ping" }), 500).unwrap()["status"],
+            "ok"
+        );
+        write_success(&PathBuf::from(&instance.result_file), &command);
+        for _ in 0..200 {
+            if runtime.is_finished() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            runtime.is_finished(),
+            "shutdown must finish after the accepted job completes"
+        );
+        assert!(!cfg.bridge.root_dir.join("app-runtime.pid").exists());
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        assert_eq!(
+            bridge
+                .get_request_record(response["requestId"].as_str().unwrap())
+                .unwrap()
+                .to_value()["status"],
+            "completed"
+        );
+        // Shutdown releases the port for the next app launch.
+        assert!(TcpListener::bind(&cfg.daemon_addr).is_ok());
+    }
+
+    #[test]
+    fn drain_admission_and_error_paths_do_not_leak_jobs() {
+        let (cfg, _dir, _listener) = test_config();
+        let state = make_state(cfg).unwrap();
+        let invalid = serde_json::from_value(json!({ "op": "runCommand" })).unwrap();
+        assert!(handle_request(&state, invalid).is_err());
+        assert_eq!(state.lifecycle.lock().unwrap().pending_jobs, 0);
+        let permit = JobPermit::acquire(&state.lifecycle).unwrap();
+        state.lifecycle.lock().unwrap().accepting = false;
+        assert!(JobPermit::acquire(&state.lifecycle).is_err());
+        drop(permit);
+        assert_eq!(state.lifecycle.lock().unwrap().pending_jobs, 0);
+    }
+
+    #[test]
     fn protocol_supports_all_operations_and_timeout_recovery() {
         let (cfg, _dir, listener) = test_config();
         let instance = write_instance(&cfg, "test-instance");
@@ -993,5 +1208,109 @@ mod tests {
             assert!(message.contains(&unavailable_addr));
             assert!(message.contains("serve-daemon"));
         }
+    }
+
+    #[test]
+    fn client_timeout_keeps_both_directions_of_global_exclusion() {
+        for first_exclusive in [true, false] {
+            let (cfg, _dir, listener) = test_config();
+            let first_instance = write_instance(&cfg, "first");
+            let second_instance = write_instance(&cfg, "second");
+            let server_cfg = cfg.clone();
+            thread::spawn(move || run_daemon_with_listener(server_cfg, listener).unwrap());
+            let first = call_daemon(
+                &cfg,
+                json!({
+                    "op": "runCommand", "command": "ping", "args": {},
+                    "targetInstanceId": "first", "timeoutMs": 100,
+                    "globalExclusive": first_exclusive
+                }),
+                100,
+            )
+            .unwrap();
+            assert_eq!(first["status"], "timeout");
+            let first_command =
+                wait_for_command(&PathBuf::from(&first_instance.command_file), None);
+            let second_cfg = cfg.clone();
+            let second =
+                thread::spawn(move || run_test_command(&second_cfg, "second", 2, !first_exclusive));
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                !PathBuf::from(&second_instance.command_file).exists(),
+                "client timeout released the execution gate"
+            );
+            write_success(&PathBuf::from(first_instance.result_file), &first_command);
+            let second_command =
+                wait_for_command(&PathBuf::from(&second_instance.command_file), None);
+            write_success(&PathBuf::from(second_instance.result_file), &second_command);
+            assert_eq!(second.join().unwrap()["status"], "completed");
+            assert_eq!(
+                call_daemon(
+                    &cfg,
+                    json!({
+                        "op": "getResult", "requestId": first["requestId"]
+                    }),
+                    100
+                )
+                .unwrap()["status"],
+                "completed"
+            );
+        }
+    }
+
+    #[test]
+    fn queued_cancellation_survives_client_timeout() {
+        let (cfg, _dir, listener) = test_config();
+        let instance = write_instance(&cfg, "queue");
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let server_cfg = cfg.clone();
+        thread::spawn(move || run_daemon_with_listener(server_cfg, listener).unwrap());
+        let first_cfg = cfg.clone();
+        let first = thread::spawn(move || run_test_command(&first_cfg, "queue", 1, false));
+        let command_path = PathBuf::from(&instance.command_file);
+        let first_command = wait_for_command(&command_path, None);
+        let second_cfg = cfg.clone();
+        let second = thread::spawn(move || {
+            call_daemon(
+                &second_cfg,
+                json!({
+                    "op": "runCommand", "command": "ping", "args": {},
+                    "targetInstanceId": "queue", "timeoutMs": 300
+                }),
+                300,
+            )
+            .unwrap()
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let second_id = loop {
+            if let Some(record) = bridge.latest_request_record().unwrap() {
+                if Some(&record.request_id) != first_command.request_id.as_ref() {
+                    break record.request_id;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        };
+        let cancelled = call_daemon(
+            &cfg,
+            json!({ "op": "cancelRequest", "requestId": second_id }),
+            100,
+        )
+        .unwrap();
+        assert_eq!(cancelled["status"], "cancelRequested");
+        assert_eq!(second.join().unwrap()["status"], "cancelRequested");
+        write_success(&PathBuf::from(instance.result_file), &first_command);
+        assert_eq!(first.join().unwrap()["status"], "completed");
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while bridge.get_request_record(&second_id).unwrap().status != "cancelled" {
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        let current: CommandFile =
+            serde_json::from_str(&fs::read_to_string(command_path).unwrap()).unwrap();
+        assert_eq!(
+            current.request_id, first_command.request_id,
+            "cancelled request overwrote the host command mailbox"
+        );
     }
 }
