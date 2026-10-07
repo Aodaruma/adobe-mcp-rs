@@ -693,7 +693,8 @@ mod tests {
     }
 
     fn wait_for_command(path: &PathBuf, previous_request_id: Option<&str>) -> CommandFile {
-        for _ in 0..400 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
             if let Ok(raw) = fs::read_to_string(path) {
                 if let Ok(command) = serde_json::from_str::<CommandFile>(&raw) {
                     let is_new = command.request_id.as_deref() != previous_request_id;
@@ -720,6 +721,8 @@ mod tests {
         .unwrap();
     }
 
+    // These tests assert ordering/parallelism, not filesystem throughput.
+    // Windows CI may take seconds to publish durable bridge files.
     fn run_test_command(
         cfg: &AppConfig,
         instance_id: &str,
@@ -733,12 +736,12 @@ mod tests {
                 "command": "ping",
                 "args": { "sequence": sequence },
                 "targetInstanceId": instance_id,
-                "timeoutMs": 2_000,
+                "timeoutMs": 20_000,
                 "pollIntervalMs": 5,
                 "retentionSeconds": 60,
                 "globalExclusive": global_exclusive
             }),
-            2_000,
+            25_000,
         )
         .unwrap()
     }
@@ -1077,11 +1080,11 @@ mod tests {
 
         let first_cfg = cfg.clone();
         let first = thread::spawn(move || run_test_command(&first_cfg, "fifo", 1, false));
-        first_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        first_seen_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         let second_cfg = cfg.clone();
         let second = thread::spawn(move || run_test_command(&second_cfg, "fifo", 2, false));
         thread::sleep(Duration::from_millis(40));
-        assert_eq!(order_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+        assert_eq!(order_rx.recv_timeout(Duration::from_secs(10)).unwrap(), 1);
         assert!(
             order_rx.try_recv().is_err(),
             "second job started before first completed"
@@ -1096,7 +1099,7 @@ mod tests {
             second.join().unwrap().get("status").and_then(Value::as_str),
             Some("completed")
         );
-        assert_eq!(order_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+        assert_eq!(order_rx.recv_timeout(Duration::from_secs(10)).unwrap(), 2);
         host.join().unwrap();
     }
 
@@ -1129,8 +1132,8 @@ mod tests {
         let second_cfg = cfg.clone();
         let second = thread::spawn(move || run_test_command(&second_cfg, "parallel-b", 2, false));
         let mut seen = vec![
-            seen_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            seen_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            seen_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            seen_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
         ];
         seen.sort();
         assert_eq!(seen, vec!["parallel-a", "parallel-b"]);
@@ -1173,7 +1176,7 @@ mod tests {
         let exclusive =
             thread::spawn(move || run_test_command(&exclusive_cfg, "exclusive", 1, true));
         exclusive_seen_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(10))
             .unwrap();
         let normal_cfg = cfg.clone();
         let normal = thread::spawn(move || run_test_command(&normal_cfg, "normal", 2, false));
@@ -1184,7 +1187,9 @@ mod tests {
             "normal job started while global-exclusive job was running"
         );
         release_tx.send(()).unwrap();
-        normal_seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        normal_seen_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
         assert_eq!(
             exclusive
                 .join()
