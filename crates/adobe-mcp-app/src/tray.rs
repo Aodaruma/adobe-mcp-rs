@@ -46,13 +46,14 @@ fn icon() -> Result<Icon> {
 }
 
 pub(super) fn run(mut app: Application) -> Result<()> {
-    let mut builder = EventLoopBuilder::<MenuEvent>::with_user_event();
+    let event_loop = EventLoopBuilder::<MenuEvent>::with_user_event().build();
     #[cfg(target_os = "macos")]
-    {
-        use tao::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
-        builder.with_activation_policy(ActivationPolicy::Accessory);
-    }
-    let event_loop = builder.build();
+    let event_loop = {
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        let mut event_loop = event_loop;
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+        event_loop
+    };
     let proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = proxy.send_event(event);
