@@ -2095,28 +2095,29 @@ mod tests {
         let instance = write_test_instance(&cfg, "ae-test");
         let result_path = PathBuf::from(instance.result_file.clone());
 
-        thread::spawn(move || {
+        let mock_host = thread::spawn(move || {
             let command_path = PathBuf::from(instance.command_file.clone());
-            let mut request_id = String::new();
-            for _ in 0..20 {
-                if command_path.exists() {
-                    let raw = fs::read_to_string(&command_path).expect("read command");
-                    let command: CommandFile = serde_json::from_str(&raw).expect("parse command");
-                    request_id = command.request_id.unwrap_or_default();
-                    break;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let request_id = loop {
+                if let Ok(raw) = fs::read_to_string(&command_path) {
+                    if let Ok(command) = serde_json::from_str::<CommandFile>(&raw) {
+                        if let Some(request_id) = command.request_id {
+                            break request_id;
+                        }
+                    }
                 }
-                thread::sleep(Duration::from_millis(50));
-            }
+                assert!(
+                    Instant::now() < deadline,
+                    "mock host never received a command"
+                );
+                thread::sleep(Duration::from_millis(10));
+            };
             let payload = serde_json::json!({
                 "status": "success",
                 "_commandExecuted": "listCompositions",
                 "_requestId": request_id
             });
-            fs::write(
-                result_path,
-                serde_json::to_string(&payload).expect("serialize"),
-            )
-            .expect("write result");
+            write_json_file(&result_path, &payload).expect("write result");
         });
 
         let outcome = bridge
@@ -2125,12 +2126,13 @@ mod tests {
                 json!({}),
                 BridgeRunOptions {
                     target: BridgeTarget::default(),
-                    timeout: Duration::from_secs(3),
+                    timeout: Duration::from_secs(10),
                     poll_interval: Duration::from_millis(50),
                     retention_seconds: 60,
                 },
             )
             .expect("run");
+        mock_host.join().expect("mock host response");
         assert_eq!(outcome.record.status, "completed");
         assert!(outcome.record.host_instance.is_some());
     }
