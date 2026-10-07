@@ -93,6 +93,10 @@ pub struct HostInstance {
     pub heartbeat_path: Option<String>,
 }
 
+pub fn is_websocket_instance(instance: &HostInstance) -> bool {
+    instance.lifecycle_mode.as_deref() == Some("websocket")
+}
+
 /// Rust API compatibility alias. New code should use [`HostInstance`].
 #[deprecated(note = "use HostInstance")]
 pub type AeInstance = HostInstance;
@@ -148,6 +152,8 @@ pub struct RequestRecord {
     pub created_at: String,
     pub updated_at: String,
     pub expires_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatched_at: Option<String>,
     #[serde(default, alias = "aeInstance", skip_serializing_if = "Option::is_none")]
     pub host_instance: Option<HostInstance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -574,6 +580,7 @@ impl BridgeClient {
             created_at: created_at.clone(),
             updated_at: created_at,
             expires_at: timestamp_after_seconds(retention_seconds),
+            dispatched_at: None,
             host_instance,
             message: None,
             result: None,
@@ -806,7 +813,12 @@ impl BridgeClient {
 
     pub fn get_request_record(&self, request_id: &str) -> Result<RequestRecord> {
         let mut record = self.read_request_record(request_id)?;
-        if is_terminal_request_status(&record.status) {
+        if is_terminal_request_status(&record.status)
+            || record
+                .host_instance
+                .as_ref()
+                .is_some_and(is_websocket_instance)
+        {
             return Ok(record);
         }
 
@@ -835,6 +847,106 @@ impl BridgeClient {
         }
 
         Ok(record)
+    }
+
+    /// Atomically claim network dispatch against queued cancellation. Persist
+    /// before sending any bytes so recovery never mistakes uncertain work for queued work.
+    pub fn claim_network_request(&self, request_id: &str) -> Result<RequestRecord> {
+        self.update_request_record(request_id, |record| {
+            if is_terminal_request_status(&record.status) || record.dispatched_at.is_some() {
+                return false;
+            }
+            record.updated_at = chrono_like_timestamp();
+            if record.status == "cancelRequested" {
+                record.status = "cancelled".into();
+                record.message = Some("Cancelled before dispatch.".into());
+            } else {
+                record.dispatched_at = Some(record.updated_at.clone());
+                if record.status != "timeout" {
+                    record.status = "dispatched".into();
+                }
+            }
+            true
+        })
+    }
+
+    pub fn mark_network_disconnected(&self, request_id: &str) -> Result<RequestRecord> {
+        self.update_request_record(request_id, |record| {
+            if is_terminal_request_status(&record.status) { return false; }
+            if record.status != "cancelRequested" { record.status = "unknown".into(); }
+            record.updated_at = chrono_like_timestamp();
+            record.message = Some("WebSocket disconnected; execution may still be running. Waiting for the same UXP session to return its result. Do not resubmit.".into());
+            true
+        })
+    }
+
+    /// Authenticate/correlate a result against the persisted target before ACK.
+    /// Duplicate results are acknowledged without replacing a terminal record.
+    pub fn complete_network_request(
+        &self,
+        instance: &HostInstance,
+        request_id: &str,
+        result: Value,
+    ) -> Result<RequestRecord> {
+        let record = self.read_request_record(request_id)?;
+        let target = record
+            .host_instance
+            .as_ref()
+            .ok_or_else(|| anyhow!("request has no target"))?;
+        if !is_websocket_instance(target)
+            || target.host_id != instance.host_id
+            || target.instance_id != instance.instance_id
+            || target.runtime_id != instance.runtime_id
+            || record.dispatched_at.is_none()
+            || result["_requestId"] != request_id
+            || result["_commandExecuted"] != record.command
+            || !matches!(
+                result["status"].as_str(),
+                Some("success" | "error" | "completed")
+            )
+        {
+            return Err(anyhow!(
+                "WebSocket result does not match its dispatched request/session"
+            ));
+        }
+        let raw = serde_json::to_string(&result)?;
+        if raw.len() as u64 > self.cfg.script_contract.max_result_bytes {
+            return Err(anyhow!("WebSocket result exceeds max_result_bytes"));
+        }
+        self.update_request_record(request_id, |record| {
+            if is_terminal_request_status(&record.status) {
+                return false;
+            }
+            record.status = result_record_status(&result).into();
+            record.updated_at = chrono_like_timestamp();
+            record.result = Some(result);
+            record.result_raw = Some(raw);
+            record.message = None;
+            true
+        })
+    }
+
+    pub fn unfinished_network_requests(&self) -> Result<Vec<RequestRecord>> {
+        let mut records = Vec::new();
+        if !self.registry_dir().exists() {
+            return Ok(records);
+        }
+        for entry in fs::read_dir(self.registry_dir())? {
+            let path = entry?.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let record: RequestRecord = read_json_file_with_retry(&path)?;
+            if !is_terminal_request_status(&record.status)
+                && record
+                    .host_instance
+                    .as_ref()
+                    .is_some_and(is_websocket_instance)
+            {
+                records.push(record);
+            }
+        }
+        Ok(records)
     }
 
     pub fn latest_request_record(&self) -> Result<Option<RequestRecord>> {
@@ -1327,7 +1439,14 @@ fn create_atomic_temp_file(parent: &Path, target_name: &str) -> Result<(PathBuf,
             ".{target_name}.tmp-{}-{nanos:x}-{counter:x}",
             std::process::id()
         ));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
             Ok(file) => return Ok((path, file)),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -1652,7 +1771,7 @@ fn instance_current_request_path(instance: &HostInstance) -> PathBuf {
         .join("current_request.json")
 }
 
-fn instance_matches_version(instance: &HostInstance, version: &str) -> bool {
+pub fn instance_matches_version(instance: &HostInstance, version: &str) -> bool {
     let needle = version.trim().to_lowercase();
     if needle.is_empty() {
         return true;

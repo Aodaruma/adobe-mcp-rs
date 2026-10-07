@@ -42,9 +42,9 @@ pluginの読み込み時に自動受信を開始し、panelのhide / destroyで�
 
 このPCで確認した旧Illustrator配置には、#39で修正された `File.rename` 後の参照先変化の問題が残っていた。Gitの修正とインストール済みbridgeの更新は別作業。制作中のホストへこのブランチを自動配布していない。
 
-## UXPの直接通信への移行案
+## UXPのWebSocket通信
 
-現状のqueueはRustの `InstanceScheduler` 内のFIFO。JSONファイルはcommand / result / heartbeatの交換と復旧用記録に使っている。UXPホストでは交換部分をローカルWebSocketへ置き換える方針が適切。**このブランチの現時点ではWebSocket通信は未実装**。
+Photoshop / Premiere UXPのcommand / result / heartbeat交換はローカルWebSocketを使用する。queueは既存のRust `InstanceScheduler` 内のFIFO、保持履歴はアプリ側のregistry JSON。新しいUXPはファイルのcommand / result / heartbeatを生成・監視しない。
 
 ```mermaid
 flowchart LR
@@ -59,7 +59,15 @@ flowchart LR
 - `instanceId` / session / `requestId` を照合する。切断時に実行済みか不明なcommandを再送しない。結果をアプリが保存してackするまでUXPが保持し、再接続時に照合・再送する。
 - transport切替はcommandを受け付ける前に決める。実行途中の切断からファイル経路へ自動再投入しない。
 - queue・排他・保持結果の責任は統合アプリ側に置く。JSON自体を廃止する必要はなく、通信ペイロードとして使用できる。
-- loopback制限・接続先allowlist・認証を設ける。manifest権限とmacOSのローカル接続／TLS制約はhost・versionごとに実測する。
+- サーバーは `127.0.0.1` だけにbindする。同じポートで既存TCP brokerとWebSocket Upgradeを識別する。UXPは `localhost` の明示ポートだけをmanifestで許可し、接続先検証と256bitのランダムtokenで認証する。macOSのローカル接続／TLS制約は別途実測が必要。
+
+アプリ（またはこの版の `ps-mcp/pr-mcp serve-daemon`）がhostのbridge rootに `connection.json` を生成する。これは接続先・token・protocol version・transportのbootstrap設定で、コマンドのキューではない。UXPは接続時に読み、稼働中はWebSocketのheartbeatを使う。tokenをログ・Gitへ含めない。通常は `Documents/ps-mcp-bridge` / `Documents/pr-mcp-bridge`。独自ポートを使う開発環境では、UXP manifestの `ws://localhost:PORT` / `http://localhost:PORT` も同じポートに変更してUnload→Loadする。任意の外部ドメインを許可する `all` は不要。
+
+旧版との互換接続は `connection.json` の `transport` を `file` にしてpluginを再ロードする。通信障害による自動切替はしない。file方式から移行するときも実行中requestを解決してから切り替える。
+
+結果のACKはregistryをatomic write・syncした後に返す。client timeout・切断時も既存workerがFIFO・host内global排他を保持する。アプリが再起動した場合は、保存済みのdispatch記録から未解決requestを検出し、元のUXP sessionから結果を回収するまでhostの新規commandを停止する。
+
+**復旧の限界**：ACK前の結果はUXPメモリに保持する。Adobe終了・plugin再ロードでsessionそのものを失った場合は、その結果を自動復元できない。requestを `unknown` のまま保持し、実行済みか不明な処理は再送しない。元のhost処理が確実に終了したことを確認し、対象requestの内容を調べたうえで運用上の復旧判断が必要。未解決を時間経過だけで成功／失敗に変えない。
 
 HTTP pollingは代替候補だが周期的な問い合わせと待ち時間が残る。long pollingも実現可能。UXPはWebSocket clientのみを提供するため、UXPへ外部から直接Webhookを配信する構成は採用しない。
 
@@ -71,6 +79,9 @@ Adobeの2026年9月発表ではCEP廃止は2029年末、AE UXP公開betaは2026�
 
 契約テストは既存CIの `cargo test -p bridge-contract-tests` からNode.jsのUXPテストも実行する。ローカル検証にはRustに加えてNode.js 20以上が必要。
 
-- Rustテスト：client timeout後のdrain、受付拒否、遅延結果の保存、PID・portの解放、既存queue／保持結果契約。
-- Nodeテスト：UXPで提供されるfs APIだけを模擬し、自動受信・連続置換・失敗時の旧ファイル保持・hidden panel・destroy中のtimer再生成防止を確認。
-- Adobe実機、Windows通知領域の見た目と操作、macOSメニューバー、ログイン起動、sleep/modal、署名済み配布と旧daemonの移行は別途E2Eが必要。#22の実機検証項目をこの変更だけで完了扱いにしない。
+- Rustテスト：WebSocketの認証・host/session照合、切断後の結果回収・重複ACK、切断中のglobal排他保持、再起動後の受付保護。既存のclient timeout後のdrain、受付拒否、遅延結果保存、PID・portの解放、queue／保持結果契約も継続。
+- Nodeテスト：UXPの自動接続、未ACK結果の再送、重複commandの実行抑止、panel非表示中の接続維持、WebSocket経路で交換ファイルを作らないこと。互換file方式の連続置換・失敗時の旧ファイル保持・destroy中のtimer再生成防止も確認。
+- Windows実機（2026-10-08）：Photoshop 26.11.7 / Premiere Pro 25.6.6。別IDの開発plugin・別profileを用い、WebSocket認証、MCP stdio→統合broker→実Adobeのping、読み取り専用raw codeを確認。両ホストのパネル非表示でも受信継続。両ホストでclient timeout後・実行中に検証用アプリを再起動し、元のsessionの結果を回収、実行回数1回を確認。制作ドキュメントは変更しない。
+- macOS実機、ログイン起動、sleep/modal、長時間運転、署名済み配布と旧daemonの移行は別途E2Eが必要。#22の全実機検証項目をこの変更だけで完了扱いにしない。
+
+wire schemaと復旧規約は [WebSocket protocol](websocket-protocol.md) を参照。

@@ -209,12 +209,14 @@ try {
     $escapedPremiereUxpReadme = (Join-Path $premiereUxpRoot "README.md").Replace("\", "\\")
     $escapedPremiereUxpCss = (Join-Path $premiereUxpRoot "css\styles.css").Replace("\", "\\")
     $escapedPremiereUxpJs = (Join-Path $premiereUxpRoot "js\main.js").Replace("\", "\\")
+    $escapedPremiereUxpWebSocket = (Join-Path $premiereUxpRoot "js\websocket.js").Replace("\", "\\")
     $photoshopUxpRoot = Join-Path $stageDir "photoshop-uxp\mcp-bridge-photoshop"
     $escapedPhotoshopUxpManifest = (Join-Path $photoshopUxpRoot "manifest.json").Replace("\", "\\")
     $escapedPhotoshopUxpIndex = (Join-Path $photoshopUxpRoot "index.html").Replace("\", "\\")
     $escapedPhotoshopUxpReadme = (Join-Path $photoshopUxpRoot "README.md").Replace("\", "\\")
     $escapedPhotoshopUxpCss = (Join-Path $photoshopUxpRoot "css\styles.css").Replace("\", "\\")
     $escapedPhotoshopUxpJs = (Join-Path $photoshopUxpRoot "js\main.js").Replace("\", "\\")
+    $escapedPhotoshopUxpWebSocket = (Join-Path $photoshopUxpRoot "js\websocket.js").Replace("\", "\\")
     $illustratorCepRoot = Join-Path $stageDir "illustrator-cep\mcp-bridge-illustrator"
     $escapedIllustratorManifest = (Join-Path $illustratorCepRoot "CSXS\manifest.xml").Replace("\", "\\")
     $escapedIllustratorIndex = (Join-Path $illustratorCepRoot "index.html").Replace("\", "\\")
@@ -306,6 +308,7 @@ try {
             <Directory Id="PremiereUxpJs" Name="js">
               <Component Id="PremiereUxpJsComponent" Guid="8C20F181-F4AC-45B9-A6E9-05ED4322A774">
                 <File Id="PremiereUxpJsFile" Source="$escapedPremiereUxpJs" KeyPath="yes" />
+                <File Id="PremiereUxpWebSocketFile" Source="$escapedPremiereUxpWebSocket" />
               </Component>
             </Directory>
             <Component Id="PremiereUxpManifestComponent" Guid="B8F3412B-91CE-47C6-AB6A-6329E6D89C87">
@@ -329,6 +332,7 @@ try {
             <Directory Id="PhotoshopUxpJs" Name="js">
               <Component Id="PhotoshopUxpJsComponent" Guid="4F96FD3D-E305-461B-8582-1CB5B00D42BA">
                 <File Id="PhotoshopUxpJsFile" Source="$escapedPhotoshopUxpJs" KeyPath="yes" />
+                <File Id="PhotoshopUxpWebSocketFile" Source="$escapedPhotoshopUxpWebSocket" />
               </Component>
             </Directory>
             <Component Id="PhotoshopUxpManifestComponent" Guid="4C00817C-CB15-4240-BA24-6E7983BB0370">

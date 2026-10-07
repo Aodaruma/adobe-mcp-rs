@@ -5,8 +5,21 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 
 // Deliberately expose only the UXP fs API, not Node's larger synchronous API.
-function loadBridge(host, prefix) {
+function loadBridge(host, prefix, network = false) {
   const files = new Map();
+  files.set(`/home/Documents/${prefix}-mcp-bridge/connection.json`, JSON.stringify(network ? {
+    transport: 'websocket', hostId: host, protocolVersion: 1, token: 'a'.repeat(64), url: 'ws://localhost:49161/uxp'
+  } : { transport: 'file' }));
+  const sockets = [];
+  let executions = 0;
+  let finishExecution;
+  class FakeWebSocket {
+    constructor(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
+    send(text) { assert.equal(this.readyState, 1); this.sent.push(JSON.parse(text)); }
+    open() { this.readyState = 1; this.onopen(); }
+    receive(packet) { this.onmessage({ data: JSON.stringify(packet) }); }
+    close() { this.readyState = 3; if (this.onclose) this.onclose(); }
+  }
   const dirs = new Set(['/home', '/home/Documents']);
   const elements = new Map();
   const timers = new Map();
@@ -48,6 +61,7 @@ function loadBridge(host, prefix) {
     }
   };
   const window = {
+    WebSocket: FakeWebSocket,
     addEventListener() {},
     setInterval(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
     clearInterval(id) { timers.delete(id); },
@@ -60,16 +74,62 @@ function loadBridge(host, prefix) {
     photoshop: { app: { documents: [], version: '26.0' } },
     premierepro: { app: {}, Project: { getActiveProject: async () => null } }
   };
+  modules['./js/websocket.js'] = require('../../src/' + host + '/uxp/mcp-bridge-' + host + '/js/websocket.js');
+  modules.probe = { run() { executions++; return new Promise(resolve => { finishExecution = resolve; }); } };
   const source = path.resolve(__dirname, `../../src/${host}/uxp/mcp-bridge-${host}/js/main.js`);
   vm.runInNewContext(fs.readFileSync(source, 'utf8'), { require: name => modules[name], window, document, setTimeout, clearTimeout, console }, { filename: source });
   const root = `/home/Documents/${prefix}-mcp-bridge`;
   const instance = `${root}/instances/${prefix}-uxp-test-instance`;
-  return { files, timers, elements, root, instance, hooks, setFailRename: value => { failRename = value; } };
+  return { files, timers, elements, root, instance, hooks, sockets,
+    executions: () => executions, finishExecution: () => finishExecution('done'),
+    setFailRename: value => { failRename = value; } };
 }
 
 async function settle() { for (let i = 0; i < 25; i++) await new Promise(resolve => setImmediate(resolve)); }
 
 for (const [host, prefix] of [['photoshop', 'ps'], ['premiere', 'pr']]) {
+  test(`${host}: WebSocket auto receive, reconnect, retained ACK and duplicate suppression`, async () => {
+    const bridge = loadBridge(host, prefix, true);
+    await settle();
+    assert.equal(bridge.sockets.length, 1, bridge.elements.get('log').textContent);
+    const ws = bridge.sockets[0];
+    ws.open();
+    const hello = ws.sent[0];
+    assert.equal(hello.type, 'hello');
+    ws.receive({ type: 'welcome', protocolVersion: 1 });
+    const command = { type: 'command', sessionId: hello.sessionId, requestId: 'req-first', command: 'executeJsx', args: {
+      mode: 'unsafe', description: 'Controlled transport test', code: "return await bridge.require('probe').run();"
+    }};
+    ws.receive(command);
+    await settle();
+    assert.equal(bridge.executions(), 1);
+    ws.close();
+    bridge.finishExecution();
+    await settle();
+    // The initial retry is bounded; exercise the actual retry tick after its deadline.
+    await new Promise(resolve => setTimeout(resolve, 850));
+    for (const timer of bridge.timers.values()) timer.fn();
+    await settle();
+    const resumed = bridge.sockets.at(-1);
+    assert.notEqual(resumed, ws);
+    resumed.open();
+    assert.equal(resumed.sent[0].sessionId, hello.sessionId);
+    resumed.receive({ type: 'welcome', protocolVersion: 1 });
+    assert.equal(resumed.sent.at(-1).type, 'result');
+    assert.equal(resumed.sent.at(-1).result.result, 'done');
+    resumed.receive(command);
+    assert.equal(bridge.executions(), 1);
+    resumed.receive({ type: 'resultAck', sessionId: hello.sessionId, requestId: command.requestId });
+    resumed.receive(command);
+    assert.equal(bridge.executions(), 1, 'ACK does not permit repeated execution');
+    bridge.hooks.panels.mcpBridgePanel.hide();
+    await settle();
+    assert.equal(bridge.sockets.at(-1), resumed, 'hidden panel retains its connection');
+    assert.equal(bridge.files.size, 1, 'network transport must not write command/result/heartbeat files');
+    bridge.hooks.plugin.destroy();
+    assert.equal(bridge.timers.size, 0);
+  });
+
   test(`${host}: auto receive, atomic replacement, and hidden panel lifecycle`, async () => {
     const bridge = loadBridge(host, prefix);
     await settle();
@@ -103,3 +163,12 @@ for (const [host, prefix] of [['photoshop', 'ps'], ['premiere', 'pr']]) {
     assert.equal(bridge.timers.size, 0);
   });
 }
+
+test('packaged UXP transports are identical and present in Windows installer', () => {
+  const ps = fs.readFileSync(path.resolve(__dirname, '../../src/photoshop/uxp/mcp-bridge-photoshop/js/websocket.js'), 'utf8');
+  const pr = fs.readFileSync(path.resolve(__dirname, '../../src/premiere/uxp/mcp-bridge-premiere/js/websocket.js'), 'utf8');
+  assert.equal(ps, pr);
+  const installer = fs.readFileSync(path.resolve(__dirname, '../package-windows.ps1'), 'utf8');
+  assert.match(installer, /PhotoshopUxpWebSocketFile/);
+  assert.match(installer, /PremiereUxpWebSocketFile/);
+});

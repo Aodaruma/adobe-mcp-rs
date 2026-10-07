@@ -22,6 +22,7 @@
   var pollTimer = null;
   var heartbeatTimer = null;
   var bridgeGeneration = 0;
+  var networkTransport = null;
   var currentRequestId = null;
   var atomicWriteCounter = 0;
   var state = {
@@ -394,7 +395,7 @@
     return getActiveDocumentOrNull();
   }
 
-  async function writeHeartbeat(status) {
+  async function heartbeatPayload(status) {
     var paths = getBridgePaths();
     var host = uxp && uxp.host ? uxp.host : {};
     var appVersion = host.version || safeGet(app, "version") || "";
@@ -419,7 +420,46 @@
       updatedAt: nowIso(),
       heartbeatPath: paths.heartbeatFile
     };
-    await writeJsonFile(paths.heartbeatFile, payload);
+    return payload;
+  }
+
+  async function writeHeartbeat(status) {
+    await writeJsonFile(getBridgePaths().heartbeatFile, await heartbeatPayload(status));
+  }
+
+  function startNetworkTransport() {
+    var configPath = joinPath(getBridgePaths().root, "connection.json");
+    var config = null;
+    try { config = readJsonFile(configPath); } catch (_e) {}
+    // File transport is an explicit compatibility choice, never a disconnect fallback.
+    if (!networkTransport && config && config.transport === "file") { return false; }
+    if (!networkTransport) {
+      // HTML script tags resolve require() from the plugin root in UXP.
+      var createTransport = safeRequire("./js/websocket.js");
+      if (!createTransport) {
+        setState({ lastStatus: "error", lastError: "WebSocket transport module is missing." });
+        return true;
+      }
+      networkTransport = createTransport({
+        hostId: "photoshop",
+        WebSocket: window.WebSocket,
+        config: function () { return readJsonFile(configPath); },
+        instance: function () { return heartbeatPayload("idle"); },
+        enabled: function () { return autoRun; },
+        execute: async function (command, args, id) {
+          currentRequestId = id;
+          try { return normalizeResult(command, id, await dispatchCommand(command, args)); }
+          finally { currentRequestId = null; }
+        },
+        status: function (status, message) {
+          setState({ lastStatus: status, lastMessage: message, lastError: null });
+        },
+        setInterval: function (fn, ms) { return window.setInterval(fn, ms); },
+        clearInterval: function (id) { window.clearInterval(id); }
+      });
+    }
+    networkTransport.start();
+    return true;
   }
 
   function updateUi() {
@@ -947,6 +987,8 @@
 
   async function startBridge() {
     var generation = bridgeGeneration;
+    if (!initialized) { initElements(); }
+    if (startNetworkTransport()) { return; }
     if (!initialized) {
       initElements();
     }
@@ -973,6 +1015,7 @@
 
   function stopBridge() {
     bridgeGeneration += 1;
+    if (networkTransport) { networkTransport.stop(); }
     if (pollTimer) {
       window.clearInterval(pollTimer);
       pollTimer = null;

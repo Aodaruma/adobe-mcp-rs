@@ -1,5 +1,8 @@
 use anyhow::{anyhow, Context, Result};
-use bridge_core::{BridgeClient, BridgeRunOptions, BridgeTarget};
+use bridge_core::{
+    instance_matches_version, is_websocket_instance, BridgeClient, BridgeRunOptions, BridgeTarget,
+    HostInstance, InstanceDiscoveryReport,
+};
 use mcp_core::{host_spec_by_id, AppConfig, ScriptFileAudit};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -12,6 +15,8 @@ use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info};
+
+mod websocket;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +118,47 @@ struct DaemonState {
     bridge: BridgeClient,
     scheduler: InstanceScheduler,
     lifecycle: Arc<Mutex<Lifecycle>>,
+    websocket: Option<websocket::Hub>,
+}
+
+impl DaemonState {
+    fn instances(&self) -> Result<InstanceDiscoveryReport> {
+        let mut report = self
+            .bridge
+            .discover_instances(Duration::from_millis(self.cfg.instance_heartbeat_stale_ms))?;
+        if let Some(hub) = &self.websocket {
+            let network = hub.instances();
+            // A migrated instance may still have a recent legacy heartbeat.
+            report
+                .instances
+                .retain(|file| !hub.owns_instance(&file.instance_id));
+            report.instances.extend(network);
+        }
+        Ok(report)
+    }
+
+    fn resolve_target(&self, target: &BridgeTarget) -> Result<HostInstance> {
+        let filtered: Vec<_> = self
+            .instances()?
+            .instances
+            .into_iter()
+            .filter(|instance| {
+                target
+                    .instance_id
+                    .as_ref()
+                    .is_none_or(|id| id == &instance.instance_id)
+                    && target
+                        .version
+                        .as_ref()
+                        .is_none_or(|version| instance_matches_version(instance, version))
+            })
+            .collect();
+        match filtered.len() {
+            0 => Err(anyhow!("No active {} bridge instance matched the target. Start the bridge and check the application connection status.", self.cfg.host_id)),
+            1 => Ok(filtered.into_iter().next().unwrap()),
+            _ => Err(anyhow!("Multiple active instances matched; specify targetInstanceId or targetVersion.")),
+        }
+    }
 }
 
 struct Lifecycle {
@@ -183,9 +229,7 @@ impl ManagedDaemon {
     }
 
     pub fn snapshot(&self) -> Result<RuntimeSnapshot> {
-        let instances = self.state.bridge.discover_instances(Duration::from_millis(
-            self.state.cfg.instance_heartbeat_stale_ms,
-        ))?;
+        let instances = self.state.instances()?;
         let status = self
             .state
             .lifecycle
@@ -194,7 +238,12 @@ impl ManagedDaemon {
         Ok(RuntimeSnapshot {
             host_id: self.state.cfg.host_id.clone(),
             accepting: status.accepting,
-            pending_jobs: status.pending_jobs,
+            pending_jobs: status.pending_jobs
+                + self
+                    .state
+                    .websocket
+                    .as_ref()
+                    .map_or(0, |hub| hub.recovery_count()),
             connected_instances: instances.instances.len(),
         })
     }
@@ -229,7 +278,13 @@ fn start_embedded_with_listener(cfg: AppConfig, listener: TcpListener) -> Result
                         .lifecycle
                         .lock()
                         .expect("lifecycle mutex poisoned");
-                    if !status.accepting && status.pending_jobs == 0 {
+                    if !status.accepting
+                        && status.pending_jobs == 0
+                        && !worker_state
+                            .websocket
+                            .as_ref()
+                            .is_some_and(|hub| hub.recovering())
+                    {
                         return Ok(());
                     }
                 }
@@ -252,8 +307,15 @@ fn start_embedded_with_listener(cfg: AppConfig, listener: TcpListener) -> Result
 }
 
 fn make_state(cfg: AppConfig) -> Result<Arc<DaemonState>> {
+    let bridge = BridgeClient::new(cfg.clone())?;
+    let websocket = if matches!(cfg.host_id.as_str(), "photoshop" | "premiere") {
+        Some(websocket::Hub::new(&cfg, &bridge)?)
+    } else {
+        None
+    };
     Ok(Arc::new(DaemonState {
-        bridge: BridgeClient::new(cfg.clone())?,
+        bridge,
+        websocket,
         cfg,
         scheduler: InstanceScheduler::default(),
         lifecycle: Arc::new(Mutex::new(Lifecycle::default())),
@@ -315,8 +377,16 @@ pub fn run_daemon_server_with_listener(cfg: AppConfig, listener: TcpListener) ->
 }
 
 fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>) -> Result<()> {
+    // Windows can inherit the embedded listener's nonblocking mode.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    // Inspect only the first byte: TCP fragmentation may split even "GET ".
+    // Neither protocol loses bytes to the other parser.
+    let mut prefix = [0u8; 1];
+    if stream.peek(&mut prefix)? == 1 && prefix[0] == b'G' {
+        return websocket::serve(stream, state);
+    }
     let mut line = String::new();
     BufReader::new(stream.try_clone()?)
         .read_line(&mut line)
@@ -358,9 +428,7 @@ fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Va
             "daemonAddr": state.cfg.daemon_addr
         })),
         "listInstances" => {
-            let report = state
-                .bridge
-                .discover_instances(Duration::from_millis(state.cfg.instance_heartbeat_stale_ms))?;
+            let report = state.instances()?;
             let count = report.instances.len();
             Ok(json!({
                 "instances": report.instances,
@@ -397,6 +465,9 @@ fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Va
 
 fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Value> {
     let permit = JobPermit::acquire(&state.lifecycle)?;
+    if state.websocket.as_ref().is_some_and(|hub| hub.recovering()) {
+        return Err(anyhow!("Runtime is recovering dispatched WebSocket requests. Reconnect the original UXP session before accepting new commands."));
+    }
     let command = request
         .command
         .clone()
@@ -435,7 +506,7 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
         instance_id: request.target_instance_id.clone(),
         version: request.target_version.clone(),
     };
-    let instance = match state.bridge.resolve_target(&target) {
+    let instance = match state.resolve_target(&target) {
         Ok(instance) => instance,
         Err(error) => {
             let prepared = state.bridge.prepare_request_with_audit(
@@ -485,8 +556,27 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
     let bridge = state.bridge.clone();
     let task_request_id = request_id.clone();
     let task_command = command;
+    let task_state = Arc::clone(state);
     let task = Box::new(move || {
         let _permit = permit;
+        if is_websocket_instance(&instance) {
+            return task_state
+                .websocket
+                .as_ref()
+                .unwrap()
+                .execute(
+                    &bridge,
+                    &instance,
+                    &task_request_id,
+                    &task_command,
+                    request.args,
+                )
+                .map_err(|error| {
+                    let message = error.to_string();
+                    let _ = bridge.mark_request_failed(&task_request_id, message.clone());
+                    message
+                });
+        }
         match bridge.run_prepared_request_on_instance(
             &task_request_id,
             &task_command,
