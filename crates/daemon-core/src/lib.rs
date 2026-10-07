@@ -238,7 +238,13 @@ fn start_embedded_with_listener(cfg: AppConfig, listener: TcpListener) -> Result
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(25));
                     }
-                    Err(error) => return Err(error.into()),
+                    Err(error) => {
+                        // Keep ownership of accepted jobs and the port even if
+                        // accept fails transiently. Otherwise a replacement
+                        // runtime could overlap still-running host workers.
+                        error!("embedded daemon accept error: {error}");
+                        thread::sleep(Duration::from_millis(250));
+                    }
                 }
             }
         })?;
