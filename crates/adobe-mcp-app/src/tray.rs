@@ -33,10 +33,10 @@ fn open_path(path: &Path) -> Result<()> {
 fn icon() -> Result<Icon> {
     let mut rgba = vec![0; 32 * 32 * 4];
     // A small monochrome A; macOS uses it as a menu-bar template image.
-    for y in 5..27 {
-        for x in 4..28 {
-            let distance = (x as i32 - 16).abs();
-            if (distance - (y - 5) / 2).abs() <= 2 || (y >= 19 && y <= 21 && distance <= 8) {
+    for y in 5_i32..27 {
+        for x in 4_i32..28 {
+            let distance = (x - 16).abs();
+            if (distance - (y - 5) / 2).abs() <= 2 || ((19..=21).contains(&y) && distance <= 8) {
                 let index = (y as usize * 32 + x as usize) * 4;
                 rgba[index..index + 4].copy_from_slice(&[90, 160, 235, 255]);
             }

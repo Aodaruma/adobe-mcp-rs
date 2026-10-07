@@ -297,8 +297,10 @@ mod tests {
     fn occupied_host_is_not_taken_over_and_can_be_disabled_persistently() {
         let dir = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut cfg = AppConfig::default();
-        cfg.daemon_addr = listener.local_addr().unwrap().to_string();
+        let mut cfg = AppConfig {
+            daemon_addr: listener.local_addr().unwrap().to_string(),
+            ..AppConfig::default()
+        };
         cfg.bridge.root_dir = dir.path().join("bridge");
         cfg.bridge.command_file = cfg.bridge.root_dir.join("ae_command.json");
         cfg.bridge.result_file = cfg.bridge.root_dir.join("ae_mcp_result.json");
