@@ -21,6 +21,10 @@ fs2 = "0.4"
 tao = "0.37"
 tray-icon = "0.26"
 auto-launch = "0.6"
+png = "0.18"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1.31", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.20"

@@ -210,6 +210,33 @@ impl Application {
             .all(|host| host.runtime.as_ref().is_none_or(ManagedDaemon::is_finished))
     }
 
+    fn indicator(&self) -> (bool, &'static str) {
+        if self.quitting {
+            return (false, "Adobe MCP — Stopping");
+        }
+        let mut enabled = 0;
+        for host in &self.hosts {
+            if !host.enabled {
+                continue;
+            }
+            enabled += 1;
+            let ready = host.error.is_none()
+                && host.runtime.as_ref().is_some_and(|runtime| {
+                    !runtime.is_finished()
+                        && runtime.snapshot().is_ok_and(|status| status.accepting)
+                });
+            if !ready {
+                return (false, "Adobe MCP — Needs attention (open menu)");
+            }
+        }
+        if enabled == 0 {
+            (false, "Adobe MCP — All servers stopped")
+        } else {
+            // A healthy broker waiting for an Adobe bridge is ready to receive.
+            (true, "Adobe MCP — Servers ready (connections in menu)")
+        }
+    }
+
     fn diagnostics(&self) -> Result<PathBuf> {
         let hosts: Vec<_> = self
             .hosts
@@ -320,6 +347,7 @@ mod tests {
         let lock = File::create(dir.path().join("application.lock")).unwrap();
         let mut app = Application::load(path.clone(), lock).unwrap();
         app.start();
+        assert!(!app.indicator().0, "a bind failure must show the gray icon");
         assert!(app.hosts.iter().all(|host| host.runtime.is_none()));
         assert!(app.hosts[0]
             .error
@@ -331,13 +359,34 @@ mod tests {
         app.toggle(0).unwrap();
         assert!(!app.hosts[0].enabled);
         assert!(app.hosts[0].error.is_none());
+        assert!(!app.indicator().0, "all servers disabled must show gray");
         let saved: Settings = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         assert!(!saved.hosts["aftereffects"].enabled);
         assert_eq!(
             saved.hosts["aftereffects"].config,
             Some(PathBuf::from("ae.toml"))
         );
+        drop(listener);
+        app.toggle(0).unwrap();
+        assert!(app.indicator().0, "a ready server needs no open Adobe app");
+        app.hosts[1].enabled = true;
+        assert!(
+            !app.indicator().0,
+            "one unavailable enabled server must show gray"
+        );
+        app.hosts[1].enabled = false;
+        assert!(
+            app.indicator().0,
+            "intentionally disabled hosts are excluded"
+        );
+        app.hosts[0].stop();
+        assert!(!app.indicator().0, "a draining server must show gray");
         app.quit();
+        assert!(!app.indicator().0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !app.drained() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(app.drained());
     }
 }

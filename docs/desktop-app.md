@@ -2,6 +2,8 @@
 
 `adobe-mcp-app` は、5 hostのTCP brokerを同一プロセス内で動かすWindows / macOS向けアプリ。Windows通知領域／macOSメニューバーから状態確認・host別の受付開始／停止・診断・ログイン起動・終了を行う。別の監視daemonは起動しない。
 
+Windowsのベータ配布・旧版からの更新手順は [Windows beta guide](windows-beta.md) を参照。
+
 ## 起動と設定
 
 ```sh
@@ -25,6 +27,18 @@ enabled = false
 host IDは `aftereffects` / `premiere` / `photoshop` / `illustrator` / `indesign`。未指定hostは有効。`config` はアプリ設定ファイルからの相対パス、または絶対パス。bridgeのheartbeatがない場合は「Waiting for Adobe bridge」と表示する。Adobeが終了中なのか、bridgeが読み込まれていないのかは、この表示だけでは判定しない。
 
 同一profileの二重起動はOSのファイルロックで防ぐ。別profileを明示しても、使用中のhostポートは奪わない。起動失敗時はhostメニューと診断JSONに理由を表示し、Retry startで再試行できる。
+
+## アイコンの状態
+
+通知領域／メニューバーの「Mc」は、1秒ごとにサーバーの受付状態を確認する。
+
+- カラー：有効なhostが1つ以上あり、有効な全hostのbrokerが正常に受付中。Adobe未起動でbridge接続を待っている場合も正常待機とする。
+- グレー：全hostを停止、起動失敗、状態取得失敗、有効hostの終了・受付停止、またはアプリ終了処理中。
+- 意図的に無効にしたhostは正常判定から除く。接続しているAdobe instanceや個々の停止理由はhostメニューで確認する。色だけではAdobe内のscript実行成功を保証しない。
+
+tooltipにも状態を表示する。アプリ終了後は通知領域からアイコン自体が消える。macOSでもカラー／グレーを区別するため、template imageによる自動単色化は使用しない。Windowsの実行ファイル／ショートカット用アイコンは固定のカラー版。
+
+制作元は`assets/icons/adobe-mcp-app-icon-master.psd`（1024px）と`adobe-mcp-tray-icon-master.psd`（64px）。sRGB・RGB 8bit、Myriad Pro Boldの編集可能な「Mc」と角丸シェイプを、`正常 / Active`／`停止・異常 / Inactive`グループに分けている。旧Aは非表示の埋め込みSmart Objectとして保持する。PNGはトレイへ埋め込み、`adobe-mcp.ico`はWindowsリソースとしてbuild時に組み込む。`adobe-mcp.icns`はmacOS app bundle用の素材で、bundleへの組み込み・実機確認は未実施。
 
 ## 停止・移行
 
@@ -82,6 +96,7 @@ Adobeの2026年9月発表ではCEP廃止は2029年末、AE UXP公開betaは2026�
 - Rustテスト：WebSocketの認証・host/session照合、切断後の結果回収・重複ACK、切断中のglobal排他保持、再起動後の受付保護。既存のclient timeout後のdrain、受付拒否、遅延結果保存、PID・portの解放、queue／保持結果契約も継続。
 - Nodeテスト：UXPの自動接続、未ACK結果の再送、重複commandの実行抑止、panel非表示中の接続維持、WebSocket経路で交換ファイルを作らないこと。互換file方式の連続置換・失敗時の旧ファイル保持・destroy中のtimer再生成防止も確認。
 - Windows実機（2026-10-08）：Photoshop 26.11.7 / Premiere Pro 25.6.6。別IDの開発plugin・別profileを用い、WebSocket認証、MCP stdio→統合broker→実Adobeのping、読み取り専用raw codeを確認。両ホストのパネル非表示でも受信継続。両ホストでclient timeout後・実行中に検証用アプリを再起動し、元のsessionの結果を回収、実行回数1回を確認。制作ドキュメントは変更しない。
-- macOS実機、ログイン起動、sleep/modal、長時間運転、署名済み配布と旧daemonの移行は別途E2Eが必要。#22の全実機検証項目をこの変更だけで完了扱いにしない。
+- Windows MSI（2026-10-08）：旧0.5.1のMSIを0.5.3 betaへ更新し、手動導入されたユーザー版の既知exeをバックアップへ退避。Codexの5 commandだけを更新し、その他の設定行・統合アプリ設定・個別変更されたAE runtimeの保持を確認。Photoshop/Premiere UXPとInDesign Startup Scriptの導入成功、同一アプリプロセスによる5ポートの待受を確認。
+- macOS実機、別PCでの新規導入、ログイン起動、sleep/modal、長時間運転、署名済み配布は別途E2Eが必要。#22の全実機検証項目をこの変更だけで完了扱いにしない。
 
 wire schemaと復旧規約は [WebSocket protocol](websocket-protocol.md) を参照。

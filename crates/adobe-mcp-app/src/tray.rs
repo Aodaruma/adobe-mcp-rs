@@ -1,5 +1,6 @@
 use super::Application;
 use anyhow::Result;
+use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -30,19 +31,26 @@ fn open_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn icon() -> Result<Icon> {
-    let mut rgba = vec![0; 32 * 32 * 4];
-    // A small monochrome A; macOS uses it as a menu-bar template image.
-    for y in 5_i32..27 {
-        for x in 4_i32..28 {
-            let distance = (x - 16).abs();
-            if (distance - (y - 5) / 2).abs() <= 2 || ((19..=21).contains(&y) && distance <= 8) {
-                let index = (y as usize * 32 + x as usize) * 4;
-                rgba[index..index + 4].copy_from_slice(&[90, 160, 235, 255]);
-            }
-        }
-    }
-    Ok(Icon::from_rgba(rgba, 32, 32)?)
+fn icon(active: bool) -> Result<Icon> {
+    let bytes: &[u8] = if active {
+        include_bytes!("../../../assets/icons/tray-active-64.png")
+    } else {
+        include_bytes!("../../../assets/icons/tray-inactive-64.png")
+    };
+    let mut reader = png::Decoder::new(Cursor::new(bytes)).read_info()?;
+    let mut rgba = vec![
+        0;
+        reader
+            .output_buffer_size()
+            .ok_or_else(|| anyhow::anyhow!("Invalid icon size"))?
+    ];
+    let info = reader.next_frame(&mut rgba)?;
+    anyhow::ensure!(
+        info.color_type == png::ColorType::Rgba && info.bit_depth == png::BitDepth::Eight,
+        "Tray icons must be 8-bit RGBA PNGs"
+    );
+    rgba.truncate(info.buffer_size());
+    Ok(Icon::from_rgba(rgba, info.width, info.height)?)
 }
 
 pub(super) fn run(mut app: Application) -> Result<()> {
@@ -110,8 +118,10 @@ pub(super) fn run(mut app: Application) -> Result<()> {
         &login,
         &quit,
     ])?;
-    let tray_icon = icon()?;
+    let active_icon = icon(true)?;
+    let inactive_icon = icon(false)?;
     let mut tray: Option<TrayIcon> = None;
+    let mut last_indicator = None;
     let mut next_refresh = Instant::now();
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(next_refresh);
@@ -119,10 +129,9 @@ pub(super) fn run(mut app: Application) -> Result<()> {
             // macOS requires constructing the icon after the main event loop starts.
             let builder = TrayIconBuilder::new()
                 .with_menu(Box::new(menu.clone()))
-                .with_tooltip("Adobe MCP")
-                .with_icon(tray_icon.clone());
-            #[cfg(target_os = "macos")]
-            let builder = builder.with_icon_templated(tray_icon.clone());
+                .with_tooltip("Adobe MCP — Starting")
+                // Keep color on macOS too: template images discard status colors.
+                .with_icon(inactive_icon.clone());
             match builder.build() {
                 Ok(value) => {
                     tray = Some(value);
@@ -196,6 +205,23 @@ pub(super) fn run(mut app: Application) -> Result<()> {
                     "Start receiving"
                 });
             }
+            let indicator = app.indicator();
+            if last_indicator != Some(indicator) {
+                if let Some(tray) = &tray {
+                    let image = if indicator.0 {
+                        &active_icon
+                    } else {
+                        &inactive_icon
+                    };
+                    match tray
+                        .set_icon(Some(image.clone()))
+                        .and_then(|()| tray.set_tooltip(Some(indicator.1)))
+                    {
+                        Ok(()) => last_indicator = Some(indicator),
+                        Err(error) => tracing::warn!("Could not update tray status: {error}"),
+                    }
+                }
+            }
             next_refresh = Instant::now() + Duration::from_secs(1);
             *control_flow = ControlFlow::WaitUntil(next_refresh);
         }
@@ -204,4 +230,14 @@ pub(super) fn run(mut app: Application) -> Result<()> {
             *control_flow = ControlFlow::Exit;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn both_status_assets_load_as_native_icons() {
+        for active in [true, false] {
+            super::icon(active).unwrap();
+        }
+    }
 }
