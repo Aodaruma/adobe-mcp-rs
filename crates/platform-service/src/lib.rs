@@ -853,6 +853,7 @@ fn paths_match(left: &std::path::Path, right: &std::path::Path) -> bool {
 
 #[cfg(target_os = "windows")]
 fn is_process_running(pid: u32, expected_path: &std::path::Path) -> Result<bool> {
+    use std::os::windows::process::CommandExt;
     let expected = expected_path.to_string_lossy().replace('\'', "''");
     let command = format!(
         "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; \
@@ -861,6 +862,7 @@ if ($p.Path -and $p.Path -ieq '{expected}') {{ exit 0 }} else {{ exit 2 }}"
     );
     let status = Command::new("powershell")
         .args(["-NoProfile", "-Command", &command])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW, including the process probe.
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

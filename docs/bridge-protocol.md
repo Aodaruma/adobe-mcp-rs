@@ -47,6 +47,12 @@ pub const INDESIGN_HOST: HostSpec = HostSpec {
 
 `cancelRequest`はqueue中のrequestを`cancelled`にできます。dispatch済みhost codeは強制停止せず`cancelRequested`となり、協調的に停止しないcodeは最終結果を返す場合があります。共通payload、risk、audit契約は[共通 raw script 契約](script-contract.md)を参照してください。
 
+`timeoutMs`はclientの待機上限です。timeout後もworkerはhostの最終結果を待ち、instanceのFIFOとglobal排他を保持します。`cancelRequested`をtimeoutや古いworkerの状態で上書きせず、dispatch前に受理したキャンセルはcommand fileへ送信しません。
+
+heartbeatが途絶えた未完了requestは`unknown`（結果不明）として扱い、instanceの予約を保持します。同期scriptがheartbeat更新も止める場合があるため、途絶だけで終了扱いにはしません。旧`lost`も含め、同じ`requestId`への後着結果を回収できます。registry cleanupは`completed` / `failed` / `cancelled`だけを期限削除し、未解決requestは保持します。hostが終了して結果が返らない場合の復旧は[Runbook](operations-runbook.md)を参照してください。
+
+`ping`にはdaemonの`version`と`processId`を含めます。これは応答したdaemonの情報であり、stdioプロセスやAdobe内で読み込み済みのbridgeの版は別途確認が必要です。
+
 ## ディレクトリ
 
 ```text
@@ -72,7 +78,7 @@ pub const INDESIGN_HOST: HostSpec = HostSpec {
 
 Rust writerはfileを `sync_all` してから公開します。Windowsでは既存fileを先に削除せず、`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` を使用します。共有違反などで置換できない場合は短時間再試行し、最終的に失敗しても旧fileを残します。macOS/Linuxでは同一directoryの `rename` 後にdirectoryも同期します。同一processから同じtargetへの更新は直列化し、複数process間では最後に成功した置換を採用します。
 
-Node.js filesystemを使えるUXP bridgeは、排他的な一時fileへ書き、`fsyncSync`、`renameSync` の順で公開します。ExtendScript/CEP bridgeは `File.close()` をflush境界とし、同一directoryの直接renameを最初に試します。既存宛先をrenameで上書きできないhostでは、旧fileを `.＜最終file名＞.bak-...` に退避してから一時fileを公開し、公開失敗時は旧fileを復元します。このlegacy fallbackに限り最終pathが短時間存在しない場合があります。
+UXPの互換ファイル経路はパス指定の `writeFileSync` と非同期の `rename` / `unlink` を使用します。UXPにない `openSync` / `fsyncSync` / `renameSync` は使いません。ExtendScript/CEP bridgeは `File.close()` をflush境界とし、同一directoryの直接renameを最初に試します。既存宛先をrenameで上書きできないhostでは、旧fileを `.＜最終file名＞.bak-...` に退避してから一時fileを公開し、公開失敗時は旧fileを復元します。このlegacy fallbackに限り最終pathが短時間存在しない場合があります。
 
 readerは `.tmp-*` と `.bak-*` を列挙対象にせず、最終pathだけを読みます。最終pathの短時間の欠落、共有違反、空file、不完全JSONは「まだ更新中」として再試行します。polling readerはそのpollを未到着として扱い、次のpollへ進みます。1時間以上残った対象file用の `.tmp-*` / `.bak-*` は次回のwrite時に削除し、Rustのregistry cleanupはregistry directoryの古い `.tmp-*` も削除します。
 
