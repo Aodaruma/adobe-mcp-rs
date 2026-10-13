@@ -91,13 +91,14 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
     assert!(runtime.contains("__adobeMcpBridgeCommandTick('"));
     assert!(runtime.contains("scheduledRuntimeId !== bridgeRuntimeId"));
     assert!(runtime.contains("Neutralize callbacks left by the pre-generation runtime"));
-    assert!(runtime.contains("schedulerMode = \"one-shot-reschedule\""));
+    assert!(runtime.contains("schedulerMode = \"one-shot-with-watchdog\""));
     assert!(runtime.contains("function scheduleNextCommandCheck()"));
     assert!(runtime.contains("function scheduleNextHeartbeat()"));
     assert!(runtime.contains("checkInterval,\n        false"));
     assert!(runtime.contains("heartbeatInterval,\n        false"));
     assert!(!runtime.contains("checkInterval,\n        true"));
-    assert!(!runtime.contains("heartbeatInterval,\n        true"));
+    assert!(runtime.contains("__adobeMcpBridgeWatchdogTick('"));
+    assert!(runtime.contains("heartbeatInterval,\n        true"));
     assert!(runtime.contains("scheduleNextCommandCheck();"));
     assert!(runtime.contains("scheduleNextHeartbeat();"));
     assert!(runtime.contains("function ensureBridgeRuntimeHealthy(options)"));

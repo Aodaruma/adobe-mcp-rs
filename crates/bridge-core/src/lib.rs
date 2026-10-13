@@ -2298,6 +2298,46 @@ mod tests {
     }
 
     #[test]
+    fn stale_running_heartbeat_is_inactive_but_never_releases_uncertain_request() {
+        let (mut cfg, _guard) = test_config();
+        cfg.instance_heartbeat_stale_ms = 0;
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let mut instance = write_test_instance(&cfg, "slow-ae-request");
+        let prepared = bridge
+            .prepare_request("executeJsx", 60, Some(instance.clone()))
+            .unwrap();
+        let id = &prepared.record.request_id;
+        bridge
+            .write_current_request(&instance, id, "executeJsx")
+            .unwrap();
+        instance.status = Some("running".into());
+        instance.current_request_id = Some(id.clone());
+        write_json_file(&instance_heartbeat_path(&instance), &instance).unwrap();
+        thread::sleep(Duration::from_millis(2));
+
+        let report = bridge.discover_instances(Duration::ZERO).unwrap();
+        assert!(report.instances.is_empty());
+        assert_eq!(report.inactive_instances.len(), 1);
+        assert_eq!(
+            report.inactive_instances[0].status.as_deref(),
+            Some("running")
+        );
+        assert_eq!(bridge.get_request_record(id).unwrap().status, "unknown");
+        assert!(bridge.is_instance_busy(&instance).unwrap());
+        assert!(instance_current_request_path(&instance).exists());
+
+        // The original request can finish after a frozen heartbeat. Its result
+        // clears the reservation; heartbeat expiry alone must never do so.
+        write_json_file(
+            &instance_result_path(&instance),
+            &json!({"status": "success", "_commandExecuted": "executeJsx", "_requestId": id}),
+        )
+        .unwrap();
+        assert_eq!(bridge.get_request_record(id).unwrap().status, "completed");
+        assert!(!bridge.is_instance_busy(&instance).unwrap());
+    }
+
+    #[test]
     fn missing_heartbeat_keeps_instance_reserved_and_late_results_recover() {
         let (cfg, _guard) = test_config();
         let bridge = BridgeClient::new(cfg.clone()).unwrap();

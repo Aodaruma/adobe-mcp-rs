@@ -30,10 +30,17 @@ try {
         aeMcpPreviousState = aeMcpPreviousRuntime.getState();
         aeMcpPreviousInstanceId = aeMcpPreviousState.instanceId || "";
         aeMcpAttachExistingRuntime = !aeMcpHeadless &&
-            aeMcpPreviousState.running === true &&
-            aeMcpPreviousState.lifecycleMode === "startup-headless";
+            aeMcpPreviousState.running === true;
     }
 } catch (_previousRuntimeStateErr) {}
+
+// Never replace a runtime while its request or scheduler callback is on stack.
+// AE can re-enter scripts during host operations; replacing it loses ownership
+// of the pending callback and can leave two command loops alive.
+if (aeMcpPreviousState && aeMcpPreviousState.callbackActive) {
+    if (!aeMcpHeadless) attachDiagnosticsPanel(aeMcpPreviousRuntime);
+    return;
+}
 
 function attachDiagnosticsPanel(runtime) {
     var attachedPanel = (thisObj instanceof Panel)
@@ -52,18 +59,29 @@ function attachDiagnosticsPanel(runtime) {
         undefined,
         "Write diagnostic debug log"
     );
-    var attachedRefresh = attachedPanel.add("button", undefined, "Refresh Headless Status");
-    var attachedRestart = attachedPanel.add("button", undefined, "Restart Headless Bridge");
+    var attachedRefresh = attachedPanel.add("button", undefined, "Refresh Bridge Status");
+    var attachedRestart = attachedPanel.add("button", undefined, "Restart Bridge");
+    var attachedAutoRun = attachedPanel.add("checkbox", undefined, "Auto-run commands");
+
+    function resolveAttachedRuntime() {
+        // A panel can outlive the runtime it originally attached to.
+        var current = $.global.__adobeMcpBridgeRuntime;
+        if (!current || !current.getState) throw new Error("Bridge runtime unavailable");
+        runtime = current;
+        return current;
+    }
 
     function refreshAttachedStatus() {
         try {
+            resolveAttachedRuntime();
             var runtimeState = runtime.ensureHealthy
                 ? runtime.ensureHealthy({ reason: "diagnostics-panel-refresh" })
                 : runtime.getState();
             var runtimeLabel = !runtimeState.running
                 ? "STOPPED"
-                : (runtimeState.healthy === false ? "STALE" : "RUNNING");
-            attachedStatus.text = "Headless runtime: " + runtimeLabel +
+                : (runtimeState.callbackActive ? "BUSY" :
+                    (runtimeState.healthy === false ? "STALE" : "RUNNING"));
+            attachedStatus.text = "Bridge runtime: " + runtimeLabel +
                 "\nInstance: " + (runtimeState.instanceId || "") +
                 "\nRuntime: " + (runtimeState.runtimeId || "") +
                 "\nScheduler: " + (runtimeState.schedulerMode || "legacy-repeat") +
@@ -80,15 +98,25 @@ function attachDiagnosticsPanel(runtime) {
                 attachedDiagnostics.value = false;
                 attachedDiagnostics.enabled = false;
             }
+            attachedAutoRun.enabled = !!runtime.getAutoRunEnabled && !!runtime.setAutoRunEnabled;
+            attachedAutoRun.value = runtime.getAutoRunEnabled ? runtime.getAutoRunEnabled() : true;
         } catch (error) {
-            attachedStatus.text = "Headless runtime unavailable: " + error.toString();
+            attachedStatus.text = "Bridge runtime unavailable: " + error.toString();
         }
         try { attachedPanel.layout.layout(true); } catch (_attachedLayoutErr) {}
     }
 
     attachedRefresh.onClick = refreshAttachedStatus;
+    attachedAutoRun.onClick = function () {
+        try {
+            resolveAttachedRuntime();
+            if (runtime.setAutoRunEnabled) runtime.setAutoRunEnabled(attachedAutoRun.value === true);
+        } catch (_attachedAutoRunErr) {}
+        refreshAttachedStatus();
+    };
     attachedDiagnostics.onClick = function () {
         try {
+            resolveAttachedRuntime();
             if (runtime.setDiagnosticsEnabled) {
                 runtime.setDiagnosticsEnabled(attachedDiagnostics.value === true);
             }
@@ -97,14 +125,15 @@ function attachDiagnosticsPanel(runtime) {
     };
     attachedRestart.onClick = function () {
         try {
+            resolveAttachedRuntime();
             runtime.restart({ reason: "diagnostics-panel-manual-restart" });
         } catch (_attachedRestartErr) {}
         refreshAttachedStatus();
     };
     attachedPanel.onActivate = refreshAttachedStatus;
     attachedPanel.onClose = function () {
-        // This window only observes the Startup-owned runtime. Closing it must
-        // never stop the headless command and heartbeat schedules.
+        // This panel does not own the runtime. Closing it must never stop its
+        // command and heartbeat schedules.
         return true;
     };
     attachedPanel.onResizing = attachedPanel.onResize = function () {
@@ -2683,18 +2712,26 @@ var permissionStateKnown = false;
 var hasFileNetworkPermission = false;
 var hasShownPermissionDialog = false;
 var autoRunValueBeforePermissionLock = true;
+var autoRunEnabled = true;
 var commandCheckerTaskId = 0;
 var heartbeatTaskId = 0;
+var watchdogTaskId = 0;
+var commandTickActive = false;
+var heartbeatTickActive = false;
+var commandTickCallback = null;
+var heartbeatTickCallback = null;
+var watchdogTickCallback = null;
 var lastCommandCheckerState = "";
 var debugLogEnabled = false;
 var debugLogPathOverride = "";
 var bridgeInstanceId = aeMcpPreviousInstanceId;
 var currentRequestId = "";
 var currentCommandName = "";
-var schedulerMode = "one-shot-reschedule";
+var schedulerMode = "one-shot-with-watchdog";
 var lastHeartbeatWriteAtMs = 0;
 var lastHeartbeatWriteAt = "";
 var lastCommandPollAtMs = 0;
+var lastCommandTickCompletedAtMs = 0;
 var lastCommandPollAt = "";
 var heartbeatSequence = 0;
 var commandPollSequence = 0;
@@ -2704,6 +2741,7 @@ var lastSchedulerRecoveryReason = "";
 var lastSchedulerError = "";
 var bridgeRuntimeId = "runtime-" + (new Date().getTime()) + "-" + Math.floor(Math.random() * 1000000);
 var bridgeStartedAt = fxDateToIsoString(new Date());
+var bridgeStartedAtMs = new Date().getTime();
 var bridgeRuntimeRunning = false;
 var bridgeHasStarted = false;
 var bridgeRuntime = null;
@@ -2729,10 +2767,23 @@ function setStatus(message) {
 function isAutoRunEnabled() {
     try {
         if (isControlValid(autoRunCheckbox)) {
-            return autoRunCheckbox.value === true;
+            // A permission lock is temporary; preserve the user's pause choice.
+            if (!autoRunCheckbox.enabled) return false;
+            autoRunEnabled = autoRunCheckbox.value === true;
         }
     } catch (_e) {}
-    return true;
+    return autoRunEnabled;
+}
+
+function setAutoRunEnabled(enabled) {
+    autoRunEnabled = enabled === true;
+    autoRunValueBeforePermissionLock = autoRunEnabled;
+    try {
+        if (isControlValid(autoRunCheckbox) && autoRunCheckbox.enabled) {
+            autoRunCheckbox.value = autoRunEnabled;
+        }
+    } catch (_autoRunSetErr) {}
+    return autoRunEnabled;
 }
 
 function safePanelUpdate() {
@@ -3112,7 +3163,7 @@ function getBridgeInstanceStatus() {
         return "running";
     }
     try {
-        if (isControlValid(autoRunCheckbox) && !autoRunCheckbox.value) {
+        if (!isAutoRunEnabled()) {
             return "paused";
         }
     } catch (_e) {}
@@ -4034,17 +4085,26 @@ function getHeartbeatAgeMs() {
 function getBridgeRuntimeHealth() {
     var heartbeatAgeMs = getHeartbeatAgeMs();
     var callbacksRegistered =
-        typeof $.global.__adobeMcpBridgeCommandTick === "function" &&
-        typeof $.global.__adobeMcpBridgeHeartbeatTick === "function";
-    var tasksScheduled = !!commandCheckerTaskId && !!heartbeatTaskId;
+        $.global.__adobeMcpBridgeCommandTick === commandTickCallback &&
+        $.global.__adobeMcpBridgeHeartbeatTick === heartbeatTickCallback &&
+        $.global.__adobeMcpBridgeWatchdogTick === watchdogTickCallback;
+    var callbackActive = commandTickActive || heartbeatTickActive || isChecking || !!currentRequestId;
+    var tasksScheduled = (!!commandCheckerTaskId || commandTickActive) &&
+        (!!heartbeatTaskId || heartbeatTickActive) && !!watchdogTaskId;
     var heartbeatFresh =
         heartbeatAgeMs !== null &&
         heartbeatAgeMs <= heartbeatStaleAfterMs;
+    // A slow script is progress when it returns, even if its poll began long
+    // ago. Do not immediately mistake successful completion for an idle stall.
+    var commandPollAgeMs = Math.max(0, new Date().getTime() - Math.max(
+        lastCommandPollAtMs, lastCommandTickCompletedAtMs, bridgeStartedAtMs
+    ));
+    var commandPollFresh = commandPollAgeMs <= heartbeatStaleAfterMs;
     var healthy =
         bridgeRuntimeRunning &&
         callbacksRegistered &&
         tasksScheduled &&
-        heartbeatFresh;
+        (callbackActive || (heartbeatFresh && commandPollFresh));
     var reason = "healthy";
 
     if (!bridgeRuntimeRunning) {
@@ -4053,6 +4113,10 @@ function getBridgeRuntimeHealth() {
         reason = "callbacks-missing";
     } else if (!tasksScheduled) {
         reason = "task-id-missing";
+    } else if (callbackActive) {
+        reason = "callback-in-flight";
+    } else if (!commandPollFresh) {
+        reason = "command-poll-stale";
     } else if (!heartbeatFresh) {
         reason = heartbeatAgeMs === null
             ? "heartbeat-never-written"
@@ -4064,7 +4128,9 @@ function getBridgeRuntimeHealth() {
         reason: reason,
         heartbeatAgeMs: heartbeatAgeMs,
         callbacksRegistered: callbacksRegistered,
-        tasksScheduled: tasksScheduled
+        tasksScheduled: tasksScheduled,
+        callbackActive: callbackActive,
+        commandPollAgeMs: commandPollAgeMs
     };
 }
 
@@ -4080,6 +4146,10 @@ function getBridgeRuntimeState() {
         instanceId: getBridgeInstanceId(),
         commandTaskId: commandCheckerTaskId,
         heartbeatTaskId: heartbeatTaskId,
+        watchdogTaskId: watchdogTaskId,
+        callbackActive: health.callbackActive,
+        commandPollAgeMs: health.commandPollAgeMs,
+        currentRequestId: currentRequestId || null,
         schedulerMode: schedulerMode,
         heartbeatStaleAfterMs: heartbeatStaleAfterMs,
         heartbeatAgeMs: health.heartbeatAgeMs,
@@ -4121,8 +4191,14 @@ function writeSchedulerDiagnosticEvent(eventName, reason, state) {
 
 function stopBridgeRuntime(options) {
     options = options || {};
+    if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
+    if (getBridgeRuntimeHealth().callbackActive) return getBridgeRuntimeState();
     stopCommandChecker();
     stopHeartbeatTask();
+    if (watchdogTaskId) {
+        try { app.cancelTask(watchdogTaskId); } catch (_watchdogCancelErr) {}
+        watchdogTaskId = 0;
+    }
     bridgeRuntimeRunning = false;
     if (bridgeRuntime) {
         bridgeRuntime.running = false;
@@ -4137,46 +4213,71 @@ function stopBridgeRuntime(options) {
 }
 
 function registerScheduledBridgeFunctions() {
-    $.global.__adobeMcpBridgeCommandTick = function (scheduledRuntimeId) {
-        if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId) {
+    commandTickCallback = $.global.__adobeMcpBridgeCommandTick = function (scheduledRuntimeId) {
+        if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId ||
+            $.global.__adobeMcpBridgeRuntime !== bridgeRuntime || commandTickActive) {
             return;
         }
         setCommandCheckerTaskId(0);
+        commandTickActive = true;
         try {
             checkForCommands();
         } catch (commandTickError) {
             lastSchedulerError = "command-tick: " + commandTickError.toString();
             logToPanel("Command scheduler tick failed: " + commandTickError.toString());
         } finally {
-            if (bridgeRuntimeRunning && scheduledRuntimeId === bridgeRuntimeId) {
-                try {
-                    scheduleNextCommandCheck();
-                } catch (commandScheduleError) {
-                    lastSchedulerError = "command-reschedule: " + commandScheduleError.toString();
-                    logToPanel("Command scheduler re-arm failed: " + commandScheduleError.toString());
+            try {
+                if (bridgeRuntimeRunning && scheduledRuntimeId === bridgeRuntimeId &&
+                    $.global.__adobeMcpBridgeRuntime === bridgeRuntime) {
+                    try {
+                        scheduleNextCommandCheck();
+                    } catch (commandScheduleError) {
+                        lastSchedulerError = "command-reschedule: " + commandScheduleError.toString();
+                        logToPanel("Command scheduler re-arm failed: " + commandScheduleError.toString());
+                    }
                 }
+            } finally {
+                commandTickActive = false;
+                lastCommandTickCompletedAtMs = new Date().getTime();
             }
         }
     };
-    $.global.__adobeMcpBridgeHeartbeatTick = function (scheduledRuntimeId) {
-        if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId) {
+    heartbeatTickCallback = $.global.__adobeMcpBridgeHeartbeatTick = function (scheduledRuntimeId) {
+        if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId ||
+            $.global.__adobeMcpBridgeRuntime !== bridgeRuntime || heartbeatTickActive) {
             return;
         }
         setHeartbeatTaskId(0);
+        heartbeatTickActive = true;
         try {
             heartbeatTick();
         } catch (heartbeatTickError) {
             lastSchedulerError = "heartbeat-tick: " + heartbeatTickError.toString();
             logToPanel("Heartbeat scheduler tick failed: " + heartbeatTickError.toString());
         } finally {
-            if (bridgeRuntimeRunning && scheduledRuntimeId === bridgeRuntimeId) {
-                try {
-                    scheduleNextHeartbeat();
-                } catch (heartbeatScheduleError) {
-                    lastSchedulerError = "heartbeat-reschedule: " + heartbeatScheduleError.toString();
-                    logToPanel("Heartbeat scheduler re-arm failed: " + heartbeatScheduleError.toString());
+            try {
+                if (bridgeRuntimeRunning && scheduledRuntimeId === bridgeRuntimeId &&
+                    $.global.__adobeMcpBridgeRuntime === bridgeRuntime) {
+                    try {
+                        scheduleNextHeartbeat();
+                    } catch (heartbeatScheduleError) {
+                        lastSchedulerError = "heartbeat-reschedule: " + heartbeatScheduleError.toString();
+                        logToPanel("Heartbeat scheduler re-arm failed: " + heartbeatScheduleError.toString());
+                    }
                 }
+            } finally {
+                heartbeatTickActive = false;
             }
+        }
+    };
+    watchdogTickCallback = $.global.__adobeMcpBridgeWatchdogTick = function (scheduledRuntimeId) {
+        if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId ||
+            $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return;
+        try {
+            ensureBridgeRuntimeHealthy({ reason: "scheduler-watchdog" });
+        } catch (watchdogError) {
+            lastSchedulerError = "watchdog: " + watchdogError.toString();
+            logToPanel(lastSchedulerError);
         }
     };
     // Neutralize callbacks left by the pre-generation runtime. New scheduled
@@ -4186,6 +4287,7 @@ function registerScheduledBridgeFunctions() {
 }
 
 function startBridgeRuntime() {
+    if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
     if (bridgeRuntimeRunning) {
         var currentState = getBridgeRuntimeState();
         if (!currentState.healthy) {
@@ -4203,6 +4305,9 @@ function startBridgeRuntime() {
         }
     }
     bridgeHasStarted = true;
+    bridgeStartedAtMs = new Date().getTime();
+    lastCommandPollAtMs = 0;
+    lastCommandTickCompletedAtMs = 0;
     bridgeRuntimeRunning = true;
     if (bridgeRuntime) {
         bridgeRuntime.running = true;
@@ -4211,6 +4316,15 @@ function startBridgeRuntime() {
     }
     registerScheduledBridgeFunctions();
     refreshPermissionState(false);
+    // Separate repeating task survives a lost one-shot re-arm. It still uses
+    // AE's scheduler, so it cannot run while AE blocks all scheduled scripts.
+    // Arm it first so a partial failure starting either one-shot is recoverable.
+    watchdogTaskId = app.scheduleTask(
+        "$.global.__adobeMcpBridgeWatchdogTick('" + bridgeRuntimeId + "')",
+        heartbeatInterval,
+        true
+    );
+    if (!watchdogTaskId) throw new Error("After Effects did not return a watchdog task ID.");
     startHeartbeatTask();
     startCommandChecker();
     return getBridgeRuntimeState();
@@ -4218,6 +4332,8 @@ function startBridgeRuntime() {
 
 function restartBridgeRuntime(options) {
     options = options || {};
+    if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
+    if (getBridgeRuntimeHealth().callbackActive) return getBridgeRuntimeState();
     stopBridgeRuntime({
         removeHeartbeat: false,
         reason: options.reason || "restart"
@@ -4237,6 +4353,7 @@ function restartBridgeRuntime(options) {
 
 function recoverBridgeRuntime(reason) {
     var previousState = getBridgeRuntimeState();
+    if (previousState.callbackActive) return previousState;
     writeSchedulerDiagnosticEvent(
         "stale-scheduler-detected",
         reason || previousState.healthReason,
@@ -4261,11 +4378,12 @@ function recoverBridgeRuntime(reason) {
 
 function ensureBridgeRuntimeHealthy(options) {
     options = options || {};
+    if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
     if (!bridgeRuntimeRunning) {
         return startBridgeRuntime();
     }
     var state = getBridgeRuntimeState();
-    if (state.healthy) {
+    if (state.healthy || state.callbackActive) {
         return state;
     }
     return recoverBridgeRuntime(
@@ -4292,6 +4410,8 @@ try {
         restart: restartBridgeRuntime,
         ensureHealthy: ensureBridgeRuntimeHealthy,
         getState: getBridgeRuntimeState,
+        getAutoRunEnabled: isAutoRunEnabled,
+        setAutoRunEnabled: setAutoRunEnabled,
         writeHeartbeat: writeInstanceHeartbeat,
         getDiagnosticsConfig: getDiagnosticsConfig,
         setDiagnosticsEnabled: setDiagnosticsEnabled
@@ -4349,7 +4469,9 @@ startBridgeRuntime();
 
 if (panel) {
     panel.onClose = function () {
-        stopBridgeRuntime({ removeHeartbeat: true, reason: "panel-closed" });
+        // The fallback runtime also belongs to the AE process, not the panel.
+        // Invalid controls are tolerated by the headless command checker.
+        isAutoRunEnabled();
         return true;
     };
 
