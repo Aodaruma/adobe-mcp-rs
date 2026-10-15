@@ -39,7 +39,24 @@
       },
       "label": {
         "default": "Photoshop MCP Bridge"
-      }
+      },
+      "icons": [
+        {
+          "width": 23,
+          "height": 23,
+          "path": "icons/panel-placeholder.png",
+          "scale": [
+            1,
+            2
+          ],
+          "theme": [
+            "all"
+          ],
+          "species": [
+            "chrome"
+          ]
+        }
+      ]
     }
   ],
   "icons": [
