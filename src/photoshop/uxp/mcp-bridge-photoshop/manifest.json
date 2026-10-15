@@ -41,5 +41,22 @@
         "default": "Photoshop MCP Bridge"
       }
     }
+  ],
+  "icons": [
+    {
+      "width": 24,
+      "height": 24,
+      "path": "icons/placeholder.png",
+      "scale": [
+        1,
+        2
+      ],
+      "theme": [
+        "all"
+      ],
+      "species": [
+        "pluginList"
+      ]
+    }
   ]
 }
