@@ -13,3 +13,15 @@ This is the UXP implementation of the Photoshop MCP Bridge.
 
 The bridge uses `~/Documents/ps-mcp-bridge` and mirrors command results to
 `ps_mcp_result.json` for compatibility with the `ps-mcp` binary.
+
+## File I/O regression tests
+
+Run from the repository root with Node.js 18 or newer:
+
+```sh
+node --test scripts/tests/photoshop-uxp-file-io.test.mjs
+```
+
+The tests run the panel with the documented UXP file-system API surface and delayed
+file publication. They cover heartbeat startup, request/result ordering, rename
+retries, and write failures. They do not replace testing in Photoshop.
