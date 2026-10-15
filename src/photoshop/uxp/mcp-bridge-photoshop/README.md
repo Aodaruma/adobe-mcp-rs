@@ -13,12 +13,3 @@ This is the UXP implementation of the Photoshop MCP Bridge.
 
 The bridge uses `~/Documents/ps-mcp-bridge` and mirrors command results to
 `ps_mcp_result.json` for compatibility with the `ps-mcp` binary.
-
-## Packaging
-
-The manifest includes fully transparent 24 px and 48 px PNG placeholders for
-the plugin-list icon required by UXP Developer Tool packaging validation. These
-files intentionally contain no artwork and are not a proposed visual identity.
-
-Use Package in UXP Developer Tool to validate and build the plugin package.
-Successful packaging does not establish Marketplace submission eligibility.
