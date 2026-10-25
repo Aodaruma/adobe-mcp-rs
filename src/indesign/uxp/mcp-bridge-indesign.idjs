@@ -102,6 +102,13 @@ function renameFile(sourcePath, destinationPath) {
         reject(error);
         return;
       }
+      if (
+        shuttingDown &&
+        destinationPath === bridgePaths().heartbeatFile
+      ) {
+        unlinkFile(destinationPath).then(resolve, resolve);
+        return;
+      }
       resolve();
     });
   });
@@ -629,8 +636,8 @@ function handleBeforeQuit() {
     clearInterval(heartbeatIntervalId);
     heartbeatIntervalId = null;
   }
-  // UXP has no synchronous unlink. Start best-effort removal now and repeat
-  // after pending writes; the host may exit before asynchronous work completes.
+  // beforeQuit does not wait for promise continuations, and UXP has no
+  // synchronous unlink. Try removal now and again after pending writes settle.
   removeHeartbeatFile();
   try {
     app.removeEventListener("beforeQuit", handleBeforeQuit);

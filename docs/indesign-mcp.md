@@ -17,17 +17,7 @@ MCP client
   -> InDesign UXP DOM
 ~~~
 
-mcp-core::INDESIGN_HOST, daemon-core, the retained request registry, script-file policy, and the cross-host contract fixture are shared with the other Adobe hosts. The startup script serializes writes and publishes protocol-v1 heartbeat, command, and result records by writing a same-directory temporary file and calling UXP's callback-based `fs.rename`. InDesign 2026 does not expose `mkdirSync`, `statSync`, `openSync`, `closeSync`, `renameSync`, or `unlinkSync`. Temporary-file cleanup and heartbeat removal use callback-based `fs.unlink`. Shutdown stops polling, waits for pending writes, and keeps the startup-script promise pending until the final deletion attempt finishes. The application does not wait for asynchronous work in `beforeQuit`, so immediate heartbeat removal during actual application exit remains best-effort and requires host verification.
-
-Run the file-cleanup regression tests with Node.js 24 or newer:
-
-~~~sh
-node --test scripts/tests/indesign-uxp-bridge.test.cjs
-~~~
-
-The compatibility result and final command status are saved before publishing the request-specific result, which acknowledges completion to the Rust client. No further write to the old command follows that acknowledgement.
-
-The tests execute the startup script with the documented UXP file APIs. They verify command responses, temporary-file cleanup, and shutdown while a heartbeat write is pending; they do not replace application-exit testing in InDesign.
+mcp-core::INDESIGN_HOST, daemon-core, the retained request registry, script-file policy, and the cross-host contract fixture are shared with the other Adobe hosts. The startup script serializes writes and publishes protocol-v1 heartbeat, command, and result records by writing a same-directory temporary file and calling UXP's callback-based `fs.rename`. InDesign 2026 does not expose `mkdirSync`, `statSync`, `openSync`, `closeSync`, `renameSync`, or `unlinkSync`. Cleanup uses callback-based `fs.unlink` and waits for the final deletion attempt before resolving the startup-script promise.
 
 ## Why a Startup Script
 
@@ -152,7 +142,7 @@ Verified on Windows 11 x86_64, InDesign 2026 21.4.1.4, Japanese locale, bridge/i
 
 Creating a new document took longer than 5 seconds in one run. Callers that intentionally use a short timeout can recover the completed result through `get-script-result`.
 
-InDesign 21.4.1.4 did not dispatch either application quit event to this pending Startup Script during the tested normal UI shutdown. The bridge now attempts asynchronous `fs.unlink` cleanup from `beforeQuit`, without a guarantee that it finishes before the host exits. The supported failure path remains the broker's 10-second heartbeat lease: a stopped host is no longer eligible for target selection even if its diagnostic heartbeat file remains on disk. The broker does not guess that an old instance directory is safe to delete.
+InDesign 21.4.1.4 did not dispatch either application quit event to this pending Startup Script during the tested normal UI shutdown. The bridge attempts asynchronous `beforeQuit` cleanup, which may not finish before host exit. The supported failure path remains the broker's 10-second heartbeat lease: a stopped host is no longer eligible for target selection even if its diagnostic heartbeat file remains on disk. The broker does not guess that an old instance directory is safe to delete.
 
 The undo observation is also a release constraint rather than a rollback guarantee. Although the nested `app.doScript` call requests `UndoModes.ENTIRE_SCRIPT`, the long-running Startup Script remains the outer script transaction and the called code observed `SCRIPT_REQUEST`. Raw mutations must be designed with their own validation and compensation until a usable host undo step is verified.
 
