@@ -63,6 +63,14 @@ jobs:
         if: runner.os == 'macOS'
         run: /bin/bash ./scripts/tests/test-macos-release-flow.sh
 
+      - name: Setup Node.js for UXP runtime tests
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Test InDesign UXP runtime file cleanup
+        run: node --test scripts/tests/indesign-uxp-bridge.test.cjs
+
       - name: Test bridge protocol contracts
         run: cargo test -p bridge-contract-tests
 

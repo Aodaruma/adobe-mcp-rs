@@ -17,7 +17,15 @@ MCP client
   -> InDesign UXP DOM
 ~~~
 
-mcp-core::INDESIGN_HOST, daemon-core, the retained request registry, script-file policy, and the cross-host contract fixture are shared with the other Adobe hosts. The startup script serializes writes and publishes protocol-v1 heartbeat, command, and result records by writing a same-directory temporary file and calling UXP's callback-based `fs.rename`. InDesign 2026 does not expose `mkdirSync`, `statSync`, `openSync`, `closeSync`, or `renameSync`.
+mcp-core::INDESIGN_HOST, daemon-core, the retained request registry, script-file policy, and the cross-host contract fixture are shared with the other Adobe hosts. The startup script serializes writes and publishes protocol-v1 heartbeat, command, and result records by writing a same-directory temporary file and calling UXP's callback-based `fs.rename`. InDesign 2026 does not expose `mkdirSync`, `statSync`, `openSync`, `closeSync`, `renameSync`, or `unlinkSync`. Temporary-file cleanup and heartbeat removal use callback-based `fs.unlink`. Shutdown stops polling, waits for pending writes, and keeps the startup-script promise pending until the final deletion attempt finishes. The application does not wait for asynchronous work in `beforeQuit`, so immediate heartbeat removal during actual application exit remains best-effort and requires host verification.
+
+Run the file-cleanup regression tests with Node.js 24 or newer:
+
+~~~sh
+node --test scripts/tests/indesign-uxp-bridge.test.cjs
+~~~
+
+The tests execute the startup script with the documented UXP file APIs. They verify command responses, temporary-file cleanup, and shutdown while a heartbeat write is pending; they do not replace application-exit testing in InDesign.
 
 ## Why a Startup Script
 
