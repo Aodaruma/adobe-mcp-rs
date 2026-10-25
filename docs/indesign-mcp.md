@@ -25,6 +25,8 @@ Run the file-cleanup regression tests with Node.js 24 or newer:
 node --test scripts/tests/indesign-uxp-bridge.test.cjs
 ~~~
 
+The compatibility result and final command status are saved before publishing the request-specific result, which acknowledges completion to the Rust client. No further write to the old command follows that acknowledgement.
+
 The tests execute the startup script with the documented UXP file APIs. They verify command responses, temporary-file cleanup, and shutdown while a heartbeat write is pending; they do not replace application-exit testing in InDesign.
 
 ## Why a Startup Script

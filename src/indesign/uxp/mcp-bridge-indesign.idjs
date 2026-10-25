@@ -490,12 +490,15 @@ async function updateCommandStatus(path, payload, status) {
   await writeJson(path, next);
 }
 
-async function writeResult(context, result) {
+async function writeResult(context, result, finalStatus) {
   const paths = bridgePaths();
-  await writeJson(context.resultFile, result);
   if (context.resultFile !== paths.resultFile) {
     await writeJson(paths.resultFile, result);
   }
+  await updateCommandStatus(context.commandFile, context.payload, finalStatus);
+  // This result releases the Rust-side queue; the old command must be final
+  // before a caller can submit its successor.
+  await writeJson(context.resultFile, result);
 }
 
 async function writeHeartbeat(status, lastError) {
@@ -555,9 +558,8 @@ async function executePendingCommand(context) {
       message: errorText(error),
     });
   }
-  await writeResult(context, result);
   const finalStatus = result.status === "error" ? "error" : "completed";
-  await updateCommandStatus(context.commandFile, payload, finalStatus);
+  await writeResult(context, result, finalStatus);
   currentRequestId = null;
   lastStatus = finalStatus;
   await writeHeartbeat(

@@ -37,6 +37,7 @@ async function startBridge(t, hooks = {}) {
       callbackOperation(async () => {
         if (hooks.rename) await hooks.rename(from, to);
         await fs.promises.rename(from, to);
+        if (hooks.afterRename) await hooks.afterRename(from, to);
       }, callback);
     },
     unlink(file, callback) {
@@ -88,7 +89,7 @@ async function startBridge(t, hooks = {}) {
     async ping(requestId = "cleanup-contract") {
       fs.writeFileSync(this.command, JSON.stringify({ command: "ping", args: {}, requestId, status: "pending" }));
       [...timers.values()].find((timer) => timer.interval === 250).callback();
-      await waitFor(() => this.read(this.command).status === "completed" || logs.length > 0);
+      await waitFor(() => (fs.existsSync(this.result) && this.read(this.result)._requestId === requestId) || logs.length > 0);
       return logs;
     },
   };
@@ -170,4 +171,22 @@ test("the startup script remains pending until asynchronous shutdown deletion co
   release();
   await bridge.running;
   assert.equal(fs.existsSync(bridge.heartbeat), false);
+});
+
+test("the next request survives publication of its predecessor result", async (t) => {
+  let bridge;
+  let submitted = false;
+  bridge = await startBridge(t, { afterRename(_from, to) {
+    if (bridge && to === bridge.result && !submitted) {
+      submitted = true;
+      fs.writeFileSync(bridge.command, JSON.stringify({ command: "ping", args: {}, requestId: "successor", status: "pending" }));
+    }
+  } });
+  assert.deepEqual(await bridge.ping(), []);
+  await waitFor(() => bridge.read(bridge.heartbeat).status === "completed");
+  assert.equal(submitted, true);
+  assert.equal(bridge.read(bridge.command).requestId, "successor");
+  assert.equal(bridge.read(bridge.command).status, "pending");
+  assert.deepEqual(await bridge.ping("successor"), []);
+  assert.equal(bridge.read(bridge.result)._requestId, "successor");
 });
