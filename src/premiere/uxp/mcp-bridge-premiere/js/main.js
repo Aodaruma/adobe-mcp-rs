@@ -20,6 +20,7 @@
   var heartbeatTimer = null;
   var currentRequestId = null;
   var atomicWriteCounter = 0;
+  var fileWriteTail = Promise.resolve();
   var state = {
     autoRun: true,
     lastStatus: "idle",
@@ -181,6 +182,15 @@
   }
 
   function writeTextFile(path, text) {
+    // 非同期化した保存が重なっても、ハートビートや結果を途中の状態で公開しない。
+    var write = fileWriteTail.then(function () {
+      return performAtomicWrite(path, text);
+    });
+    fileWriteTail = write.catch(function () {});
+    return write;
+  }
+
+  async function performAtomicWrite(path, text) {
     if (!fs) {
       throw new Error("UXP fs module is not available.");
     }
@@ -197,12 +207,12 @@
         }
         var residue = joinPath(parent, entries[i]);
         try {
-          var stat = fs.statSync(residue);
+          var stat = fs.lstatSync(residue);
           var modifiedAt = typeof stat.mtimeMs === "number"
             ? stat.mtimeMs
             : stat.mtime && stat.mtime.getTime ? stat.mtime.getTime() : now;
           if (now - modifiedAt >= 60 * 60 * 1000) {
-            fs.unlinkSync(residue);
+            await fs.unlink(residue);
           }
         } catch (_cleanupErr) {}
       }
@@ -214,27 +224,22 @@
       parent,
       prefix + pid + "-" + now + "-" + atomicWriteCounter + "-" + Math.random().toString(36).slice(2, 10)
     );
-    var fd = null;
     try {
-      fd = fs.openSync(tempPath, "wx");
-      fs.writeFileSync(fd, text, { encoding: "utf-8" });
-      if (fs.fsyncSync) {
-        fs.fsyncSync(fd);
-      }
-      fs.closeSync(fd);
-      fd = null;
+      // UXPにはopenSync/closeSync/renameSyncがないため、パスを渡す公式APIを使う。
+      await fs.writeFile(tempPath, text, { encoding: "utf-8", flag: "wx" });
 
       var lastError = null;
       for (var attempt = 0; attempt < 5; attempt++) {
         try {
-          fs.renameSync(tempPath, path);
+          await fs.rename(tempPath, path);
           lastError = null;
           break;
         } catch (renameErr) {
           lastError = renameErr;
           if (attempt < 4) {
-            var until = Date.now() + 10;
-            while (Date.now() < until) {}
+            await new Promise(function (resolve) {
+              window.setTimeout(resolve, 10);
+            });
           }
         }
       }
@@ -242,10 +247,7 @@
         throw lastError;
       }
     } catch (err) {
-      if (fd !== null) {
-        try { fs.closeSync(fd); } catch (_closeErr) {}
-      }
-      try { fs.unlinkSync(tempPath); } catch (_removeErr) {}
+      try { await fs.unlink(tempPath); } catch (_removeErr) {}
       throw err;
     }
   }
@@ -259,7 +261,7 @@
   }
 
   function writeJsonFile(path, value) {
-    writeTextFile(path, JSON.stringify(value, null, 2));
+    return writeTextFile(path, JSON.stringify(value, null, 2));
   }
 
   async function getProjectPath() {
@@ -296,7 +298,7 @@
       updatedAt: nowIso(),
       heartbeatPath: paths.heartbeatFile
     };
-    writeJsonFile(paths.heartbeatFile, payload);
+    await writeJsonFile(paths.heartbeatFile, payload);
   }
 
   function updateUi() {
@@ -367,7 +369,7 @@
       }
     }
     next.status = status;
-    writeJsonFile(commandFile, next);
+    return writeJsonFile(commandFile, next);
   }
 
   function normalizeResult(command, requestId, rawResult) {
@@ -399,12 +401,15 @@
     return resultObj;
   }
 
-  function writeResult(context, resultObj) {
+  async function writeResult(context, resultObj, finalStatus) {
     var paths = getBridgePaths();
-    writeJsonFile(context.resultFile, resultObj);
     if (context.resultFile !== paths.resultFile) {
-      writeJsonFile(paths.resultFile, resultObj);
+      await writeJsonFile(paths.resultFile, resultObj);
     }
+    await updateCommandStatus(context.commandFile, context.payload, finalStatus);
+    // Publishing this result releases the Rust-side queue. Do not write the
+    // old command afterwards: a caller may already have submitted its successor.
+    await writeJsonFile(context.resultFile, resultObj);
   }
 
   async function executePendingCommand(context) {
@@ -422,7 +427,7 @@
     });
     await writeHeartbeat("running");
 
-    updateCommandStatus(context.commandFile, payload, "running");
+    await updateCommandStatus(context.commandFile, payload, "running");
 
     var resultObj = null;
     try {
@@ -435,10 +440,8 @@
       });
     }
 
-    writeResult(context, resultObj);
-
     var finalStatus = resultObj.status === "error" ? "error" : "completed";
-    updateCommandStatus(context.commandFile, payload, finalStatus);
+    await writeResult(context, resultObj, finalStatus);
     currentRequestId = null;
     setState({
       lastStatus: finalStatus,
