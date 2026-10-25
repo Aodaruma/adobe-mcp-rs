@@ -1,0 +1,224 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const vm = require("node:vm");
+const { test } = require("node:test");
+
+const source = fs.readFileSync(path.resolve(__dirname, "../../src/premiere/uxp/mcp-bridge-premiere/js/main.js"), "utf8");
+
+async function waitFor(predicate, failure) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(failure());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+async function startBridge(t, hooks = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "premiere-uxp-contract-"));
+  const root = path.join(home, "Documents", "pr-mcp-bridge");
+  const instanceRoot = path.join(root, "instances", "pr-uxp-contract");
+  const elements = new Map();
+  const timers = new Map();
+  let nextTimer = 0;
+  let entrypoints;
+  const element = (id) => {
+    if (!elements.has(id)) elements.set(id, {textContent: "", checked: true, addEventListener() {}});
+    return elements.get(id);
+  };
+  // Adobe公式fs APIの公開面だけを渡し、Node.js専用の同期APIを混入させない。
+  const uxpFs = {
+    lstatSync: fs.lstatSync,
+    readdirSync: fs.readdirSync,
+    readFileSync: fs.readFileSync,
+    writeFileSync: fs.writeFileSync,
+    mkdir: (...args) => fs.promises.mkdir(...args),
+    async writeFile(file, text, options) {
+      if (hooks.write) await hooks.write(file, text);
+      return fs.promises.writeFile(file, text, options);
+    },
+    async rename(from, to) {
+      if (hooks.rename) await hooks.rename(from, to);
+      return fs.promises.rename(from, to);
+    },
+    unlink: (...args) => fs.promises.unlink(...args),
+  };
+  const context = {
+    console,
+    setTimeout,
+    clearTimeout,
+    document: {readyState: "complete", getElementById: element},
+    window: {
+      localStorage: {getItem: () => "pr-uxp-contract", setItem() {}},
+      addEventListener() {},
+      setTimeout,
+      clearTimeout,
+      setInterval(callback, interval) {const id = ++nextTimer; timers.set(id, {callback, interval}); return id;},
+      clearInterval(id) {timers.delete(id);},
+    },
+    require(name) {
+      if (name === "fs") return uxpFs;
+      if (name === "os") return {homedir: () => home, platform: os.platform};
+      if (name === "premierepro") return {Project: {getActiveProject: async () => null}};
+      if (name === "uxp") return {host: {name: "Premiere Pro", version: "26.5.2"}, entrypoints: {setup(value) {entrypoints = value;}}};
+      throw new Error("Unexpected module: " + name);
+    },
+  };
+  vm.runInNewContext(source, context, {filename: "premiere-main.js"});
+  t.after(async () => {
+    entrypoints?.panels.mcpBridgePanel.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    fs.rmSync(home, {recursive: true, force: true});
+  });
+  await waitFor(() => [...timers.values()].some((timer) => timer.interval === 1000), () => element("log").textContent);
+  assert.notEqual(element("status").textContent, "error", element("log").textContent);
+  const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+  return {
+    root, instanceRoot, element, read,
+    heartbeat: path.join(instanceRoot, "heartbeat.json"),
+    command: path.join(instanceRoot, "pr_command.json"),
+    result: path.join(instanceRoot, "pr_mcp_result.json"),
+    async poll() {await [...timers.values()].find((timer) => timer.interval === 1000).callback();},
+    enqueue(command = "ping", args = {}, requestId = "contract-request") {
+      fs.writeFileSync(path.join(instanceRoot, "pr_command.json"), JSON.stringify({command, args, requestId, status: "pending"}));
+    },
+  };
+}
+
+test("UXP対応APIだけで起動し、探索に必要なハートビートを保存する", async (t) => {
+  const bridge = await startBridge(t);
+  const heartbeat = bridge.read(bridge.heartbeat);
+  assert.equal(heartbeat.protocolVersion, 1);
+  assert.equal(heartbeat.hostId, "premiere");
+  assert.equal(heartbeat.instanceId, "pr-uxp-contract");
+  assert.equal(heartbeat.commandFile, bridge.command);
+  assert.equal(heartbeat.resultFile, bridge.result);
+  assert.ok(Date.now() - Date.parse(heartbeat.lastHeartbeatAt) < 2000);
+  assert.equal(bridge.element("status").textContent, "waiting");
+});
+
+test("pingの結果をinstanceと互換保存先に公開してからコマンドを完了する", async (t) => {
+  const bridge = await startBridge(t);
+  bridge.enqueue();
+  await bridge.poll();
+  const result = bridge.read(bridge.result);
+  assert.equal(result.status, "success");
+  assert.equal(result._requestId, "contract-request");
+  assert.equal(result._commandExecuted, "ping");
+  assert.deepEqual(bridge.read(path.join(bridge.root, "pr_mcp_result.json")), result);
+  assert.equal(bridge.read(bridge.command).status, "completed");
+  assert.equal(bridge.element("status").textContent, "completed");
+});
+
+test("結果の公開待ちでは完了を通知しない", async (t) => {
+  let release;
+  let blocked = false;
+  const gate = new Promise((resolve) => {release = resolve;});
+  const bridge = await startBridge(t, {async rename(_from, to) {
+    if (path.basename(to) === "pr_mcp_result.json") {blocked = true; await gate;}
+  }});
+  t.after(() => release());
+  bridge.enqueue();
+  const pending = bridge.poll();
+  await waitFor(() => blocked, () => "結果公開へ到達しませんでした");
+  assert.equal(bridge.read(bridge.command).status, "running");
+  assert.equal(bridge.element("status").textContent, "running");
+  assert.equal(fs.existsSync(bridge.result), false);
+  release();
+  await pending;
+  assert.equal(bridge.read(bridge.command).status, "completed");
+});
+
+test("結果の置換失敗時は既存結果を保ち、一時ファイルを清掃して停止する", async (t) => {
+  let failing = false;
+  const bridge = await startBridge(t, {async rename(_from, to) {
+    if (failing && path.basename(to) === "pr_mcp_result.json") throw new Error("result rename denied");
+  }});
+  fs.writeFileSync(bridge.result, JSON.stringify({previous: true}));
+  failing = true;
+  bridge.enqueue();
+  await bridge.poll();
+  assert.deepEqual(bridge.read(bridge.result), {previous: true});
+  assert.equal(bridge.read(bridge.command).status, "running");
+  assert.equal(bridge.element("status").textContent, "error");
+  assert.match(bridge.element("log").textContent, /result rename denied/);
+  assert.deepEqual(fs.readdirSync(bridge.instanceRoot).filter((name) => name.startsWith(".pr_mcp_result.json.tmp-")), []);
+});
+
+test("非同期書き込み失敗を検出し、既存の結果を破損させない", async (t) => {
+  let failing = false;
+  const bridge = await startBridge(t, {async write(file) {
+    if (failing && path.basename(file).startsWith(".pr_mcp_result.json.tmp-")) {
+      await fs.promises.writeFile(file, "partial");
+      throw new Error("result write denied");
+    }
+  }});
+  fs.writeFileSync(bridge.result, JSON.stringify({previous: true}));
+  failing = true;
+  bridge.enqueue();
+  await bridge.poll();
+  assert.deepEqual(bridge.read(bridge.result), {previous: true});
+  assert.equal(bridge.read(bridge.command).status, "running");
+  assert.match(bridge.element("log").textContent, /result write denied/);
+  assert.deepEqual(fs.readdirSync(bridge.instanceRoot).filter((name) => name.startsWith(".pr_mcp_result.json.tmp-")), []);
+});
+
+test("一時的な置換失敗から回復し、後続コマンドも保存できる", async (t) => {
+  let attempts = 0;
+  const bridge = await startBridge(t, {async rename(_from, to) {
+    if (path.basename(to) === "pr_mcp_result.json" && attempts++ < 2) throw new Error("temporary busy");
+  }});
+  bridge.enqueue();
+  await bridge.poll();
+  assert.equal(bridge.read(bridge.command).status, "completed");
+  bridge.enqueue("ping", {}, "next-request");
+  await bridge.poll();
+  assert.equal(bridge.read(bridge.result)._requestId, "next-request");
+});
+
+test("古い対象一時ファイルだけを清掃し、直近や無関係のファイルを保つ", async (t) => {
+  const bridge = await startBridge(t);
+  const old = path.join(bridge.instanceRoot, ".heartbeat.json.tmp-old");
+  const recent = path.join(bridge.instanceRoot, ".heartbeat.json.tmp-recent");
+  const other = path.join(bridge.instanceRoot, "keep.txt");
+  for (const file of [old, recent, other]) fs.writeFileSync(file, "keep");
+  const past = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  fs.utimesSync(old, past, past);
+  await bridge.poll();
+  assert.equal(fs.existsSync(old), false);
+  assert.equal(fs.readFileSync(recent, "utf8"), "keep");
+  assert.equal(fs.readFileSync(other, "utf8"), "keep");
+});
+
+test("raw UXPからawaitしたファイル保存と日本語の結果を返せる", async (t) => {
+  const bridge = await startBridge(t);
+  bridge.enqueue("executeJsx", {mode: "unsafe", description: "bridge file contract", code: 'await bridge.writeJsonFile(bridge.joinPath(bridge.getBridgePaths().instanceRoot, "probe.json"), {text:"日本語"}); return {readBack: bridge.readJsonFile(bridge.joinPath(bridge.getBridgePaths().instanceRoot, "probe.json"))};'});
+  await bridge.poll();
+  assert.equal(bridge.read(bridge.result).result.readBack.text, "日本語");
+  assert.equal(bridge.read(bridge.command).status, "completed");
+});
+
+test("overlapping writes to one destination preserve submission order", async (t) => {
+  let release;
+  let firstBlocked = false;
+  let secondStarted = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  const bridge = await startBridge(t, { async write(file, text) {
+    if (!path.basename(file).startsWith(".probe.json.tmp-")) return;
+    if (JSON.parse(text).value === 1) { firstBlocked = true; await gate; }
+    else secondStarted = true;
+  } });
+  bridge.enqueue("executeJsx", {
+    mode: "unsafe", description: "ordered file publication",
+    code: 'const file = bridge.joinPath(bridge.getBridgePaths().instanceRoot, "probe.json"); await Promise.all([bridge.writeJsonFile(file, {value:1}), bridge.writeJsonFile(file, {value:2})]); return bridge.readJsonFile(file);',
+  });
+  const pending = bridge.poll();
+  await waitFor(() => firstBlocked, () => "First write did not start");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(secondStarted, false);
+  release();
+  await pending;
+  assert.equal(bridge.read(bridge.result).result.value, 2);
+});
