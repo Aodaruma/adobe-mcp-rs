@@ -152,7 +152,7 @@ Verified on Windows 11 x86_64, InDesign 2026 21.4.1.4, Japanese locale, bridge/i
 
 Creating a new document took longer than 5 seconds in one run. Callers that intentionally use a short timeout can recover the completed result through `get-script-result`.
 
-InDesign 21.4.1.4 did not dispatch either application quit event to this pending Startup Script during the tested normal UI shutdown. The bridge therefore keeps the synchronous `beforeQuit` cleanup attempt, but the supported failure path is the broker's 10-second heartbeat lease: a stopped host is no longer eligible for target selection even if its diagnostic heartbeat file remains on disk. The broker does not guess that an old instance directory is safe to delete.
+InDesign 21.4.1.4 did not dispatch either application quit event to this pending Startup Script during the tested normal UI shutdown. The bridge now attempts asynchronous `fs.unlink` cleanup from `beforeQuit`, without a guarantee that it finishes before the host exits. The supported failure path remains the broker's 10-second heartbeat lease: a stopped host is no longer eligible for target selection even if its diagnostic heartbeat file remains on disk. The broker does not guess that an old instance directory is safe to delete.
 
 The undo observation is also a release constraint rather than a rollback guarantee. Although the nested `app.doScript` call requests `UndoModes.ENTIRE_SCRIPT`, the long-running Startup Script remains the outer script transaction and the called code observed `SCRIPT_REQUEST`. Raw mutations must be designed with their own validation and compensation until a usable host undo step is verified.
 
