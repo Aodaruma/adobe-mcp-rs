@@ -29,7 +29,10 @@ async function startBridge(t, hooks = {}) {
     lstatSync: fs.lstatSync,
     readdirSync: fs.readdirSync,
     readFileSync: fs.readFileSync,
-    writeFileSync: fs.writeFileSync,
+    writeFileSync(file, text, options) {
+      if (hooks.write) hooks.write(file, text);
+      return fs.writeFileSync(file, text, options);
+    },
     mkdir(file, options, callback) {
       callbackOperation(() => fs.promises.mkdir(file, options), callback);
     },
@@ -81,15 +84,18 @@ async function startBridge(t, hooks = {}) {
   const instanceRoot = path.join(root, "instances", fs.readdirSync(path.join(root, "instances"))[0]);
   const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
   return {
-    instanceRoot, read, running, timers, quit,
+    root, instanceRoot, read, running, timers, quit,
     heartbeat: path.join(instanceRoot, "heartbeat.json"),
     command: path.join(instanceRoot, "id_command.json"),
     result: path.join(instanceRoot, "id_mcp_result.json"),
     tickHeartbeat() { [...timers.values()].find((timer) => timer.interval === 2000).callback(); },
     async ping(requestId = "cleanup-contract") {
       fs.writeFileSync(this.command, JSON.stringify({ command: "ping", args: {}, requestId, status: "pending" }));
-      [...timers.values()].find((timer) => timer.interval === 250).callback();
-      await waitFor(() => (fs.existsSync(this.result) && this.read(this.result)._requestId === requestId) || logs.length > 0);
+      await waitFor(() => {
+        if ((fs.existsSync(this.result) && this.read(this.result)._requestId === requestId) || logs.length > 0) return true;
+        [...timers.values()].find((timer) => timer.interval === 250).callback();
+        return false;
+      });
       return logs;
     },
   };
@@ -118,16 +124,34 @@ test("stale temporary files are deleted without deleting recent or unrelated fil
   assert.equal(fs.readFileSync(other, "utf8"), "keep");
 });
 
-test("failed result publication retains the previous result and removes its temporary file", async (t) => {
-  const bridge = await startBridge(t, { rename(_from, to) {
-    if (path.basename(to) === "id_mcp_result.json") throw new Error("publication denied");
-  } });
-  fs.writeFileSync(bridge.result, JSON.stringify({ previous: true }));
-  assert.match((await bridge.ping()).join("\n"), /publication denied/);
-  assert.deepEqual(bridge.read(bridge.result), { previous: true });
-  assert.equal(bridge.read(bridge.command).status, "running");
-  assert.deepEqual(fs.readdirSync(bridge.instanceRoot).filter((name) => name.startsWith(".id_mcp_result.json.tmp-")), []);
-});
+
+for (const scope of ["compatibility", "instance"]) {
+  for (const failure of ["rename", "write"]) {
+    test("failed " + scope + " " + failure + " preserves old data and removes its temporary file", async (t) => {
+      let failedResult;
+      const bridge = await startBridge(t, {
+        rename(_from, to) {
+          if (failure === "rename" && to === failedResult) throw new Error("publication denied");
+        },
+        write(file) {
+          if (failure === "write" && failedResult && path.dirname(file) === path.dirname(failedResult) && path.basename(file).startsWith("." + path.basename(failedResult) + ".tmp-")) {
+            fs.writeFileSync(file, "partial");
+            throw new Error("publication denied");
+          }
+        },
+      });
+      const resultName = path.basename(bridge.result);
+      failedResult = scope === "compatibility" ? path.join(bridge.root, resultName) : bridge.result;
+      for (const file of new Set([failedResult, bridge.result])) fs.writeFileSync(file, JSON.stringify({ previous: true }));
+      assert.match((await bridge.ping()).join("\n"), /publication denied/);
+      assert.deepEqual(bridge.read(failedResult), { previous: true });
+      assert.deepEqual(bridge.read(bridge.result), { previous: true });
+      for (const parent of [bridge.root, bridge.instanceRoot]) {
+        assert.deepEqual(fs.readdirSync(parent).filter((name) => name.startsWith("." + resultName + ".tmp-")), []);
+      }
+    });
+  }
+}
 
 test("shutdown stops polling and removes the published heartbeat", async (t) => {
   const bridge = await startBridge(t);
