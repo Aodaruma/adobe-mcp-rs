@@ -18,8 +18,10 @@ The bridge uses `~/Documents/pr-mcp-bridge` and mirrors command results to
 
 The UXP `fs` module is not a complete Node.js implementation. Bridge writes
 use the supported asynchronous `writeFile`, `rename`, and `unlink` APIs.
-Temporary-file publication is serialized, and command completion waits for the
-instance result and compatibility result to be saved. Failed writes retain the
+Temporary-file publication is serialized. The compatibility result and final
+command status are saved before publishing the request-specific result, which
+acknowledges completion to the Rust client. The old command is never written
+after that acknowledgement, so the next pending request is preserved. Failed writes retain the
 previous destination and remove their temporary file when possible.
 
 Raw UXP code must await `bridge.writeTextFile(...)` and

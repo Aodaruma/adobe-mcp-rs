@@ -40,7 +40,8 @@ async function startBridge(t, hooks = {}) {
     },
     async rename(from, to) {
       if (hooks.rename) await hooks.rename(from, to);
-      return fs.promises.rename(from, to);
+      await fs.promises.rename(from, to);
+      if (hooks.afterRename) await hooks.afterRename(from, to);
     },
     unlink: (...args) => fs.promises.unlink(...args),
   };
@@ -98,7 +99,7 @@ test("UXP対応APIだけで起動し、探索に必要なハートビートを�
   assert.equal(bridge.element("status").textContent, "waiting");
 });
 
-test("pingの結果をinstanceと互換保存先に公開してからコマンドを完了する", async (t) => {
+test("pingの応答を個別・互換保存先へ公開する", async (t) => {
   const bridge = await startBridge(t);
   bridge.enqueue();
   await bridge.poll();
@@ -111,7 +112,7 @@ test("pingの結果をinstanceと互換保存先に公開してからコマン�
   assert.equal(bridge.element("status").textContent, "completed");
 });
 
-test("結果の公開待ちでは完了を通知しない", async (t) => {
+test("互換結果の保存待ちでは個別応答を公開しない", async (t) => {
   let release;
   let blocked = false;
   const gate = new Promise((resolve) => {release = resolve;});
@@ -221,4 +222,44 @@ test("overlapping writes to one destination preserve submission order", async (t
   release();
   await pending;
   assert.equal(bridge.read(bridge.result).result.value, 2);
+});
+
+test("a request submitted when its predecessor result becomes visible is not overwritten", async (t) => {
+  let bridge;
+  let submitted = false;
+  bridge = await startBridge(t, { afterRename(_from, to) {
+    if (bridge && to === bridge.result && !submitted) {
+      submitted = true;
+      bridge.enqueue("ping", {}, "next-after-publication");
+    }
+  } });
+  bridge.enqueue("ping", {}, "first-publication");
+  await bridge.poll();
+  assert.equal(submitted, true);
+  assert.equal(bridge.read(bridge.command).requestId, "next-after-publication");
+  assert.equal(bridge.read(bridge.command).status, "pending");
+  await bridge.poll();
+  assert.equal(bridge.read(bridge.result)._requestId, "next-after-publication");
+  assert.equal(bridge.read(bridge.result).status, "success");
+});
+
+test("a legacy global request submitted after its predecessor result is preserved", async (t) => {
+  let bridge;
+  let commandFile;
+  let resultFile;
+  let submitted = false;
+  const enqueue = (requestId) => fs.writeFileSync(commandFile, JSON.stringify({ command: "ping", args: {}, requestId, status: "pending" }));
+  bridge = await startBridge(t, { afterRename(_from, to) {
+    if (to === resultFile && !submitted) { submitted = true; enqueue("global-successor"); }
+  } });
+  commandFile = path.join(bridge.root, "pr_command.json");
+  resultFile = path.join(bridge.root, "pr_mcp_result.json");
+  enqueue("global-first");
+  await bridge.poll();
+  assert.equal(submitted, true);
+  assert.equal(bridge.read(commandFile).requestId, "global-successor");
+  assert.equal(bridge.read(commandFile).status, "pending");
+  await bridge.poll();
+  assert.equal(bridge.read(resultFile)._requestId, "global-successor");
+  assert.equal(bridge.read(resultFile).status, "success");
 });

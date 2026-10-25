@@ -401,12 +401,15 @@
     return resultObj;
   }
 
-  async function writeResult(context, resultObj) {
+  async function writeResult(context, resultObj, finalStatus) {
     var paths = getBridgePaths();
-    await writeJsonFile(context.resultFile, resultObj);
     if (context.resultFile !== paths.resultFile) {
       await writeJsonFile(paths.resultFile, resultObj);
     }
+    await updateCommandStatus(context.commandFile, context.payload, finalStatus);
+    // Publishing this result releases the Rust-side queue. Do not write the
+    // old command afterwards: a caller may already have submitted its successor.
+    await writeJsonFile(context.resultFile, resultObj);
   }
 
   async function executePendingCommand(context) {
@@ -437,10 +440,8 @@
       });
     }
 
-    await writeResult(context, resultObj);
-
     var finalStatus = resultObj.status === "error" ? "error" : "completed";
-    await updateCommandStatus(context.commandFile, payload, finalStatus);
+    await writeResult(context, resultObj, finalStatus);
     currentRequestId = null;
     setState({
       lastStatus: finalStatus,
