@@ -131,39 +131,48 @@ test("互換結果の保存待ちでは個別応答を公開しない", async (t
   assert.equal(bridge.read(bridge.command).status, "completed");
 });
 
-test("結果の置換失敗時は既存結果を保ち、一時ファイルを清掃して停止する", async (t) => {
-  let failing = false;
-  const bridge = await startBridge(t, {async rename(_from, to) {
-    if (failing && path.basename(to) === "pr_mcp_result.json") throw new Error("result rename denied");
-  }});
-  fs.writeFileSync(bridge.result, JSON.stringify({previous: true}));
-  failing = true;
-  bridge.enqueue();
-  await bridge.poll();
-  assert.deepEqual(bridge.read(bridge.result), {previous: true});
-  assert.equal(bridge.read(bridge.command).status, "running");
-  assert.equal(bridge.element("status").textContent, "error");
-  assert.match(bridge.element("log").textContent, /result rename denied/);
-  assert.deepEqual(fs.readdirSync(bridge.instanceRoot).filter((name) => name.startsWith(".pr_mcp_result.json.tmp-")), []);
-});
-
-test("非同期書き込み失敗を検出し、既存の結果を破損させない", async (t) => {
-  let failing = false;
-  const bridge = await startBridge(t, {async write(file) {
-    if (failing && path.basename(file).startsWith(".pr_mcp_result.json.tmp-")) {
-      await fs.promises.writeFile(file, "partial");
-      throw new Error("result write denied");
+for (const scope of ["compatibility", "instance"]) {
+  test(`failed ${scope} publication preserves the destination and removes temporary files`, async (t) => {
+    let failedResult;
+    const bridge = await startBridge(t, { async rename(_from, to) {
+      if (to === failedResult) throw new Error("result rename denied");
+    } });
+    const resultName = path.basename(bridge.result);
+    failedResult = scope === "compatibility" ? path.join(bridge.root, resultName) : bridge.result;
+    for (const file of new Set([failedResult, bridge.result])) fs.writeFileSync(file, JSON.stringify({ previous: true }));
+    bridge.enqueue();
+    await bridge.poll();
+    assert.deepEqual(bridge.read(failedResult), { previous: true });
+    assert.deepEqual(bridge.read(bridge.result), { previous: true });
+    assert.equal(bridge.element("status").textContent, "error");
+    assert.match(bridge.element("log").textContent, /result rename denied/);
+    for (const parent of [bridge.root, bridge.instanceRoot]) {
+      assert.deepEqual(fs.readdirSync(parent).filter((name) => name.startsWith("." + resultName + ".tmp-")), []);
     }
-  }});
-  fs.writeFileSync(bridge.result, JSON.stringify({previous: true}));
-  failing = true;
-  bridge.enqueue();
-  await bridge.poll();
-  assert.deepEqual(bridge.read(bridge.result), {previous: true});
-  assert.equal(bridge.read(bridge.command).status, "running");
-  assert.match(bridge.element("log").textContent, /result write denied/);
-  assert.deepEqual(fs.readdirSync(bridge.instanceRoot).filter((name) => name.startsWith(".pr_mcp_result.json.tmp-")), []);
-});
+  });
+
+  test(`failed ${scope} temporary write preserves the destination and cleans partial data`, async (t) => {
+    let failedResult;
+    const bridge = await startBridge(t, { async write(file) {
+      if (failedResult && path.dirname(file) === path.dirname(failedResult) && path.basename(file).startsWith("." + path.basename(failedResult) + ".tmp-")) {
+        await fs.promises.writeFile(file, "partial");
+        throw new Error("result write denied");
+      }
+    } });
+    const resultName = path.basename(bridge.result);
+    failedResult = scope === "compatibility" ? path.join(bridge.root, resultName) : bridge.result;
+    for (const file of new Set([failedResult, bridge.result])) fs.writeFileSync(file, JSON.stringify({ previous: true }));
+    bridge.enqueue();
+    await bridge.poll();
+    assert.deepEqual(bridge.read(failedResult), { previous: true });
+    assert.deepEqual(bridge.read(bridge.result), { previous: true });
+    assert.equal(bridge.element("status").textContent, "error");
+    assert.match(bridge.element("log").textContent, /result write denied/);
+    for (const parent of [bridge.root, bridge.instanceRoot]) {
+      assert.deepEqual(fs.readdirSync(parent).filter((name) => name.startsWith("." + resultName + ".tmp-")), []);
+    }
+  });
+}
 
 test("一時的な置換失敗から回復し、後続コマンドも保存できる", async (t) => {
   let attempts = 0;
