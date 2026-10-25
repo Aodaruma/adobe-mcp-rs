@@ -23,6 +23,7 @@
   var heartbeatTimer = null;
   var currentRequestId = null;
   var atomicWriteCounter = 0;
+  var fileWriteTail = Promise.resolve();
   var state = {
     autoRun: true,
     lastStatus: "idle",
@@ -160,7 +161,15 @@
     return fs.readFileSync(path, { encoding: "utf-8" });
   }
 
-  async function writeTextFile(path, text) {
+  function writeTextFile(path, text) {
+    var write = fileWriteTail.then(function () {
+      return performAtomicWrite(path, text);
+    });
+    fileWriteTail = write.catch(function () {});
+    return write;
+  }
+
+  async function performAtomicWrite(path, text) {
     if (!fs) {
       throw new Error("UXP fs module is not available.");
     }
