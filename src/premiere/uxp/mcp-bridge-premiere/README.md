@@ -14,5 +14,5 @@ This is the UXP implementation of the Premiere MCP Bridge.
 The bridge uses `~/Documents/pr-mcp-bridge` and mirrors command results to
 `pr_mcp_result.json` for compatibility with the existing `pr-mcp` binary.
 
-File writes are asynchronous in UXP. Raw UXP code must await
+Bridge file writes are asynchronous. Raw UXP code must await
 `bridge.writeTextFile(...)` and `bridge.writeJsonFile(...)`.
