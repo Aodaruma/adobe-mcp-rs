@@ -95,11 +95,23 @@ impl HostRuntime {
                 Ok(status) if !status.accepting => {
                     format!("Stopping: {} pending", status.pending_jobs)
                 }
+                Ok(status) if status.recovering => "Reconnecting: verifying AE scheduler".into(),
                 Ok(status) if status.pending_jobs > 0 => {
                     format!("Processing: {} pending", status.pending_jobs)
                 }
                 Ok(status) if status.connected_instances > 0 => {
                     format!("Connected: {} instance(s)", status.connected_instances)
+                }
+                Ok(status) if status.native_recovery_status.as_deref() == Some("stale") => {
+                    "Waiting for AE scheduler recovery".into()
+                }
+                Ok(status)
+                    if status
+                        .native_recovery_status
+                        .as_deref()
+                        .is_some_and(|s| s != "recovered") =>
+                {
+                    "Needs attention: AE recovery paused".into()
                 }
                 Ok(_) => "Waiting for Adobe bridge".into(),
                 Err(error) => format!("Needs attention: {error}"),

@@ -26,6 +26,23 @@ fn uxp_file_transport_and_panel_lifecycle() {
     );
 }
 
+#[test]
+fn after_effects_startup_runtime_lifecycle() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/tests/ae-startup-runtime.cjs");
+    let output = std::process::Command::new("node")
+        .arg("--test")
+        .arg(script)
+        .output()
+        .expect("Node.js 20+ is required for the AE Startup bridge contract tests");
+    assert!(
+        output.status.success(),
+        "AE Startup bridge tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn protocol_test_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -105,7 +122,14 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
     assert!(runtime.contains("heartbeatAgeMs <= heartbeatStaleAfterMs"));
     assert!(runtime.contains("ae_mcp_scheduler_diagnostic.json"));
     assert!(runtime.contains("stale-scheduler-detected"));
-    assert!(runtime.contains("runtime.ensureHealthy"));
+    let panel_start = runtime.find("function refreshAttachedStatus()").unwrap();
+    let panel_end = runtime[panel_start..]
+        .find("attachedDiagnostics.onClick")
+        .unwrap()
+        + panel_start;
+    let panel_refresh = &runtime[panel_start..panel_end];
+    assert!(panel_refresh.contains("runtime.getState()"));
+    assert!(!panel_refresh.contains("runtime.ensureHealthy"));
     assert!(runtime.contains("debugLogCheckbox.value = false"));
     assert!(runtime.contains("Write diagnostic debug log"));
     assert!(runtime.contains("function refreshDebugLogConfig()"));

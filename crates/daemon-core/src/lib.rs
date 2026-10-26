@@ -16,6 +16,8 @@ use std::thread;
 use std::time::Duration;
 use tracing::{error, info};
 
+#[cfg(windows)]
+mod ae_recovery;
 mod websocket;
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +124,17 @@ struct DaemonState {
 }
 
 impl DaemonState {
+    fn native_recovery_status(&self) -> Option<String> {
+        #[cfg(windows)]
+        {
+            ae_recovery::status(&self.cfg, &self.bridge)
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
     fn instances(&self) -> Result<InstanceDiscoveryReport> {
         let mut report = self
             .bridge
@@ -164,6 +177,7 @@ impl DaemonState {
 struct Lifecycle {
     accepting: bool,
     pending_jobs: usize,
+    recovering: bool,
 }
 
 impl Default for Lifecycle {
@@ -171,6 +185,7 @@ impl Default for Lifecycle {
         Self {
             accepting: true,
             pending_jobs: 0,
+            recovering: false,
         }
     }
 }
@@ -184,6 +199,11 @@ impl JobPermit {
         let mut status = lifecycle.lock().expect("lifecycle mutex poisoned");
         if !status.accepting {
             return Err(anyhow!("runtime is draining; new commands are paused"));
+        }
+        if status.recovering {
+            return Err(anyhow!(
+                "AE scheduler recovery is in progress; retry after the connection is verified"
+            ));
         }
         status.pending_jobs += 1;
         Ok(Self(Arc::clone(lifecycle)))
@@ -206,6 +226,9 @@ pub struct RuntimeSnapshot {
     pub accepting: bool,
     pub pending_jobs: usize,
     pub connected_instances: usize,
+    pub recovering: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_recovery_status: Option<String>,
 }
 
 /// A broker owned by the desktop app, without spawning a daemon process.
@@ -245,6 +268,8 @@ impl ManagedDaemon {
                     .as_ref()
                     .map_or(0, |hub| hub.recovery_count()),
             connected_instances: instances.instances.len(),
+            recovering: status.recovering,
+            native_recovery_status: self.state.native_recovery_status(),
         })
     }
 }
@@ -313,13 +338,16 @@ fn make_state(cfg: AppConfig) -> Result<Arc<DaemonState>> {
     } else {
         None
     };
-    Ok(Arc::new(DaemonState {
+    let state = Arc::new(DaemonState {
         bridge,
         websocket,
         cfg,
         scheduler: InstanceScheduler::default(),
         lifecycle: Arc::new(Mutex::new(Lifecycle::default())),
-    }))
+    });
+    #[cfg(all(windows, not(test)))]
+    ae_recovery::start(&state)?;
+    Ok(state)
 }
 
 fn spawn_client(stream: TcpStream, state: &Arc<DaemonState>) {
@@ -434,7 +462,8 @@ fn handle_request(state: &Arc<DaemonState>, request: DaemonRequest) -> Result<Va
                 "instances": report.instances,
                 "inactiveInstances": report.inactive_instances,
                 "count": count,
-                "staleThresholdMs": state.cfg.instance_heartbeat_stale_ms
+                "staleThresholdMs": state.cfg.instance_heartbeat_stale_ms,
+                "nativeRecoveryStatus": state.native_recovery_status()
             }))
         }
         "getResult" => {
@@ -543,11 +572,16 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
             .unwrap_or("not-provided")
     );
     let instance_id = instance.instance_id.clone();
+    #[cfg(all(windows, not(test)))]
+    let host_exit_probe = ae_recovery::track_host_exit(&instance);
+    #[cfg(any(not(windows), test))]
+    let host_exit_probe: Option<Box<dyn Fn() -> bool + Send>> = None;
     let options = BridgeRunOptions {
         target,
         // Only the client wait below is bounded. Host execution cannot be
         // stopped by that timeout, so the worker must retain its FIFO slot and
-        // global read/write guard until the host returns a result.
+        // global read/write guard until the host returns a result or the exact
+        // associated host process is positively known to have exited.
         timeout: Duration::MAX,
         poll_interval: Duration::from_millis(poll_interval_ms),
         retention_seconds,
@@ -577,13 +611,16 @@ fn handle_run_command(state: &Arc<DaemonState>, request: DaemonRequest) -> Resul
                     message
                 });
         }
-        match bridge.run_prepared_request_on_instance(
+        match bridge.run_prepared_request_on_instance_with_exit_probe(
             &task_request_id,
             &task_command,
             request.args,
             instance,
             options,
             None,
+            host_exit_probe
+                .as_ref()
+                .map(|probe| probe.as_ref() as &dyn Fn() -> bool),
         ) {
             Ok(outcome) => Ok(outcome.to_value()),
             Err(error) => {
@@ -945,6 +982,91 @@ mod tests {
             .unwrap();
         other.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
         assert!(other_started.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn confirmed_process_exit_releases_fifo_global_gate_and_job_permit() {
+        let (cfg, _dir, _listener) = test_config();
+        let instance = write_instance(&cfg, "dead-process");
+        let state = make_state(cfg).unwrap();
+        let prepared = state
+            .bridge
+            .prepare_request("ping", 60, Some(instance.clone()))
+            .unwrap();
+        let request_id = prepared.record.request_id;
+        let exit = Arc::new(AtomicBool::new(false));
+        let worker_exit = Arc::clone(&exit);
+        let bridge = state.bridge.clone();
+        let worker_instance = instance.clone();
+        let permit = JobPermit::acquire(&state.lifecycle).unwrap();
+        let first = state
+            .scheduler
+            .submit(
+                "dead-process",
+                true,
+                Box::new(move || {
+                    let _permit = permit;
+                    bridge
+                        .run_prepared_request_on_instance_with_exit_probe(
+                            &request_id,
+                            "ping",
+                            json!({}),
+                            worker_instance,
+                            BridgeRunOptions {
+                                target: BridgeTarget::default(),
+                                timeout: Duration::MAX,
+                                poll_interval: Duration::from_millis(5),
+                                retention_seconds: 60,
+                            },
+                            None,
+                            Some(&|| worker_exit.load(Ordering::SeqCst)),
+                        )
+                        .map(|outcome| outcome.to_value())
+                        .map_err(|error| error.to_string())
+                }),
+            )
+            .unwrap();
+        wait_for_command(&PathBuf::from(&instance.command_file), None);
+        let same_fifo = state
+            .scheduler
+            .submit("dead-process", false, Box::new(|| Ok(json!("same"))))
+            .unwrap();
+        let another_instance = state
+            .scheduler
+            .submit("new-process", false, Box::new(|| Ok(json!("another"))))
+            .unwrap();
+        assert!(matches!(
+            same_fifo.recv_timeout(Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(matches!(
+            another_instance.recv_timeout(Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(state.lifecycle.lock().unwrap().pending_jobs, 1);
+        exit.store(true, Ordering::SeqCst);
+        assert_eq!(
+            first.recv_timeout(Duration::from_secs(3)).unwrap().unwrap()["status"],
+            "lost"
+        );
+        assert_eq!(
+            same_fifo
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .unwrap(),
+            json!("same")
+        );
+        assert_eq!(
+            another_instance
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .unwrap(),
+            json!("another")
+        );
+        assert_eq!(state.lifecycle.lock().unwrap().pending_jobs, 0);
+        assert!(!PathBuf::from(instance.command_file)
+            .with_file_name("current_request.json")
+            .exists());
     }
 
     #[test]

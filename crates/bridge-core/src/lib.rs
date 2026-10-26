@@ -613,7 +613,7 @@ impl BridgeClient {
 
     pub fn mark_request_failed(&self, request_id: &str, message: String) -> Result<RequestRecord> {
         self.update_request_record(request_id, |record| {
-            if is_terminal_request_status(&record.status) {
+            if is_terminal_request_status(&record.status) || record.status == "lost" {
                 return false;
             }
             record.status = "failed".to_string();
@@ -628,7 +628,7 @@ impl BridgeClient {
     /// code is cooperative and may still publish a terminal result.
     pub fn request_cancellation(&self, request_id: &str) -> Result<RequestRecord> {
         self.update_request_record(request_id, |record| {
-            if is_terminal_request_status(&record.status) {
+            if is_terminal_request_status(&record.status) || record.status == "lost" {
                 return false;
             }
             record.status = "cancelRequested".to_string();
@@ -691,6 +691,25 @@ impl BridgeClient {
         options: BridgeRunOptions,
         started_at: Option<Instant>,
     ) -> Result<BridgeRunOutcome> {
+        self.run_prepared_request_on_instance_with_exit_probe(
+            request_id, command, args, instance, options, started_at, None,
+        )
+    }
+
+    /// The probe must return true only for a positively identified host process
+    /// that has exited. Heartbeat expiry or an inaccessible process is not proof.
+    // Keep the existing request API's parameters together with its optional probe.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_prepared_request_on_instance_with_exit_probe(
+        &self,
+        request_id: &str,
+        command: &str,
+        args: Value,
+        instance: HostInstance,
+        options: BridgeRunOptions,
+        started_at: Option<Instant>,
+        host_exited: Option<&dyn Fn() -> bool>,
+    ) -> Result<BridgeRunOutcome> {
         let registry_path = self.registry_path(request_id);
         let mut record = self.read_request_record(request_id)?;
         if record.status == "cancelRequested" {
@@ -708,7 +727,13 @@ impl BridgeClient {
         record.updated_at = chrono_like_timestamp();
         self.write_request_record(&record)?;
 
-        while self.is_instance_busy(&instance)? {
+        loop {
+            if host_exited.is_some_and(|probe| probe()) {
+                return self.finish_after_host_exit(request_id, &instance, false);
+            }
+            if !self.is_instance_busy(&instance)? {
+                break;
+            }
             if self.read_request_record(request_id)?.status == "cancelRequested" {
                 record.status = "cancelled".to_string();
                 record.updated_at = chrono_like_timestamp();
@@ -736,6 +761,10 @@ impl BridgeClient {
                 });
             }
             thread::sleep(options.poll_interval);
+        }
+
+        if host_exited.is_some_and(|probe| probe()) {
+            return self.finish_after_host_exit(request_id, &instance, false);
         }
 
         // Claim dispatch under the same lock used by cancellation. A request
@@ -790,6 +819,10 @@ impl BridgeClient {
                 });
             }
 
+            if host_exited.is_some_and(|probe| probe()) {
+                return self.finish_after_host_exit(request_id, &instance, true);
+            }
+
             if started.elapsed() >= options.timeout {
                 record.status = "timeout".to_string();
                 record.updated_at = chrono_like_timestamp();
@@ -809,6 +842,34 @@ impl BridgeClient {
 
             thread::sleep(options.poll_interval);
         }
+    }
+
+    fn finish_after_host_exit(
+        &self,
+        request_id: &str,
+        instance: &HostInstance,
+        dispatched: bool,
+    ) -> Result<BridgeRunOutcome> {
+        let record = self.update_request_record(request_id, |record| {
+            if is_terminal_request_status(&record.status) {
+                return false;
+            }
+            record.status = if dispatched { "lost" } else { "failed" }.into();
+            record.updated_at = chrono_like_timestamp();
+            record.message = Some(if dispatched {
+                "The identified host process has exited. Execution outcome is unknown; partial changes may have occurred. No command was resubmitted. Check this requestId for a retained result before deciding what to do next."
+            } else {
+                "The identified host process exited before dispatch. This request was not sent to the host."
+            }.into());
+            true
+        })?;
+        // Release only this worker's reservation. A different request must not
+        // be erased, including one observed while this request was queued.
+        self.clear_current_request_if_matches(instance, request_id)?;
+        Ok(BridgeRunOutcome {
+            record,
+            registry_path: self.registry_path(request_id),
+        })
     }
 
     pub fn get_request_record(&self, request_id: &str) -> Result<RequestRecord> {
@@ -834,7 +895,9 @@ impl BridgeClient {
                 self.write_request_record(&record)?;
                 record = self.read_request_record(request_id)?;
                 self.clear_current_request_if_matches(&instance, request_id)?;
-            } else if self.is_instance_stale(&instance)? && record.status != "cancelRequested" {
+            } else if self.is_instance_stale(&instance)?
+                && !matches!(record.status.as_str(), "cancelRequested" | "lost")
+            {
                 record.status = "unknown".to_string();
                 record.updated_at = chrono_like_timestamp();
                 record.message = Some(format!(
@@ -1050,7 +1113,12 @@ impl BridgeClient {
             status: CommandStatus::Pending,
             request_id: Some(request_id.to_string()),
         };
-        write_json_file(&instance_command_path(instance), &payload)
+        // Admission bounds compact JSON bytes. Keep the mailbox compact too so
+        // whitespace expansion cannot make an accepted payload unrecoverable.
+        write_atomic_text_file(
+            &instance_command_path(instance),
+            &serde_json::to_vec(&payload)?,
+        )
     }
 
     fn write_instance_waiting_result(
@@ -1365,6 +1433,7 @@ fn is_terminal_request_status(status: &str) -> bool {
 // timeout marker, so those writes must not move the registry backwards.
 fn should_preserve_current_record(current: &RequestRecord, proposed: &RequestRecord) -> bool {
     is_terminal_request_status(&current.status)
+        || (current.status == "lost" && proposed.status == "unknown")
         || (current.status == "cancelRequested" && !is_terminal_request_status(&proposed.status))
         || (matches!(current.status.as_str(), "unknown" | "lost")
             && matches!(
@@ -2038,6 +2107,25 @@ mod tests {
     }
 
     #[test]
+    fn structured_command_at_input_limit_fits_the_recovery_mailbox_bound() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let instance = write_test_instance(&cfg, "structured-payload");
+        let args = json!({"samples": vec![json!({"value":1,"items":[1,2,3]}); 10_000]});
+        let accepted_bytes = serde_json::to_vec(&args).unwrap().len();
+        assert!(serde_json::to_vec_pretty(&args).unwrap().len() > accepted_bytes + 4096);
+        bridge
+            .write_instance_command_file(&instance, "req-structured", "executeJsx", args.clone())
+            .unwrap();
+        let raw = fs::read(&instance.command_file).unwrap();
+        assert!(raw.len() <= accepted_bytes + 4096);
+        assert_eq!(
+            serde_json::from_slice::<CommandFile>(&raw).unwrap().args,
+            args
+        );
+    }
+
+    #[test]
     fn clear_results_writes_waiting_payload() {
         let (cfg, _guard) = test_config();
         let bridge = BridgeClient::new(cfg.clone()).expect("client");
@@ -2295,6 +2383,221 @@ mod tests {
         let recovered = bridge.get_request_record(&request_id).expect("recover");
         assert_eq!(recovered.status, "completed");
         assert!(recovered.result.is_some());
+    }
+
+    #[test]
+    fn confirmed_host_exit_before_dispatch_never_overwrites_another_reservation() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let instance = write_test_instance(&cfg, "exit-before-dispatch");
+        let prior = bridge
+            .prepare_request("prior", 60, Some(instance.clone()))
+            .unwrap();
+        bridge
+            .write_current_request(&instance, &prior.record.request_id, "prior")
+            .unwrap();
+        let pending = bridge
+            .prepare_request("ping", 60, Some(instance.clone()))
+            .unwrap();
+        let checks = std::cell::Cell::new(0);
+        let exited = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 1
+        };
+        let outcome = bridge
+            .run_prepared_request_on_instance_with_exit_probe(
+                &pending.record.request_id,
+                "ping",
+                json!({}),
+                instance.clone(),
+                BridgeRunOptions {
+                    target: BridgeTarget::default(),
+                    timeout: Duration::MAX,
+                    poll_interval: Duration::from_millis(1),
+                    retention_seconds: 60,
+                },
+                None,
+                Some(&exited),
+            )
+            .unwrap();
+        assert_eq!(outcome.record.status, "failed");
+        assert!(outcome.record.message.unwrap().contains("before dispatch"));
+        assert!(!Path::new(&instance.command_file).exists());
+        assert_eq!(
+            bridge
+                .read_current_request(&instance)
+                .unwrap()
+                .unwrap()
+                .request_id,
+            prior.record.request_id
+        );
+    }
+
+    #[test]
+    fn confirmed_host_exit_after_dispatch_releases_only_its_reservation_and_preserves_late_results()
+    {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let instance = write_test_instance(&cfg, "exit-after-dispatch");
+        let pending = bridge
+            .prepare_request("ping", 60, Some(instance.clone()))
+            .unwrap();
+        let command_path = PathBuf::from(&instance.command_file);
+        let exited = || command_path.exists();
+        let outcome = bridge
+            .run_prepared_request_on_instance_with_exit_probe(
+                &pending.record.request_id,
+                "ping",
+                json!({}),
+                instance.clone(),
+                BridgeRunOptions {
+                    target: BridgeTarget::default(),
+                    timeout: Duration::MAX,
+                    poll_interval: Duration::from_millis(1),
+                    retention_seconds: 60,
+                },
+                None,
+                Some(&exited),
+            )
+            .unwrap();
+        assert_eq!(outcome.record.status, "lost");
+        assert!(!instance_current_request_path(&instance).exists());
+        let original_command = fs::read(&command_path).unwrap();
+        fs::remove_file(instance_heartbeat_path(&instance)).unwrap();
+        let inspected = bridge
+            .get_request_record(&pending.record.request_id)
+            .unwrap();
+        assert_eq!(inspected.status, "lost");
+        assert_eq!(inspected.message, outcome.record.message);
+        let mut stale_reader = inspected.clone();
+        stale_reader.status = "unknown".into();
+        stale_reader.message = Some("obsolete stale heartbeat observation".into());
+        bridge.write_request_record(&stale_reader).unwrap();
+        assert_eq!(
+            bridge
+                .get_request_record(&pending.record.request_id)
+                .unwrap()
+                .message,
+            outcome.record.message
+        );
+        assert_eq!(
+            bridge
+                .request_cancellation(&pending.record.request_id)
+                .unwrap()
+                .status,
+            "lost"
+        );
+        assert_eq!(
+            bridge
+                .mark_request_failed(&pending.record.request_id, "cleanup failed".into())
+                .unwrap()
+                .status,
+            "lost"
+        );
+        assert_eq!(
+            fs::read(&command_path).unwrap(),
+            original_command,
+            "inspection cannot replay the command"
+        );
+        write_json_file(&instance_result_path(&instance), &json!({
+            "status":"success", "_commandExecuted":"ping", "_requestId":pending.record.request_id
+        })).unwrap();
+        assert_eq!(
+            bridge
+                .get_request_record(&pending.record.request_id)
+                .unwrap()
+                .status,
+            "completed"
+        );
+    }
+
+    #[test]
+    fn cancellation_after_dispatch_does_not_hide_confirmed_process_exit() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let instance = write_test_instance(&cfg, "cancel-then-exit");
+        let pending = bridge
+            .prepare_request("ping", 60, Some(instance.clone()))
+            .unwrap();
+        let command_path = PathBuf::from(&instance.command_file);
+        let exited = || {
+            if !command_path.exists() {
+                return false;
+            }
+            assert_eq!(
+                bridge
+                    .request_cancellation(&pending.record.request_id)
+                    .unwrap()
+                    .status,
+                "cancelRequested"
+            );
+            true
+        };
+        let outcome = bridge
+            .run_prepared_request_on_instance_with_exit_probe(
+                &pending.record.request_id,
+                "ping",
+                json!({}),
+                instance.clone(),
+                BridgeRunOptions {
+                    target: BridgeTarget::default(),
+                    timeout: Duration::MAX,
+                    poll_interval: Duration::from_millis(1),
+                    retention_seconds: 60,
+                },
+                None,
+                Some(&exited),
+            )
+            .unwrap();
+        assert_eq!(outcome.record.status, "lost");
+        assert!(outcome
+            .record
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("Execution outcome is unknown"));
+        let retained = bridge
+            .get_request_record(&pending.record.request_id)
+            .unwrap();
+        assert_eq!(retained.status, "lost");
+        assert_eq!(retained.message, outcome.record.message);
+        assert!(!instance_current_request_path(&instance).exists());
+    }
+
+    #[test]
+    fn absent_exit_proof_and_missing_heartbeat_leave_the_dispatched_request_reserved() {
+        let (cfg, _guard) = test_config();
+        let bridge = BridgeClient::new(cfg.clone()).unwrap();
+        let instance = write_test_instance(&cfg, "exit-unproven");
+        let pending = bridge
+            .prepare_request("ping", 60, Some(instance.clone()))
+            .unwrap();
+        fs::remove_file(instance_heartbeat_path(&instance)).unwrap();
+        let outcome = bridge
+            .run_prepared_request_on_instance_with_exit_probe(
+                &pending.record.request_id,
+                "ping",
+                json!({}),
+                instance.clone(),
+                BridgeRunOptions {
+                    target: BridgeTarget::default(),
+                    timeout: Duration::from_millis(5),
+                    poll_interval: Duration::from_millis(1),
+                    retention_seconds: 60,
+                },
+                None,
+                Some(&|| false),
+            )
+            .unwrap();
+        assert_eq!(outcome.record.status, "timeout");
+        assert_eq!(
+            bridge
+                .read_current_request(&instance)
+                .unwrap()
+                .unwrap()
+                .request_id,
+            pending.record.request_id
+        );
     }
 
     #[test]

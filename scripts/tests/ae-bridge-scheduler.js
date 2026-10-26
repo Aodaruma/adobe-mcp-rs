@@ -1,14 +1,17 @@
 // Run with node, or cscript //nologo on Windows (ES3, no extra dependency).
 (function () {
-    var source, print;
+    var source, nativeSource, print;
     if (typeof require === "function") {
         source = require("fs").readFileSync(require("path").join(__dirname, "../../src/scripts/mcp-bridge-auto.jsx"), "utf8");
+        nativeSource = require("fs").readFileSync(require("path").join(__dirname, "../../crates/daemon-core/src/ae_recovery.jsx"), "utf8");
         print = console.log;
     } else {
         var fs = new ActiveXObject("Scripting.FileSystemObject");
         var root = fs.GetParentFolderName(fs.GetParentFolderName(fs.GetParentFolderName(WScript.ScriptFullName)));
         var stream = fs.OpenTextFile(root + "\\src\\scripts\\mcp-bridge-auto.jsx", 1);
         source = stream.ReadAll(); stream.Close();
+        stream = fs.OpenTextFile(root + "\\crates\\daemon-core\\src\\ae_recovery.jsx", 1);
+        nativeSource = stream.ReadAll(); stream.Close();
         print = function (text) { WScript.Echo(text); };
     }
     function assert(value, message) { if (!value) throw new Error(message); }
@@ -36,13 +39,13 @@
             "function fxDateToIsoString(d){return String(d.getTime());} function logToPanel(){} function setStatus(){} function refreshPermissionState(){} function getBridgeInstanceId(){return 'test';} function isRenderQueueActive(){return false;} function removeInstanceHeartbeat(){}\n" +
             "function writeInstanceHeartbeat(){lastHeartbeatWriteAtMs=new Date().getTime();heartbeatSequence++;return true;} function heartbeatTick(){if(host.onHeartbeat)host.onHeartbeat();writeInstanceHeartbeat();} function checkForCommands(){host.checks++;lastCommandPollAtMs=new Date().getTime();if(host.onCheck)host.onCheck();}\n" + scheduler +
             "\nwriteSchedulerDiagnosticEvent=function(){host.events++;}; removeInstanceHeartbeat=function(){}; bridgeRuntime={}; $.global.__adobeMcpBridgeRuntime=bridgeRuntime;\n" +
-            "return {start:startBridgeRuntime,stop:stopBridgeRuntime,restart:restartBridgeRuntime,ensure:ensureBridgeRuntimeHealthy,state:getBridgeRuntimeState,globals:$.global,owner:bridgeRuntime,age:function(){lastHeartbeatWriteAtMs=new Date().getTime()-20000;lastCommandPollAtMs=lastHeartbeatWriteAtMs;lastCommandTickCompletedAtMs=lastHeartbeatWriteAtMs;bridgeStartedAtMs=lastHeartbeatWriteAtMs;},ageCommand:function(){lastCommandPollAtMs=new Date().getTime()-20000;lastCommandTickCompletedAtMs=lastCommandPollAtMs;bridgeStartedAtMs=lastCommandPollAtMs;},busy:function(v){isChecking=v;currentRequestId=v?'nonce':'';}};");
+            "return {start:startBridgeRuntime,stop:stopBridgeRuntime,restart:restartBridgeRuntime,ensure:ensureBridgeRuntimeHealthy,state:getBridgeRuntimeState,globals:$.global,owner:bridgeRuntime,age:function(){lastWatchdogTickAtMs=new Date().getTime();lastHeartbeatWriteAtMs=new Date().getTime()-20000;lastCommandPollAtMs=lastHeartbeatWriteAtMs;lastCommandTickCompletedAtMs=lastHeartbeatWriteAtMs;bridgeStartedAtMs=lastHeartbeatWriteAtMs;},ageCommand:function(){lastWatchdogTickAtMs=new Date().getTime();lastCommandPollAtMs=new Date().getTime()-20000;lastCommandTickCompletedAtMs=lastCommandPollAtMs;bridgeStartedAtMs=lastCommandPollAtMs;},busy:function(v){isChecking=v;currentRequestId=v?'nonce':'';}};");
         host.runtime = create(host);
         try { host.runtime.start(); } catch (error) { if (!failFirstCommand) throw error; host.startError = error; }
         host.tick = function (kind, generation) {
             var state = host.runtime.state(), key = kind === "Command" ? "commandTaskId" : kind === "Heartbeat" ? "heartbeatTaskId" : "watchdogTaskId";
             if (kind !== "Watchdog") delete host.tasks[state[key]];
-            host.runtime.globals["__adobeMcpBridge" + kind + "Tick"](generation || state.runtimeId);
+            host.runtime.globals["__adobeMcpBridge" + kind + "Tick"](generation || state.runtimeId, function(args,mcp,code){return eval(code);});
         };
         return host;
     }
@@ -53,7 +56,7 @@
         f.onCheck = function () {
             f.runtime.age();
             assert(f.runtime.state().callbackActive, "callback active");
-            assert(f.runtime.state().healthy, "missing own task ID is expected");
+            assert(!f.runtime.state().healthy && f.runtime.state().healthReason === 'callback-in-flight', "busy is not proof of healthy idle progress");
             f.runtime.ensure(); f.runtime.restart(); f.runtime.stop(); f.tick("Watchdog"); f.tick("Command");
             assert(f.runtime.state().runtimeId === generation, "generation preserved");
             assert(f.checks === 1 && f.events === 0, "no duplicate or recovery");
@@ -145,17 +148,17 @@
         function Panel() { this.layout = { layout: function () {}, resize: function () {} }; }
         Panel.prototype.add = function () { var control = { preferredSize: {} }; controls.push(control); return control; };
         var panel = new Panel(), globals = {};
-        function runtime(counter) { return { getState: function () { return {}; }, ensureHealthy: function () { counter(); return { running: true, healthy: true }; }, restart: counter }; }
+        function runtime(counter) { return { getState: function () { return { running: true, healthy: true }; }, ensureHealthy: function () { throw new Error('A status refresh must not mutate the runtime'); }, restart: counter }; }
         var old = runtime(function () { oldCalls++; }), next = runtime(function () { newCalls++; }); globals.__adobeMcpBridgeRuntime = old;
         next.getAutoRunEnabled = function () { return resumed; };
         next.setAutoRunEnabled = function (enabled) { resumed = enabled; };
         new Function("thisObj", "Panel", "$", "runtime", "var AE_MCP_BRIDGE_VERSION='test';" + panelCode + "attachDiagnosticsPanel(runtime);")(panel, Panel, { global: globals }, old);
-        assert(oldCalls === 1, "initial attachment"); globals.__adobeMcpBridgeRuntime = next;
+        assert(oldCalls === 0, "initial attachment only observes"); globals.__adobeMcpBridgeRuntime = next;
         panel.onActivate(); controls[3].onClick(); panel.onClose();
-        assert(oldCalls === 1 && newCalls === 3, "replacement resolved and close does not stop");
+        assert(oldCalls === 0 && newCalls === 1, "only explicit restart mutates the replacement runtime");
         assert(controls[4].enabled && !controls[4].value, "reattached panel exposes the paused state");
         controls[4].value = true; controls[4].onClick();
-        assert(resumed && controls[4].value && oldCalls === 1, "reattached panel resumes the current runtime");
+        assert(resumed && controls[4].value && oldCalls === 0, "reattached panel resumes the current runtime");
     });
     test("fallback panel close keeps process runtime alive", function () {
         var closing = section("panel.onClose = function () {", "panel.onResizing = panel.onResize");
@@ -188,6 +191,9 @@
         choice.set(true); assert(!choice.read(), "permission lock remains effective");
         choice.restore(); assert(choice.read(), "new choice restored when permission returns");
         choice.set(false); assert(!control.value && !choice.read(), "live original controls also follow the new choice");
+    });
+    test("native recovery wrapper parses in ES3 without executing host code", function () {
+        new Function(nativeSource.replace("/*CONFIG*/", "{}"));
     });
     print("PASS " + tests + " scheduler/ScriptUI regression tests");
 })();

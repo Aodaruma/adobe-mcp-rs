@@ -1,6 +1,6 @@
 // mcp-bridge-auto.jsx
 // MCP Bridge command runtime for After Effects (headless Startup or ScriptUI fallback)
-#targetengine "ae_mcp_bridge"
+// AE uses a host-selected shared engine; #targetengine does not isolate it.
 
 (function (thisObj) {
 
@@ -14,7 +14,12 @@
 */
 
 // --- Function Definitions ---
-var AE_MCP_BRIDGE_VERSION = "0.5.3";
+var AE_MCP_BRIDGE_VERSION = "0.5.5";
+// ExtendScript's Function constructor captures the creating scope. Receive an
+// evaluator created by the scheduler at global scope instead. This is lexical
+// separation only; unsafe JSX retains full host/global access.
+var evaluateUserJsx = null;
+var pendingResultReceipt = null;
 var fxDialogsSuppressed = false;
 var aeMcpBootstrapConfig = $.global.__adobeMcpBridgeBootstrapConfig || {};
 var aeMcpHeadless = aeMcpBootstrapConfig.headless === true;
@@ -37,7 +42,7 @@ try {
 // Never replace a runtime while its request or scheduler callback is on stack.
 // AE can re-enter scripts during host operations; replacing it loses ownership
 // of the pending callback and can leave two command loops alive.
-if (aeMcpPreviousState && aeMcpPreviousState.callbackActive) {
+if (aeMcpPreviousState && (aeMcpPreviousState.callbackActive || aeMcpPreviousState.renderQueueActive)) {
     if (!aeMcpHeadless) attachDiagnosticsPanel(aeMcpPreviousRuntime);
     return;
 }
@@ -74,9 +79,7 @@ function attachDiagnosticsPanel(runtime) {
     function refreshAttachedStatus() {
         try {
             resolveAttachedRuntime();
-            var runtimeState = runtime.ensureHealthy
-                ? runtime.ensureHealthy({ reason: "diagnostics-panel-refresh" })
-                : runtime.getState();
+            var runtimeState = runtime.getState();
             var runtimeLabel = !runtimeState.running
                 ? "STOPPED"
                 : (runtimeState.callbackActive ? "BUSY" :
@@ -156,7 +159,8 @@ if (aeMcpAttachExistingRuntime) {
 // previous runtime to cancel its task IDs before installing this generation.
 try {
     if (aeMcpPreviousRuntime && aeMcpPreviousRuntime.stop) {
-        aeMcpPreviousRuntime.stop({ removeHeartbeat: false, reason: "superseded" });
+        var stoppedPrevious = aeMcpPreviousRuntime.stop({ removeHeartbeat: false, reason: "superseded" });
+        if (stoppedPrevious && stoppedPrevious.running) return;
     }
 } catch (_previousRuntimeStopErr) {}
 
@@ -2718,6 +2722,9 @@ var heartbeatTaskId = 0;
 var watchdogTaskId = 0;
 var commandTickActive = false;
 var heartbeatTickActive = false;
+var commandPhase = "idle";
+var lastCommandTickStartedAtMs = 0;
+var lastHeartbeatTickStartedAtMs = 0;
 var commandTickCallback = null;
 var heartbeatTickCallback = null;
 var watchdogTickCallback = null;
@@ -2732,6 +2739,20 @@ var lastHeartbeatWriteAtMs = 0;
 var lastHeartbeatWriteAt = "";
 var lastCommandPollAtMs = 0;
 var lastCommandTickCompletedAtMs = 0;
+var lastHeartbeatTickCompletedAtMs = 0;
+var heartbeatTickBlockedMs = 0;
+var commandTickSequence = 0;
+var heartbeatTickSequence = 0;
+var watchdogTickSequence = 0;
+var lastWatchdogTickAt = "";
+var lastWatchdogTickAtMs = 0;
+var watchdogResumeAfterMs = 0;
+var lastRecoveryObservationAtMs = 0;
+var recoveryProbeTaskId = 0;
+var runtimeEngineName = String($.engineName || "");
+var commandTickEngineName = "";
+var heartbeatTickEngineName = "";
+var watchdogTickEngineName = "";
 var lastCommandPollAt = "";
 var heartbeatSequence = 0;
 var commandPollSequence = 0;
@@ -2897,11 +2918,11 @@ function cleanupAtomicResidues(file, minimumAgeMs) {
     } catch (_scanErr) {}
 }
 
-function writeAtomicTextFile(file, text) {
+function writeAtomicTextFile(file, text, skipResidueScan) {
     if (file.parent && !file.parent.exists && !file.parent.create()) {
         throw new Error("Failed to create directory: " + file.parent.fsName);
     }
-    cleanupAtomicResidues(file);
+    if (!skipResidueScan) cleanupAtomicResidues(file);
     // File.rename mutates the ExtendScript File object's name/path. Capture the
     // destination name before preserving the current target so the subsequent
     // publish and rollback still address the original file.
@@ -3194,6 +3215,15 @@ function getHostInstanceMetadata() {
         commandFile: getCommandFilePath(),
         resultFile: getResultFilePath(),
         schedulerMode: schedulerMode,
+        schedulerReady: hasScheduledBridgeProgress(),
+        runtimeEngineName: runtimeEngineName,
+        commandTickEngineName: commandTickEngineName || null,
+        heartbeatTickEngineName: heartbeatTickEngineName || null,
+        watchdogTickEngineName: watchdogTickEngineName || null,
+        commandTickSequence: commandTickSequence,
+        heartbeatTickSequence: heartbeatTickSequence,
+        watchdogTickSequence: watchdogTickSequence,
+        lastWatchdogTickAt: lastWatchdogTickAt || null,
         heartbeatSequence: heartbeatSequence,
         commandPollSequence: commandPollSequence,
         lastCommandPollAt: lastCommandPollAt || null,
@@ -3517,9 +3547,7 @@ function executeJsx(args) {
             }
         }
         try {
-            var result = (function (args, mcp) {
-                return eval(code);
-            })(userArgs, mcp);
+            var result = evaluateUserJsx(userArgs, mcp, code);
 
             logToPanel("executeJsx completed: " + description);
             return JSON.stringify({
@@ -3588,15 +3616,13 @@ function executeCommand(command, args, requestId) {
     var result = "";
     var shouldQuitAfterWrite = false;
     requestId = requestId || "";
-    currentRequestId = requestId;
-    currentCommandName = command;
-    writeInstanceHeartbeat();
-    
-    logToPanel("Executing command: " + command);
-    setStatus("Running: " + command);
-    safePanelUpdate();
-    
     try {
+        currentRequestId = requestId;
+        currentCommandName = command;
+        writeInstanceHeartbeat();
+        logToPanel("Executing command: " + command);
+        setStatus("Running: " + command);
+        safePanelUpdate();
         logToPanel("Attempting to execute: " + command); // Log before switch
         // Use a switch statement for clarity
         switch (command) {
@@ -3806,39 +3832,25 @@ function executeCommand(command, args, requestId) {
             }, null, 2);
         }
         
-        var resultFile = new File(getResultFilePath());
-        logToPanel("Writing result file atomically...");
-        writeAtomicTextFile(resultFile, resultString);
-        logToPanel("Result file write process complete.");
+        var published = publishRequestResult(requestId, command, resultString, "completed", shouldQuitAfterWrite);
         
         logToPanel("Command completed successfully: " + command); // Changed log message
         setStatus("Command completed: " + command);
         
         // Update command file status
         logToPanel("Updating command status to completed...");
-        updateCommandStatus("completed");
+        if (published) finishCommandStatus("completed", requestId);
         logToPanel("Command status updated.");
         currentRequestId = "";
         currentCommandName = "";
         writeInstanceHeartbeat();
 
-        if (shouldQuitAfterWrite) {
-            try {
-                logToPanel("Scheduling graceful application quit.");
-                app.scheduleTask("app.quit()", 300, false);
-            } catch (quitScheduleError) {
-                logToPanel("Failed to schedule app.quit(): " + quitScheduleError.toString());
-            }
-        }
-        
     } catch (error) {
-        if (isModalDialogError(error)) {
-            logToPanel("Modal dialog detected. Command will be retried automatically.");
-            setStatus("Paused: modal dialog is open. Waiting to retry...");
-            try {
-                updateCommandStatus("pending");
-            } catch (_retryStateErr) {}
-            return;
+        var modalDialogError = isModalDialogError(error);
+        if (modalDialogError) {
+            // Dispatch has already begun. A host error can occur after partial
+            // changes or during result publication; it is not proof of no-op.
+            logToPanel("Modal error after dispatch. Command will not be replayed.");
         }
 
         var errorMsg = "ERROR in executeCommand for '" + command + "': " + error.toString() + (error.line ? " (line: " + error.line + ")" : "");
@@ -3856,11 +3868,11 @@ function executeCommand(command, args, requestId) {
                 _hostInstance: getHostInstanceMetadata(),
                 _responseTimestamp: fxDateToIsoString(new Date()),
                 message: error.toString(),
+                hostModalBlocked: modalDialogError,
                 line: error.line,
                 fileName: error.fileName
             });
-            var errorFile = new File(getResultFilePath());
-            writeAtomicTextFile(errorFile, errorResult);
+            var errorPublished = publishRequestResult(requestId, command, errorResult, "error");
             logToPanel("Successfully wrote ERROR to result file.");
         } catch (writeError) {
              logToPanel("CRITICAL ERROR: Failed to write error to result file: " + writeError.toString());
@@ -3868,31 +3880,105 @@ function executeCommand(command, args, requestId) {
         
         // Update command file status even after error
         logToPanel("Updating command status to error...");
-        updateCommandStatus("error");
+        if (errorPublished) finishCommandStatus("error", requestId);
         logToPanel("Command status updated to error.");
+    } finally {
         currentRequestId = "";
         currentCommandName = "";
         writeInstanceHeartbeat();
     }
 }
 
-// Update command file status
-function updateCommandStatus(status) {
+// Receipts belong to the AE instance, not a scheduler generation. Never replay
+// a claimed request after a reload, result delivery failure, or duplicate file.
+function getRequestReceiptFile(requestId, resultReceipt) {
+    if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{1,160}$/.test(requestId)) {
+        throw new Error("A valid broker requestId is required; use the daemon command path.");
+    }
+    return new File(ensureInstanceFolder().fsName + "/request-receipts/" + requestId +
+        (resultReceipt ? ".result.json" : ".json"));
+}
+
+function readJsonFileStrict(file) {
+    file.encoding = "UTF-8";
+    if (!file.open("r")) throw new Error("Unable to read: " + file.fsName);
+    try { return JSON.parse(file.read()); } finally { file.close(); }
+}
+
+function readRequestReceipt(requestId, command) {
+    if (pendingResultReceipt && pendingResultReceipt.requestId === requestId) {
+        if (pendingResultReceipt.command !== command) throw new Error("Conflicting requestId.");
+        return pendingResultReceipt;
+    }
+    var file = getRequestReceiptFile(requestId);
+    if (!file.exists) return null;
+    var receipt = readJsonFileStrict(file);
+    if (!receipt || receipt.requestId !== requestId || receipt.command !== command ||
+        (receipt.phase !== "claimed" && receipt.phase !== "finished")) {
+        throw new Error("Invalid request receipt; refusing execution.");
+    }
+    // The claim is never rewritten. Even failed result publication and rollback
+    // cannot remove the durable evidence that this request was already claimed.
+    var resultFile = getRequestReceiptFile(requestId, true);
+    if (resultFile.exists) {
+        var finished = readJsonFileStrict(resultFile);
+        if (!finished || finished.requestId !== requestId || finished.command !== command ||
+            finished.phase !== "finished") throw new Error("Invalid result receipt; refusing execution.");
+        return finished;
+    }
+    return receipt;
+}
+
+function publishRequestReceipt(receipt) {
+    commandPhase = "publish-result";
+    pendingResultReceipt = receipt;
     try {
-        var commandFile = new File(getCommandFilePath());
-        if (commandFile.exists) {
-            commandFile.open("r");
-            var content = commandFile.read();
-            commandFile.close();
-            
-            if (content) {
-                var commandData = JSON.parse(content);
-                commandData.status = status;
-                writeAtomicTextFile(commandFile, JSON.stringify(commandData, null, 2));
-            }
+        writeAtomicTextFile(getRequestReceiptFile(receipt.requestId, true), JSON.stringify(receipt), true);
+        writeAtomicTextFile(new File(getResultFilePath()), receipt.result);
+        if (receipt.quitAfterPublish) {
+            receipt.quitAfterPublish = false;
+            // Consume the post-delivery action before scheduling it, so a
+            // duplicate result or a cancelled quit dialog cannot replay it.
+            writeAtomicTextFile(getRequestReceiptFile(receipt.requestId, true), JSON.stringify(receipt), true);
+            app.scheduleTask("app.quit()", 300, false);
         }
-    } catch (e) {
-        logToPanel("Error updating command status: " + e.toString());
+        pendingResultReceipt = null;
+        return true;
+    } catch (error) {
+        // Keep the computed result in memory for the next poll. The durable
+        // claim still prevents replay if AE exits before delivery succeeds.
+        lastSchedulerError = "result-publication: " + error.toString();
+        logToPanel(lastSchedulerError);
+        return false;
+    }
+}
+
+function publishRequestResult(requestId, command, result, commandStatus, quitAfterPublish) {
+    return publishRequestReceipt({requestId: requestId, command: command,
+        phase: "finished", result: result, commandStatus: commandStatus,
+        quitAfterPublish: quitAfterPublish === true});
+}
+
+// A failed claim/status write is not permission to execute. Do not overwrite
+// a different request if another writer replaced the mailbox meanwhile.
+function updateCommandStatus(status, expectedRequestId) {
+    var commandFile = new File(getCommandFilePath());
+    if (!commandFile.exists) return false;
+    var commandData = readJsonFileStrict(commandFile);
+    if ((commandData.requestId || "") !== expectedRequestId) return false;
+    commandData.status = status;
+    writeAtomicTextFile(commandFile, JSON.stringify(commandData));
+    return true;
+}
+
+function finishCommandStatus(status, requestId) {
+    try { return updateCommandStatus(status, requestId); }
+    catch (error) {
+        // The result is already durable. Failure to mark the mailbox consumed
+        // must not replace that result with a different command outcome.
+        lastSchedulerError = "command-status: " + error.toString();
+        logToPanel(lastSchedulerError);
+        return false;
     }
 }
 
@@ -3910,6 +3996,8 @@ function logToPanel(message) {
 
 // Check for new commands
 function checkForCommands() {
+    commandPhase = "poll-config";
+    var commandCheckStartedAtMs = new Date().getTime();
     refreshDebugLogConfig();
     lastCommandPollAtMs = new Date().getTime();
     lastCommandPollAt = fxDateToIsoString(new Date());
@@ -3949,17 +4037,35 @@ function checkForCommands() {
                     ? JSON.parse(content)
                     : eval("(" + content + ")");
                 
-                // Only execute pending commands
-                if (commandData.status === "pending") {
+                if (commandData.status === "pending" || commandData.status === "running") {
+                    var requestId = commandData.requestId || "";
+                    var receipt = readRequestReceipt(requestId, commandData.command);
+                    if (receipt || commandData.status === "running") {
+                        if (!receipt || receipt.phase !== "finished") {
+                            receipt = {requestId: requestId, command: commandData.command,
+                                phase: "finished", commandStatus: "error", result: JSON.stringify({
+                                    status: "error", _requestId: requestId, _commandExecuted: commandData.command,
+                                    executionState: "unknown", outcomeUnknown: true,
+                                    message: "Request was already claimed; its outcome is unknown. It will not be replayed."
+                                })};
+                        }
+                        if (typeof receipt.result !== "string") throw new Error("Invalid receipt result.");
+                        if (publishRequestReceipt(receipt)) finishCommandStatus(receipt.commandStatus || "completed", requestId);
+                        return;
+                    }
                     logCommandCheckerState(
                         "pending:" + commandData.command,
                         "Command checker picked pending command: " + commandData.command
                     );
-                    // Update status to running
-                    updateCommandStatus("running");
+                    commandPhase = "claim";
+                    writeAtomicTextFile(getRequestReceiptFile(requestId), JSON.stringify({
+                        requestId: requestId, command: commandData.command, phase: "claimed"
+                    }), true);
+                    if (!updateCommandStatus("running", requestId)) return;
                     
                     // Execute the command
-                    executeCommand(commandData.command, commandData.args || {}, commandData.requestId || "");
+                    commandPhase = "execute";
+                    executeCommand(commandData.command, commandData.args || {}, requestId);
                 } else {
                     logCommandCheckerState(
                         "status:" + commandData.status + ":" + commandData.command,
@@ -3976,6 +4082,11 @@ function checkForCommands() {
         logToPanel("Error checking for commands: " + e.toString());
     } finally {
         isChecking = false;
+        lastCommandTickCompletedAtMs = new Date().getTime();
+        // Include manual panel checks as well as scheduled checks. Neither
+        // allows heartbeat progress while a host command blocks AE.
+        heartbeatTickBlockedMs += Math.max(0, lastCommandTickCompletedAtMs -
+            Math.max(commandCheckStartedAtMs, lastHeartbeatTickCompletedAtMs));
     }
 }
 
@@ -3999,7 +4110,7 @@ function scheduleNextCommandCheck() {
         return 0;
     }
     var taskId = app.scheduleTask(
-        "$.global.__adobeMcpBridgeCommandTick('" + bridgeRuntimeId + "')",
+        "$.global.__adobeMcpBridgeCommandTick('" + bridgeRuntimeId + "',function(args,mcp,code){return eval(code);})",
         checkInterval,
         false
     );
@@ -4082,6 +4193,13 @@ function getHeartbeatAgeMs() {
     return Math.max(0, new Date().getTime() - lastHeartbeatWriteAtMs);
 }
 
+function hasScheduledBridgeProgress() {
+    // Initial/manual writes do not prove that AE dispatched scheduled code.
+    // These counters belong to the current generation, not the AE process.
+    return bridgeRuntimeRunning && commandTickSequence > 0 &&
+        heartbeatTickSequence > 0 && watchdogTickSequence > 0;
+}
+
 function getBridgeRuntimeHealth() {
     var heartbeatAgeMs = getHeartbeatAgeMs();
     var callbacksRegistered =
@@ -4100,11 +4218,18 @@ function getBridgeRuntimeHealth() {
         lastCommandPollAtMs, lastCommandTickCompletedAtMs, bridgeStartedAtMs
     ));
     var commandPollFresh = commandPollAgeMs <= heartbeatStaleAfterMs;
-    var healthy =
+    // Commands also write heartbeats. Their writes must not hide a lost
+    // heartbeat callback whose task ID is still present after startup.
+    var heartbeatTickAgeMs = Math.max(0, new Date().getTime() - Math.max(
+        lastHeartbeatTickCompletedAtMs, bridgeStartedAtMs
+    ) - heartbeatTickBlockedMs);
+    var heartbeatTickFresh = heartbeatTickAgeMs <= heartbeatStaleAfterMs;
+    var schedulerHealthy =
         bridgeRuntimeRunning &&
         callbacksRegistered &&
         tasksScheduled &&
-        (callbackActive || (heartbeatFresh && commandPollFresh));
+        commandPollFresh && heartbeatTickFresh;
+    var healthy = schedulerHealthy && heartbeatFresh && !callbackActive;
     var reason = "healthy";
 
     if (!bridgeRuntimeRunning) {
@@ -4117,6 +4242,8 @@ function getBridgeRuntimeHealth() {
         reason = "callback-in-flight";
     } else if (!commandPollFresh) {
         reason = "command-poll-stale";
+    } else if (!heartbeatTickFresh) {
+        reason = "heartbeat-tick-stale";
     } else if (!heartbeatFresh) {
         reason = heartbeatAgeMs === null
             ? "heartbeat-never-written"
@@ -4125,12 +4252,15 @@ function getBridgeRuntimeHealth() {
 
     return {
         healthy: healthy,
+        schedulerHealthy: schedulerHealthy,
+        heartbeatFresh: heartbeatFresh,
         reason: reason,
         heartbeatAgeMs: heartbeatAgeMs,
         callbacksRegistered: callbacksRegistered,
         tasksScheduled: tasksScheduled,
         callbackActive: callbackActive,
-        commandPollAgeMs: commandPollAgeMs
+        commandPollAgeMs: commandPollAgeMs,
+        heartbeatTickAgeMs: heartbeatTickAgeMs
     };
 }
 
@@ -4140,6 +4270,8 @@ function getBridgeRuntimeState() {
         version: AE_MCP_BRIDGE_VERSION,
         running: bridgeRuntimeRunning,
         healthy: health.healthy,
+        schedulerHealthy: health.schedulerHealthy,
+        heartbeatFresh: health.heartbeatFresh,
         healthReason: health.reason,
         lifecycleMode: aeMcpLifecycleMode,
         runtimeId: bridgeRuntimeId,
@@ -4147,7 +4279,28 @@ function getBridgeRuntimeState() {
         commandTaskId: commandCheckerTaskId,
         heartbeatTaskId: heartbeatTaskId,
         watchdogTaskId: watchdogTaskId,
+        recoveryProbeTaskId: recoveryProbeTaskId,
+        recoveryResumeAfterMs: watchdogResumeAfterMs,
+        schedulerReady: hasScheduledBridgeProgress(),
+        runtimeEngineName: runtimeEngineName,
+        commandTickEngineName: commandTickEngineName || null,
+        heartbeatTickEngineName: heartbeatTickEngineName || null,
+        watchdogTickEngineName: watchdogTickEngineName || null,
+        runtimeScriptPath: aeMcpBootstrapConfig.runtimeScriptPath || "",
+        commandTickSequence: commandTickSequence,
+        heartbeatTickSequence: heartbeatTickSequence,
+        watchdogTickSequence: watchdogTickSequence,
+        lastWatchdogTickAt: lastWatchdogTickAt || null,
+        heartbeatTickAgeMs: health.heartbeatTickAgeMs,
         callbackActive: health.callbackActive,
+        commandTickActive: commandTickActive,
+        heartbeatTickActive: heartbeatTickActive,
+        commandCheckActive: isChecking,
+        commandPhase: commandPhase,
+        lastCommandTickStartedAtMs: lastCommandTickStartedAtMs,
+        lastCommandTickCompletedAtMs: lastCommandTickCompletedAtMs,
+        lastHeartbeatTickStartedAtMs: lastHeartbeatTickStartedAtMs,
+        lastHeartbeatTickCompletedAtMs: lastHeartbeatTickCompletedAtMs,
         commandPollAgeMs: health.commandPollAgeMs,
         currentRequestId: currentRequestId || null,
         schedulerMode: schedulerMode,
@@ -4192,9 +4345,13 @@ function writeSchedulerDiagnosticEvent(eventName, reason, state) {
 function stopBridgeRuntime(options) {
     options = options || {};
     if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
-    if (getBridgeRuntimeHealth().callbackActive) return getBridgeRuntimeState();
+    if (getBridgeRuntimeHealth().callbackActive || isRenderQueueActive()) return getBridgeRuntimeState();
     stopCommandChecker();
     stopHeartbeatTask();
+    if (recoveryProbeTaskId) {
+        try { app.cancelTask(recoveryProbeTaskId); } catch (_probeCancelErr) {}
+        recoveryProbeTaskId = 0;
+    }
     if (watchdogTaskId) {
         try { app.cancelTask(watchdogTaskId); } catch (_watchdogCancelErr) {}
         watchdogTaskId = 0;
@@ -4213,7 +4370,14 @@ function stopBridgeRuntime(options) {
 }
 
 function registerScheduledBridgeFunctions() {
-    commandTickCallback = $.global.__adobeMcpBridgeCommandTick = function (scheduledRuntimeId) {
+    $.global.__adobeMcpBridgeRecoveryProbe = function (scheduledRuntimeId) {
+        if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId ||
+            $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return;
+        recoveryProbeTaskId = 0;
+        try { ensureBridgeRuntimeHealthy({ reason: "resume-probe" }); }
+        catch (probeError) { lastSchedulerError = "resume-probe: " + probeError.toString(); }
+    };
+    commandTickCallback = $.global.__adobeMcpBridgeCommandTick = function (scheduledRuntimeId, userEvaluator) {
         if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId ||
             $.global.__adobeMcpBridgeRuntime !== bridgeRuntime || commandTickActive) {
             return;
@@ -4221,6 +4385,12 @@ function registerScheduledBridgeFunctions() {
         setCommandCheckerTaskId(0);
         commandTickActive = true;
         try {
+            commandPhase = "callback-entry";
+            lastCommandTickStartedAtMs = new Date().getTime();
+            if (typeof userEvaluator !== "function") throw new Error("Global-scope evaluator required");
+            evaluateUserJsx = userEvaluator;
+            commandTickSequence += 1;
+            commandTickEngineName = String($.engineName || "");
             checkForCommands();
         } catch (commandTickError) {
             lastSchedulerError = "command-tick: " + commandTickError.toString();
@@ -4237,7 +4407,9 @@ function registerScheduledBridgeFunctions() {
                     }
                 }
             } finally {
+                evaluateUserJsx = null;
                 commandTickActive = false;
+                commandPhase = "idle";
                 lastCommandTickCompletedAtMs = new Date().getTime();
             }
         }
@@ -4250,6 +4422,9 @@ function registerScheduledBridgeFunctions() {
         setHeartbeatTaskId(0);
         heartbeatTickActive = true;
         try {
+            lastHeartbeatTickStartedAtMs = new Date().getTime();
+            heartbeatTickSequence += 1;
+            heartbeatTickEngineName = String($.engineName || "");
             heartbeatTick();
         } catch (heartbeatTickError) {
             lastSchedulerError = "heartbeat-tick: " + heartbeatTickError.toString();
@@ -4267,6 +4442,8 @@ function registerScheduledBridgeFunctions() {
                 }
             } finally {
                 heartbeatTickActive = false;
+                lastHeartbeatTickCompletedAtMs = new Date().getTime();
+                heartbeatTickBlockedMs = 0;
             }
         }
     };
@@ -4274,6 +4451,13 @@ function registerScheduledBridgeFunctions() {
         if (!bridgeRuntimeRunning || scheduledRuntimeId !== bridgeRuntimeId ||
             $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return;
         try {
+            var watchdogNowMs = new Date().getTime();
+            observeSchedulerResume(watchdogNowMs);
+            lastWatchdogTickAtMs = watchdogNowMs;
+            watchdogTickSequence += 1;
+            watchdogTickEngineName = String($.engineName || "");
+            lastWatchdogTickAt = fxDateToIsoString(new Date());
+            if (watchdogNowMs < watchdogResumeAfterMs) return;
             ensureBridgeRuntimeHealthy({ reason: "scheduler-watchdog" });
         } catch (watchdogError) {
             lastSchedulerError = "watchdog: " + watchdogError.toString();
@@ -4288,6 +4472,7 @@ function registerScheduledBridgeFunctions() {
 
 function startBridgeRuntime() {
     if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
+    if (deferRuntimeMutation()) return getBridgeRuntimeState();
     if (bridgeRuntimeRunning) {
         var currentState = getBridgeRuntimeState();
         if (!currentState.healthy) {
@@ -4307,7 +4492,22 @@ function startBridgeRuntime() {
     bridgeHasStarted = true;
     bridgeStartedAtMs = new Date().getTime();
     lastCommandPollAtMs = 0;
+    lastCommandTickStartedAtMs = 0;
+    lastHeartbeatTickStartedAtMs = 0;
+    commandPhase = "idle";
     lastCommandTickCompletedAtMs = 0;
+    lastHeartbeatTickCompletedAtMs = 0;
+    heartbeatTickBlockedMs = 0;
+    commandTickSequence = 0;
+    heartbeatTickSequence = 0;
+    watchdogTickSequence = 0;
+    commandTickEngineName = "";
+    heartbeatTickEngineName = "";
+    watchdogTickEngineName = "";
+    lastWatchdogTickAt = "";
+    lastWatchdogTickAtMs = 0;
+    watchdogResumeAfterMs = 0;
+    lastRecoveryObservationAtMs = bridgeStartedAtMs;
     bridgeRuntimeRunning = true;
     if (bridgeRuntime) {
         bridgeRuntime.running = true;
@@ -4333,7 +4533,7 @@ function startBridgeRuntime() {
 function restartBridgeRuntime(options) {
     options = options || {};
     if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
-    if (getBridgeRuntimeHealth().callbackActive) return getBridgeRuntimeState();
+    if (deferRuntimeMutation()) return getBridgeRuntimeState();
     stopBridgeRuntime({
         removeHeartbeat: false,
         reason: options.reason || "restart"
@@ -4353,7 +4553,9 @@ function restartBridgeRuntime(options) {
 
 function recoverBridgeRuntime(reason) {
     var previousState = getBridgeRuntimeState();
-    if (previousState.callbackActive) return previousState;
+    // Rendering may suspend scheduler callbacks. Consult the live host rather
+    // than treating a pre-render idle heartbeat as permission to reinitialize.
+    if (deferRuntimeMutation() || previousState.schedulerHealthy) return getBridgeRuntimeState();
     writeSchedulerDiagnosticEvent(
         "stale-scheduler-detected",
         reason || previousState.healthReason,
@@ -4379,11 +4581,12 @@ function recoverBridgeRuntime(reason) {
 function ensureBridgeRuntimeHealthy(options) {
     options = options || {};
     if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
+    var state = getBridgeRuntimeState();
+    if (deferRuntimeMutation()) return getBridgeRuntimeState();
     if (!bridgeRuntimeRunning) {
         return startBridgeRuntime();
     }
-    var state = getBridgeRuntimeState();
-    if (state.healthy || state.callbackActive) {
+    if (state.schedulerHealthy) {
         return state;
     }
     return recoverBridgeRuntime(
@@ -4391,6 +4594,32 @@ function ensureBridgeRuntimeHealthy(options) {
             ? options.reason + ":" + state.healthReason
             : state.healthReason
     );
+}
+
+function observeSchedulerResume(nowMs) {
+    if (!bridgeRuntimeRunning) return;
+    var previousMs = Math.max(lastRecoveryObservationAtMs, lastWatchdogTickAtMs, bridgeStartedAtMs);
+    if (nowMs - previousMs > heartbeatStaleAfterMs) {
+        // Every recovery entrance shares the same grace, including a panel or
+        // native entry that runs before the overdue watchdog gets a turn.
+        watchdogResumeAfterMs = nowMs + heartbeatInterval;
+    }
+    if (nowMs < watchdogResumeAfterMs && !recoveryProbeTaskId) {
+        // AE may deliver a one-shot slightly before the wall-clock deadline.
+        // Keep an observer until the grace actually expires, even when every
+        // regular task was lost. A small floor avoids rapid timer churn.
+        recoveryProbeTaskId = app.scheduleTask(
+            "$.global.__adobeMcpBridgeRecoveryProbe('" + bridgeRuntimeId + "')",
+            Math.max(50, watchdogResumeAfterMs - nowMs), false
+        );
+    }
+    lastRecoveryObservationAtMs = nowMs;
+}
+
+function deferRuntimeMutation() {
+    if (getBridgeRuntimeHealth().callbackActive || isRenderQueueActive()) return true;
+    observeSchedulerResume(new Date().getTime());
+    return new Date().getTime() < watchdogResumeAfterMs;
 }
 
 applyDebugLogConfig(readDebugLogConfig());
@@ -4437,8 +4666,8 @@ if (panel) {
         if (!refreshPermissionState(true)) {
             return;
         }
-        logToPanel("Manually checking for commands");
-        checkForCommands();
+        logToPanel("Scheduling a command check");
+        if (!getBridgeRuntimeHealth().callbackActive) startCommandChecker();
     };
 
     debugLogCheckbox.onClick = function() {
