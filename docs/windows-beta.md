@@ -1,6 +1,6 @@
-# Adobe MCP Beta — Windows x64 / 0.5.3 beta 1
+# Adobe MCP Beta — Windows x64 / v0.5.3 hotfix
 
-この配布物は開発ブランチのベータ版です。公開MCPツールは現在の構成を維持しています。
+この配布物はAE2025の安定化修正を含むv0.5.3 hotfixです。統合デスクトップアプリと更新インストーラは引き続きベータ扱いです。公開MCPツールは現在の構成を維持しています。
 Adobe純正製品ではありません。After Effectsが主な検証対象で、他の4アプリはExperimentalです。
 
 ## インストール・旧版からの更新
@@ -8,7 +8,7 @@ Adobe純正製品ではありません。After Effectsが主な検証対象で�
 1. Adobe側の実行中の処理が完了してから、Adobeアプリを保存して終了してください。
 2. 通知領域のAdobe MCPを右クリックし、Quit Adobe MCPで終了してください。
    旧daemonを使っている場合は、各CLIの `autostart stop` で停止してください。
-3. `adobe-mcp-rs-windows-x86_64.msi` を実行し、Windowsの管理者確認に応じてインストールします。
+3. リリースの `adobe-mcp-rs-windows-x86_64.msi`（未署名版は `adobe-mcp-rs-windows-x86_64-unsigned.msi`）を実行し、Windowsの管理者確認に応じてインストールします。
 4. セットアップ結果がメモ帳に開きます。失敗や保留があれば内容を確認し、
    スタートメニューの「Adobe MCP - Repair setup」でユーザー設定を再実行できます。
 5. AdobeアプリとCodexを再起動してください。通知領域の「Mc」から接続状況を確認できます。
