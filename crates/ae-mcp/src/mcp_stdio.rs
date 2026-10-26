@@ -1261,6 +1261,8 @@ mod tests {
                     }
                     Err(error) => panic!("accept failed: {error}"),
                 };
+                // Accepted sockets may inherit the listener's nonblocking mode on macOS.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();

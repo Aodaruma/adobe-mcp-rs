@@ -336,6 +336,8 @@ mod cli_tests {
                     }
                     Err(error) => panic!("accept failed: {error}"),
                 };
+                // Match the production broker regardless of inherited socket flags.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
