@@ -10,7 +10,6 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
@@ -293,11 +292,16 @@ fn dispatch_tool_inner(
                 )));
             }
             let parameters = args.get("parameters").cloned().unwrap_or_else(|| json!({}));
-            bridge.clear_results_file()?;
-            bridge.write_command_file(script, parameters)?;
-            Ok(tool_text(format!(
-                "Command to run \"{script}\" has been queued.\nPlease ensure the \"MCP Bridge Auto\" panel is open in After Effects.\nUse the \"get-results\" tool after a few seconds to check for results."
-            )))
+            run_daemon_command(
+                cfg,
+                script,
+                parameters,
+                &args,
+                timeout_ms_from_args(cfg, &args),
+                false,
+                None,
+                "Error running compatibility script",
+            )
         }
         "get-results" => {
             if let Some(request_id) = args.get("requestId").and_then(Value::as_str) {
@@ -322,67 +326,45 @@ fn dispatch_tool_inner(
             }
         }
         "get-help" => Ok(tool_text(general_help_text().to_string())),
-        "create-composition" => {
-            bridge.write_command_file("createComposition", args)?;
-            Ok(tool_text(
-                "Command to create composition has been queued.\nPlease ensure the \"MCP Bridge Auto\" panel is open in After Effects.\nUse the \"get-results\" tool after a few seconds to check for results.".to_string(),
-            ))
-        }
-        "setLayerKeyframe" => {
-            let comp_index = args.get("compIndex").and_then(Value::as_i64).unwrap_or(0);
-            let layer_index = args.get("layerIndex").and_then(Value::as_i64).unwrap_or(0);
-            let property_name = args
-                .get("propertyName")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            bridge.write_command_file("setLayerKeyframe", args)?;
-            Ok(tool_text(format!(
-                "Command to set keyframe for \"{property_name}\" on layer {layer_index} in comp {comp_index} has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-            )))
-        }
-        "setLayerExpression" => {
-            let comp_index = args.get("compIndex").and_then(Value::as_i64).unwrap_or(0);
-            let layer_index = args.get("layerIndex").and_then(Value::as_i64).unwrap_or(0);
-            let property_name = args
-                .get("propertyName")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            bridge.write_command_file("setLayerExpression", args)?;
-            Ok(tool_text(format!(
-                "Command to set expression for \"{property_name}\" on layer {layer_index} in comp {comp_index} has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-            )))
-        }
+        "create-composition" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "createComposition",
+            args,
+            "Error creating composition",
+        ),
+        "setLayerKeyframe" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "setLayerKeyframe",
+            args,
+            "Error setting layer keyframe",
+        ),
+        "setLayerExpression" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "setLayerExpression",
+            args,
+            "Error setting layer expression",
+        ),
         "test-animation" => create_test_animation_script(args),
         "apply-effect" => {
-            let comp_target = format_comp_target(&args);
-            let layer_target = format_layer_target(&args);
-            bridge.write_command_file("applyEffect", args)?;
-            Ok(tool_text(format!(
-                "Command to apply effect to {layer_target} in {comp_target} has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-            )))
+            run_direct_bridge_call(cfg, bridge, "applyEffect", args, "Error applying effect")
         }
-        "apply-effect-template" => {
-            let comp_target = format_comp_target(&args);
-            let layer_target = format_layer_target(&args);
-            let template_name = args
-                .get("templateName")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            bridge.write_command_file("applyEffectTemplate", args)?;
-            Ok(tool_text(format!(
-                "Command to apply effect template '{template_name}' to {layer_target} in {comp_target} has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-            )))
-        }
-        "list-supported-effects" => {
-            bridge.write_command_file("listSupportedEffects", args)?;
-            Ok(tool_text(
-                "Command to list supported effects has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
-        }
+        "apply-effect-template" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "applyEffectTemplate",
+            args,
+            "Error applying effect template",
+        ),
+        "list-supported-effects" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "listSupportedEffects",
+            args,
+            "Error listing supported effects",
+        ),
         "describe-effect" => {
             let has_effect_name = args
                 .get("effectName")
@@ -400,11 +382,13 @@ fn dispatch_tool_inner(
                 ));
             }
 
-            bridge.write_command_file("describeEffect", args)?;
-            Ok(tool_text(
-                "Command to describe effect has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
+            run_direct_bridge_call(
+                cfg,
+                bridge,
+                "describeEffect",
+                args,
+                "Error describing effect",
+            )
         }
         "save-frame-png" => {
             let timeout_ms = timeout_ms_from_args(cfg, &args);
@@ -417,38 +401,42 @@ fn dispatch_tool_inner(
                 timeout_ms,
             )
         }
-        "render-queue-add" => {
-            let comp_target = format_comp_target(&args);
-            let output_path = args
-                .get("outputPath")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            bridge.write_command_file("renderQueueAdd", args)?;
-            Ok(tool_text(format!(
-                "Command to add {comp_target} to the render queue has been queued.\nOutput: {output_path}\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-            )))
-        }
-        "render-queue-status" => {
-            bridge.write_command_file("renderQueueStatus", args)?;
-            Ok(tool_text(
-                "Command to get render queue status has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
-        }
+        "render-queue-add" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "renderQueueAdd",
+            args,
+            "Error adding render queue item",
+        ),
+        "render-queue-status" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "renderQueueStatus",
+            args,
+            "Error reading render queue status",
+        ),
         "render-queue-start" => {
             let wait_timeout_seconds = args
                 .get("waitTimeoutSeconds")
                 .and_then(Value::as_u64)
                 .unwrap_or(7_200);
-            bridge.clear_results_file()?;
-            bridge.write_command_file("renderQueueStart", args)?;
-            let text = bridge.wait_for_bridge_result(
-                Some("renderQueueStart"),
-                Duration::from_secs(wait_timeout_seconds),
-                Duration::from_millis(cfg.poll_interval_ms),
-            )?;
-            Ok(tool_text(text))
+            let requested_timeout_ms = wait_timeout_seconds
+                .checked_mul(1_000)
+                .ok_or_else(|| anyhow!("waitTimeoutSeconds is too large"))?;
+            if requested_timeout_ms == 0 {
+                anyhow::bail!("waitTimeoutSeconds must be greater than 0");
+            }
+            // Only the client wait is bounded. The broker keeps the request ID
+            // and instance reservation until the render actually returns.
+            let timeout_ms = requested_timeout_ms.min(cfg.script_contract.max_timeout_ms);
+            run_direct_bridge_call_with_timeout(
+                cfg,
+                bridge,
+                "renderQueueStart",
+                args,
+                "Error starting render queue",
+                timeout_ms,
+            )
         }
         "render-queue-is-rendering" => run_direct_bridge_call(
             cfg,
@@ -457,41 +445,33 @@ fn dispatch_tool_inner(
             args,
             "Error checking render state",
         ),
-        "set-current-time" => {
-            bridge.write_command_file("setCurrentTime", args)?;
-            Ok(tool_text(
-                "Command to set current time has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
-        }
-        "get-current-time" => {
-            bridge.write_command_file("getCurrentTime", args)?;
-            Ok(tool_text(
-                "Command to get current time has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
-        }
+        "set-current-time" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "setCurrentTime",
+            args,
+            "Error setting current time",
+        ),
+        "get-current-time" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "getCurrentTime",
+            args,
+            "Error reading current time",
+        ),
         "set-work-area" => {
-            bridge.write_command_file("setWorkArea", args)?;
-            Ok(tool_text(
-                "Command to set work area has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
+            run_direct_bridge_call(cfg, bridge, "setWorkArea", args, "Error setting work area")
         }
         "get-work-area" => {
-            bridge.write_command_file("getWorkArea", args)?;
-            Ok(tool_text(
-                "Command to get work area has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
+            run_direct_bridge_call(cfg, bridge, "getWorkArea", args, "Error reading work area")
         }
-        "get-composition-markers" => {
-            bridge.write_command_file("getCompositionMarkers", args)?;
-            Ok(tool_text(
-                "Command to get composition markers has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
-        }
+        "get-composition-markers" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "getCompositionMarkers",
+            args,
+            "Error reading composition markers",
+        ),
         "cleanup-preview-folder" => {
             let timeout_ms = timeout_ms_from_args(cfg, &args);
             run_daemon_command(
@@ -505,76 +485,43 @@ fn dispatch_tool_inner(
                 "Error cleaning up preview folder",
             )
         }
-        "set-suppress-dialogs" => {
-            bridge.write_command_file("setSuppressDialogs", args)?;
-            Ok(tool_text(
-                "Command to set dialog suppression has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
-        }
-        "get-suppress-dialogs" => {
-            bridge.write_command_file("getSuppressDialogs", args)?;
-            Ok(tool_text(
-                "Command to get dialog suppression state has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
-        }
+        "set-suppress-dialogs" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "setSuppressDialogs",
+            args,
+            "Error setting dialog suppression",
+        ),
+        "get-suppress-dialogs" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "getSuppressDialogs",
+            args,
+            "Error reading dialog suppression",
+        ),
         "project-open" => {
-            let file_path = args
-                .get("filePath")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            bridge.write_command_file("projectOpen", args)?;
-            Ok(tool_text(format!(
-                "Command to open project has been queued.\nFile: {file_path}\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-            )))
+            run_direct_bridge_call(cfg, bridge, "projectOpen", args, "Error opening project")
         }
         "project-close" => {
-            bridge.write_command_file("projectClose", args)?;
-            Ok(tool_text(
-                "Command to close current project has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
+            run_direct_bridge_call(cfg, bridge, "projectClose", args, "Error closing project")
         }
         "project-save" => {
-            let save_as_path = args
-                .get("saveAsPath")
-                .or_else(|| args.get("filePath"))
-                .or_else(|| args.get("path"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            bridge.write_command_file("projectSave", args)?;
-            if save_as_path.is_empty() {
-                Ok(tool_text(
-                    "Command to save current project has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                        .to_string(),
-                ))
-            } else {
-                Ok(tool_text(format!(
-                    "Command to save project has been queued.\nSave As: {save_as_path}\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                )))
-            }
+            run_direct_bridge_call(cfg, bridge, "projectSave", args, "Error saving project")
         }
-        "project-save-as" => {
-            let file_path = args
-                .get("filePath")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
-            bridge.write_command_file("projectSaveAs", args)?;
-            Ok(tool_text(format!(
-                "Command to save project as has been queued.\nFile: {file_path}\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-            )))
-        }
-        "application-quit" => {
-            bridge.write_command_file("applicationQuit", args)?;
-            Ok(tool_text(
-                "Command to gracefully quit After Effects has been queued.\nUse the \"get-results\" tool after a few seconds to check for confirmation."
-                    .to_string(),
-            ))
-        }
+        "project-save-as" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "projectSaveAs",
+            args,
+            "Error saving project as",
+        ),
+        "application-quit" => run_direct_bridge_call(
+            cfg,
+            bridge,
+            "applicationQuit",
+            args,
+            "Error quitting After Effects",
+        ),
         "mcp_aftereffects_applyEffect" => {
             run_direct_bridge_call(cfg, bridge, "applyEffect", args, "Error applying effect")
         }
@@ -621,42 +568,10 @@ fn dispatch_tool_inner(
             cfg,
             bridge,
             "bridgeTestEffects",
-            json!({}),
+            args,
             "Error running bridge test",
         ),
         _ => Ok(tool_error(format!("Unknown tool: {name}"))),
-    }
-}
-
-fn format_comp_target(args: &Value) -> String {
-    if let Some(id) = args.get("compId").and_then(Value::as_i64) {
-        format!("composition id {id}")
-    } else if let Some(name) = args
-        .get("compName")
-        .and_then(Value::as_str)
-        .filter(|name| !name.trim().is_empty())
-    {
-        format!("composition '{name}'")
-    } else if let Some(index) = args.get("compIndex").and_then(Value::as_i64) {
-        format!("composition {index}")
-    } else {
-        "resolved composition".to_string()
-    }
-}
-
-fn format_layer_target(args: &Value) -> String {
-    if let Some(id) = args.get("layerId").and_then(Value::as_i64) {
-        format!("layer id {id}")
-    } else if let Some(name) = args
-        .get("layerName")
-        .and_then(Value::as_str)
-        .filter(|name| !name.trim().is_empty())
-    {
-        format!("layer '{name}'")
-    } else if let Some(index) = args.get("layerIndex").and_then(Value::as_i64) {
-        format!("layer {index}")
-    } else {
-        "resolved layer".to_string()
     }
 }
 
@@ -667,14 +582,8 @@ fn run_direct_bridge_call(
     args: Value,
     error_prefix: &str,
 ) -> Result<Value> {
-    run_direct_bridge_call_with_timeout(
-        cfg,
-        bridge,
-        command,
-        args,
-        error_prefix,
-        cfg.result_timeout_ms,
-    )
+    let timeout_ms = timeout_ms_from_args(cfg, &args);
+    run_direct_bridge_call_with_timeout(cfg, bridge, command, args, error_prefix, timeout_ms)
 }
 
 fn run_direct_bridge_call_with_timeout(
@@ -1316,6 +1225,213 @@ fn error_response(id: Value, code: i64, message: String) -> Value {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn isolated_bridge_config(label: &str) -> (AppConfig, BridgeClient) {
+        let root = std::env::temp_dir().join(format!(
+            "ae-mcp-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let mut cfg = AppConfig::default();
+        cfg.bridge.root_dir = root.clone();
+        cfg.bridge.command_file = root.join("ae_command.json");
+        cfg.bridge.result_file = root.join("ae_mcp_result.json");
+        let bridge = BridgeClient::new(cfg.clone()).expect("isolated bridge");
+        (cfg, bridge)
+    }
+
+    fn fake_daemon(cfg: &mut AppConfig, count: usize) -> std::thread::JoinHandle<Vec<Value>> {
+        use std::io::{BufRead, BufReader as StdBufReader, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("isolated listener");
+        cfg.daemon_addr = listener.local_addr().unwrap().to_string();
+        listener.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut requests = Vec::new();
+            while requests.len() < count {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing broker request");
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                };
+                // Accepted sockets may inherit the listener's nonblocking mode on macOS.
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut line = String::new();
+                StdBufReader::new(&mut stream).read_line(&mut line).unwrap();
+                requests.push(serde_json::from_str::<Value>(&line).unwrap());
+                let response = json!({
+                    "ok": true,
+                    "value": {
+                        "requestId": format!("req-compat-{}", requests.len()),
+                        "state": "completed",
+                        "result": {"status": "success"}
+                    }
+                });
+                writeln!(stream, "{response}").unwrap();
+            }
+            requests
+        })
+    }
+
+    #[test]
+    fn compatibility_tools_use_broker_routing_and_return_request_ids_without_touching_mailboxes() {
+        let routes = [
+            ("create-composition", "createComposition"),
+            ("setLayerKeyframe", "setLayerKeyframe"),
+            ("setLayerExpression", "setLayerExpression"),
+            ("apply-effect", "applyEffect"),
+            ("apply-effect-template", "applyEffectTemplate"),
+            ("list-supported-effects", "listSupportedEffects"),
+            ("describe-effect", "describeEffect"),
+            ("save-frame-png", "saveFramePng"),
+            ("render-queue-add", "renderQueueAdd"),
+            ("render-queue-status", "renderQueueStatus"),
+            ("render-queue-start", "renderQueueStart"),
+            ("render-queue-is-rendering", "renderQueueIsRendering"),
+            ("set-current-time", "setCurrentTime"),
+            ("get-current-time", "getCurrentTime"),
+            ("set-work-area", "setWorkArea"),
+            ("get-work-area", "getWorkArea"),
+            ("get-composition-markers", "getCompositionMarkers"),
+            ("cleanup-preview-folder", "cleanupPreviewFolder"),
+            ("set-suppress-dialogs", "setSuppressDialogs"),
+            ("get-suppress-dialogs", "getSuppressDialogs"),
+            ("project-open", "projectOpen"),
+            ("project-close", "projectClose"),
+            ("project-save", "projectSave"),
+            ("project-save-as", "projectSaveAs"),
+            ("application-quit", "applicationQuit"),
+            ("mcp_aftereffects_applyEffect", "applyEffect"),
+            (
+                "mcp_aftereffects_applyEffectTemplate",
+                "applyEffectTemplate",
+            ),
+            (
+                "mcp_aftereffects_listSupportedEffects",
+                "listSupportedEffects",
+            ),
+            ("mcp_aftereffects_describeEffect", "describeEffect"),
+            ("run-bridge-test", "bridgeTestEffects"),
+            ("run-script", "listCompositions"),
+        ];
+        let (mut cfg, bridge) = isolated_bridge_config("compat-broker");
+        fs::write(&cfg.bridge.command_file, "existing command").unwrap();
+        fs::write(&cfg.bridge.result_file, "existing result").unwrap();
+        let server = fake_daemon(&mut cfg, routes.len());
+        for (index, (tool, _)) in routes.iter().enumerate() {
+            let args = json!({
+                "targetInstanceId": "ae-test-instance",
+                "targetVersion": "25.6",
+                "resultRetentionSeconds": 123,
+                "timeoutMs": 1234,
+                "waitTimeoutSeconds": 2,
+                "effectName": "Test Effect",
+                "marker": index,
+                "script": "listCompositions",
+                "parameters": {"payloadMarker": index}
+            });
+            let result = dispatch_tool_inner(&cfg, &bridge, tool, args).unwrap();
+            assert_ne!(result["isError"], true, "{tool}: {result}");
+            let response: Value =
+                serde_json::from_str(result["content"][0]["text"].as_str().expect("JSON result"))
+                    .unwrap();
+            assert_eq!(response["requestId"], format!("req-compat-{}", index + 1));
+            assert_eq!(response["state"], "completed");
+        }
+        let requests = server.join().expect("fake daemon completed");
+        for (index, ((tool, command), request)) in routes.iter().zip(requests).enumerate() {
+            assert_eq!(request["op"], "runCommand", "{tool}");
+            assert_eq!(request["command"], *command, "{tool}");
+            assert_eq!(request["targetInstanceId"], "ae-test-instance", "{tool}");
+            assert_eq!(request["targetVersion"], "25.6", "{tool}");
+            assert_eq!(request["retentionSeconds"], 123, "{tool}");
+            assert_eq!(
+                request["globalExclusive"],
+                *tool == "cleanup-preview-folder",
+                "{tool}"
+            );
+            assert_eq!(
+                request["timeoutMs"],
+                if *tool == "render-queue-start" {
+                    2000
+                } else {
+                    1234
+                }
+            );
+            if *tool == "run-script" {
+                assert_eq!(request["args"], json!({"payloadMarker":index}));
+            } else {
+                assert_eq!(request["args"]["marker"], index);
+            }
+        }
+        assert_eq!(
+            fs::read_to_string(&cfg.bridge.command_file).unwrap(),
+            "existing command"
+        );
+        assert_eq!(
+            fs::read_to_string(&cfg.bridge.result_file).unwrap(),
+            "existing result"
+        );
+        fs::remove_dir_all(&cfg.bridge.root_dir).unwrap();
+    }
+
+    #[test]
+    fn compatibility_dispatch_fails_without_a_broker_and_preserves_existing_mailboxes() {
+        let (mut cfg, bridge) = isolated_bridge_config("compat-offline");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        cfg.daemon_addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        fs::write(&cfg.bridge.command_file, "active request").unwrap();
+        fs::write(&cfg.bridge.result_file, "retained response").unwrap();
+        let result = dispatch_tool_inner(
+            &cfg,
+            &bridge,
+            "run-script",
+            json!({"script":"listCompositions"}),
+        )
+        .unwrap();
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            fs::read_to_string(&cfg.bridge.command_file).unwrap(),
+            "active request"
+        );
+        assert_eq!(
+            fs::read_to_string(&cfg.bridge.result_file).unwrap(),
+            "retained response"
+        );
+        fs::remove_dir_all(&cfg.bridge.root_dir).unwrap();
+    }
+
+    #[test]
+    fn compatibility_render_wait_is_bounded_and_invalid_durations_never_dispatch() {
+        let (mut cfg, bridge) = isolated_bridge_config("compat-render");
+        cfg.script_contract.max_timeout_ms = 100;
+        let server = fake_daemon(&mut cfg, 1);
+        let result = dispatch_tool_inner(&cfg, &bridge, "render-queue-start", json!({})).unwrap();
+        assert_ne!(result["isError"], true);
+        assert_eq!(server.join().unwrap()[0]["timeoutMs"], 100);
+        for seconds in [0, u64::MAX] {
+            let result = dispatch_tool_inner(
+                &cfg,
+                &bridge,
+                "render-queue-start",
+                json!({"waitTimeoutSeconds":seconds}),
+            );
+            assert!(result.is_err());
+        }
+        assert!(!cfg.bridge.command_file.exists());
+        fs::remove_dir_all(&cfg.bridge.root_dir).unwrap();
+    }
 
     #[test]
     fn tools_list_contains_run_jsx() {

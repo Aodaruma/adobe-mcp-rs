@@ -14,6 +14,7 @@
   },
   "manifestVersion": 5,
   "requiredPermissions": {
+    "network": { "domains": ["ws://localhost:47657", "http://localhost:47657"] },
     "localFileSystem": "fullAccess",
     "allowCodeGenerationFromStrings": true
   },

@@ -4,6 +4,8 @@
 - Date: 2026-07-15
 - Issue: #22
 
+2026-10-26追記: 実行系の前提と代替方式の根拠を[仕様・設計監査](../ae2025-architecture-audit-2026-10-26.md)で再評価した。本ADRのStartup方式を直ちに置換したものではないが、専用engineによる隔離や時間内応答は前提としない。
+
 ## Context
 
 従来の `mcp-bridge-auto.jsx` は、ScriptUI panelをWindowメニューから開き、`Auto-run commands` checkboxをONにしている間だけcommandをpollしていた。installerのStartup loaderもpanelのmenu commandを遅延実行する方式だったため、workspace復元、panel close、menu command名、UI controlの寿命にbridge lifecycleが引きずられていた。
@@ -18,7 +20,7 @@
 
 ## Decision
 
-`Scripts/Startup/mcp-bridge-startup.jsx` をprimary bootstrapとして採用する。bootstrapは同じpersistent target engine内で `ScriptUI Panels/mcp-bridge-auto.jsx` をheadless modeとして直接評価する。menu commandやWindow生成は行わない。`Scripts/Shutdown/mcp-bridge-shutdown.jsx` はnormal終了時にtaskを停止し、heartbeatを削除する。異常終了時はdaemonのstale判定へfallbackする。
+`Scripts/Startup/mcp-bridge-startup.jsx` をprimary bootstrapとして採用する。bootstrapはAEが選ぶ共有スクリプト実行環境で `ScriptUI Panels/mcp-bridge-auto.jsx` をheadless modeとして直接評価する。AE2025の実測は `main` であり、`#targetengine` による専用実行系や独立threadを前提としない。menu commandやWindow生成は行わない。`Scripts/Shutdown/mcp-bridge-shutdown.jsx` はnormal終了時にtaskを停止し、heartbeatを削除する。異常終了時はdaemonのstale判定へfallbackするが、stale自体はprocess終了や予約消失の証明ではない。
 
 runtimeは `$.global.__adobeMcpBridgeRuntime` にsingleton lifecycle APIを公開する。
 
@@ -37,11 +39,11 @@ Windows版ExtendScriptでは既存fileへの `File.rename` が失敗し、rename
 
 ## Why not CEP now
 
-CEP 12はAfter Effects自体を対応hostとして掲載している。一方、公式CookbookのInvisible HTML Extensions対応表にはAfter Effectsが含まれていない。通常のPanelは「終了時に開いていれば次回起動時に再度開く」というworkspace依存のlifecycleであり、今回解消したいcold-start問題を確実に改善すると判断できない。
+当初は、CEP 12 CookbookのInvisible HTML Extensions対応表にAfter Effectsがないことと、通常Panelのworkspace依存lifecycleを理由に、cold-start改善の確証がないと判断した。2026-10-26の再調査では、Adobe公式Samples READMEだけでなく、CEP12のInvisible sample manifestにも `AEFT`・`Custom`・`AutoVisible=false` が含まれると確認した。対応表の不掲載を「AEは不可視CEP非対応」の根拠にはしない。ただし記載のStartOn eventがAE2025でpanel非依存のcold startを保証する契約・実測は未確認である。
 
 また、CEP化してもAE DOM操作はhost側ExtendScriptへ委譲するため、JSX全廃にはならない。CEF/Node runtime、署名・配布、host version互換という追加面も増える。このためCEP skeletonは現時点では追加せず、Startup方式の実機matrixを優先する。
 
-CEPは、AdobeがAEでのinvisible extension / `StartOn` の起動保証を明文化するか、Startup方式に再現可能な欠陥が見つかった場合に再評価する。native AEGPは、ExtendScriptでは実現不能なlifecycle要件が確認された場合だけ検討する。
+CEPは通信側の寿命を分離する比較候補として、AE2025の最小PoCで再評価できる。一方でhost側ExtendScriptはmain threadで実行されるため、DOM実行の待ちを解消する保証にはならない。native AEGPもhost側adapterの比較候補とするが、SDKの契約と実機受入なしに常時実行・確実な復旧を保証しない。方式選択に先立ち、要求の確定・重複実行防止・状態分類・復旧入口の契約を整理する。
 
 ## Evidence
 
@@ -53,6 +55,10 @@ CEPは、AdobeがAEでのinvisible extension / `StartOn` の起動保証を明�
   - repeating task IDの取得とcancelを定義している。
 - Adobe CEP: [CEP 12 HTML Extension Cookbook](https://github.com/Adobe-CEP/CEP-Resources/blob/master/CEP_12.x/Documentation/CEP%2012%20HTML%20Extension%20Cookbook.md)
   - AEのCEP対応、Panel lifecycle、Invisible HTML Extensionsの条件とhost対応表を掲載している。
+- Adobe CEP: [CEP12 Invisible sampleのmanifest](https://raw.githubusercontent.com/Adobe-CEP/CEP-Resources/master/CEP_12.x/Samples/CEP_HTML_Invisible_Extension-12.0/CSXS/manifest.xml)
+  - AEFTを対象に含む。Cookbookの表との不一致と、AE2025のcold-start保証が未確認である点を分ける。
+- Adobe: [JavaScript Tools Guide CC、235ページ](https://github.com/Adobe-CEP/CEP-Resources/blob/master/ExtendScript-Toolkit/Guides/JavaScript%20Tools%20Guide%20CC.pdf)
+  - 古い原典で#targetengineの対応アプリと制限を説明する。今回のAE2025 main実測と合わせて、専用engineによる隔離を前提から外した。
 
 ## Verification matrix
 

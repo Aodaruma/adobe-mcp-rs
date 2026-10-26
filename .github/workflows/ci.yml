@@ -66,5 +66,9 @@ jobs:
       - name: Test bridge protocol contracts
         run: cargo test -p bridge-contract-tests
 
+      - name: Test AE scheduler and ScriptUI lifecycle
+        if: runner.os == 'Windows'
+        run: cscript.exe //nologo scripts/tests/ae-bridge-scheduler.js
+
       - name: Test workspace
         run: cargo test --workspace --exclude bridge-contract-tests

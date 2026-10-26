@@ -1,5 +1,7 @@
 # After Effects MCP public surface
 
+> 以下の一覧は共通script contract追加前の記述を含みます。ベータ0.5.3ではcanonicalの`run-script`等も公開されています。現行実装は`mcp-core::PUBLIC_TOOL_NAMES`と[script contract](script-contract.md)、後続の整理方針は[公開Toolの整理案](public-tool-surface-plan.md)を参照してください。
+
 - 最終更新: 2026-07-15
 - 対象: `ae-mcp serve-stdio`
 

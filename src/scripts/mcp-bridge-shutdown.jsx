@@ -1,7 +1,7 @@
 // mcp-bridge-shutdown.jsx
 // Removes the live heartbeat when After Effects performs a normal shutdown.
 #target aftereffects
-#targetengine "ae_mcp_bridge"
+// Resolve the runtime in AE's shared engine, just as Startup and panel scripts do.
 
 (function () {
     try {

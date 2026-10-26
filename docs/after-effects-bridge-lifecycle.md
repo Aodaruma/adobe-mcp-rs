@@ -1,5 +1,10 @@
 # After Effects bridge lifecycle
 
+2026-10-23追記: AE2025（25.6.6x4）でStartup後とnativeファイル選択後の全callback停止を再現した。
+同じschedulerのwatchdogだけでは復旧できない。[最新の調査記録](after-effects-startup-investigation-2026-10.md)と
+[外部復旧候補・受入手順](ae2025-native-recovery.md)を参照。外部monitorは既定OFFで、制作環境へ未導入。
+以下の過去の実機合格は、そのとき確認した版・条件の範囲を示し、今回の再発を否定しない。
+
 repository実装ではAfter Effects bridgeを `Scripts/Startup/mcp-bridge-startup.jsx` からheadlessに開始する。ScriptUI panelや `Auto-run commands` checkboxには依存しない。Windows版After Effects 2026（26.2.1x2）では、panelを閉じたcold start、両起動順、workspace変更、runtime restart、modal復帰、複数version routing、正常・異常終了を実機確認済み。After Effects 2025（25.6.5x3）は現行Startup JSXをAdobe公式の`afterfx -r`で評価した範囲で確認済みだが、現行installerからのcold start確認は残る。
 
 ## Installed files
@@ -12,7 +17,7 @@ repository実装ではAfter Effects bridgeを `Scripts/Startup/mcp-bridge-startu
 
 ## Lifecycle API
 
-ExtendScript consoleまたは `File > Scripts > Run Script File` から同じtarget engineへアクセスするdiagnostic scriptで、次を利用できる。
+ExtendScript consoleまたは `File > Scripts > Run Script File` から、AEの共有globalにあるruntimeへアクセスするdiagnostic scriptで、次を利用できる。`#targetengine` による専用engineは前提としない。AE 2025の手動復旧記録では `$.engineName=main` のまま既存runtimeへアクセスできた。
 
 ```jsx
 aeMcpBridgeGetState();
@@ -27,6 +32,15 @@ aeMcpBridgeSetDiagnosticsEnabled(true);
 `aeMcpBridgeGetState()` はrunning状態、instance ID、runtime generation ID、command/heartbeat task IDを返す。restartではinstance IDを維持し、runtime generation IDを更新する。
 
 `aeMcpBridgeGetState()` の `healthy` / `healthReason` / `heartbeatAgeMs` は、task IDが存在するだけでなく、実際にheartbeatが更新されているかを表す。`aeMcpBridgeEnsureHealthy()` はstale状態を検出した場合にruntime generationを再作成する。
+
+起動直後の `running=true` は予約登録済みを意味し、定期処理の実行確認ではない。
+`schedulerReady` は現在のruntime世代でcommand / heartbeat / watchdogの3種類がそれぞれ実行された証拠を表す。
+`commandTickSequence` / `heartbeatTickSequence` / `watchdogTickSequence` は世代変更時に0へ戻り、
+初回の同期heartbeat書き込みや手動書き込みでは増えない。`schedulerReady=true` だけで現在の正常稼働を
+判断せず、heartbeatの更新時刻、`healthy`、各sequenceの継続的な増加も確認する。
+`runtimeEngineName` とbootstrapの `startupEngineName` は実際の `$.engineName` を記録する。
+`commandTickEngineName` / `heartbeatTickEngineName` / `watchdogTickEngineName` は各callbackが最後に実行されたengine名を記録し、未実行の間はnullとなる。
+bootstrapは開始時点のsnapshotなので、通常のcold startでは `schedulerReady=false` のまま残る。
 
 ## Diagnostic logging
 
@@ -46,8 +60,11 @@ verbose debug logがOFFでも、stale scheduler検出時の単発snapshot `ae_mc
 - file bridgeなのでdaemonとの常時socket接続は持たない。AEとdaemonの起動順に関係なく、daemonは更新中のheartbeatを再検出する。
 - runtime再評価時は旧taskをcancelする。旧callbackが残ってもgeneration ID不一致でcommand処理を行わない。
 - command pollingとheartbeatは `repeat=true` の反復taskではなく、完了後に次回を登録するone-shot taskを使う。modal dialogや長時間のhost処理でcallbackが遅延しても、復帰後に1回だけ実行して次回を再登録する。
+- 独立した3秒周期のrepeating watchdogが、12秒を超えるcommand / heartbeatの停止や予約失敗を検出して世代を再作成する。通常のcommand処理もheartbeatを書き込むため、heartbeat専用callbackの進行は別に検査する。`heartbeatTickAgeMs` はcommand callback内でAEを占有した時間を除いた経過時間であり、長時間処理の直後を誤って停止と判定しない。
 - workspaceがScriptUI panelを復元した場合、panelは既存のStartup-owned runtimeへ診断UIとしてattachする。panelを閉じてもheadless runtimeは停止しない。
 - diagnostics panelのopen / refresh / activateとStartup bootstrap再評価はheartbeat ageを検査する。task IDだけ残ったstale runtimeは自動的にrestartする。
+- watchdogもAEの `scheduleTask` に依存する。起動時に全予約が失われた場合やAEが全scheduled scriptを拒否している間は、headlessの自己回復は保証できない。全tickが0のままの状態とwatchdogだけ進む状態を区別する。2026-10-22の調査・受入手順は [Startup停止調査](after-effects-startup-investigation-2026-10.md) を参照。
+- AEがmodal待ちを理由にscript入口で拒否すると、script内のtry/catch・診断書き込み・watchdogも実行されない。入口での拒否とcommand実行中の例外は区別する。command開始後のmodalエラーは部分的な処理完了を否定できないため、pendingへ戻さず相関付きerror resultを返す。結果公開失敗時の自動再実行も行わない。
 - headless modeでは権限警告dialogを出さない。heartbeatが無い場合はfile/network access設定、Startup/runtimeの配置、bootstrap stateを確認する。
 - `$.global.__adobeMcpBridgeBootstrapState` に `running`、`runtime-not-found`、`runtime-api-missing`、`error` などのbootstrap状態が残る。
 - 同じbootstrap snapshotを `~/Documents/ae-mcp-bridge/ae_mcp_bootstrap.json` に保存する。継続中の稼働状態は各instanceの `heartbeat.json` を正とする。
@@ -88,11 +105,11 @@ verbose debug logがOFFでも、stale scheduler検出時の単発snapshot `ae_mc
 - `msiexec /a`のadministrative image展開は終了code 0、32 files、3 JSXのhash一致を確認した。
 - 現sessionはstandard userで、実machine install / installed 0.4.2からのupgrade / uninstallにはUACが必要なため実行していない。release前に管理者sessionで`docs/installer-e2e.md` 3.3を完了する。
 
-実機試験では、workspace panelとStartup runtimeが同じtarget engineのglobal変数を上書きする問題、heartbeat置換中にfileが一時消失する問題、`File.rename` 後に `File.name` が変化してresult publish先を誤る問題を検出し修正した。追加matrixでは、runtime APIが`running: true`でもbootstrap diagnosticだけ`false`を記録する問題を検出し、primitive/Boolean wrapperの両方を正規化して修正した。
+実機試験では、workspace panelとStartup runtimeが共有global変数を上書きする問題、heartbeat置換中にfileが一時消失する問題、`File.rename` 後に `File.name` が変化してresult publish先を誤る問題を検出し修正した。追加matrixでは、runtime APIが`running: true`でもbootstrap diagnosticだけ`false`を記録する問題を検出し、primitive/Boolean wrapperの両方を正規化して修正した。
 
 ## AE 2025 scheduler stale incident（2026-07-31）
 
-AE 2025（25.6.5x3）のprocessとtarget engineは応答している一方、heartbeatとcommand pollingの両方が停止した。runtime stateには `running: true` と有効そうなtask IDが残っていたため、従来のdiagnostics panelは誤って `RUNNING` と表示した。daemon / stdio / file permission / bridge version不整合ではなく、AE内の反復 `scheduleTask` callbackが実行されなくなったことが直接原因だった。
+AE 2025（25.6.5x3）のprocessとスクリプト実行環境は応答している一方、heartbeatとcommand pollingの両方が停止した。runtime stateには `running: true` と有効そうなtask IDが残っていたため、従来のdiagnostics panelは誤って `RUNNING` と表示した。daemon / stdio / file permission / bridge version不整合ではなく、AE内の反復 `scheduleTask` callbackが実行されなくなったことが直接原因だった。
 
 停止時点ではscheduler event logが無効だったため、発火させた個別操作は確定できない。AEはmodal dialog待機中やrenderなどhostが制御を保持する処理中にscheduled scriptを実行できない。今回のAE 2025 processでは長時間のhost処理後も反復taskが復帰しなかった可能性が高い。
 

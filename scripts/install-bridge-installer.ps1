@@ -16,7 +16,8 @@ param(
     [switch]$RemoveAutostart,
     [switch]$NonInteractive,
     [switch]$SkipHostBridgeInstall,
-    [switch]$SkipUserInstall
+    [switch]$SkipUserInstall,
+    [switch]$FunctionsOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +32,7 @@ function Ensure-InstallerStateRoot {
     if (-not (Test-Path -LiteralPath $InstallerStateRoot)) {
         New-Item -ItemType Directory -Path $InstallerStateRoot -Force | Out-Null
     }
+    if (-not $InstallerStateRoot.StartsWith($env:ProgramData + '\', [StringComparison]::OrdinalIgnoreCase)) { return }
 
     try {
         $acl = Get-Acl -LiteralPath $InstallerStateRoot
@@ -78,6 +80,17 @@ function Write-InstallerLog {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         Add-Content -LiteralPath $InstallLogPath -Value "[$timestamp] $Message" -Encoding UTF8
     } catch {}
+}
+
+function Backup-BridgeTarget {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $backupRoot = Join-Path $InstallerStateRoot 'bridge-backups'
+    New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+    $backup = Join-Path $backupRoot ((Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N') + '-' + (Split-Path -Leaf $Path))
+    Copy-Item -LiteralPath $Path -Destination $backup -Recurse -Force
+    @{ original=$Path; backup=$backup } | ConvertTo-Json -Compress |
+        Add-Content -LiteralPath (Join-Path $backupRoot 'restore-map.jsonl') -Encoding UTF8
 }
 
 function ConvertTo-QuotedProcessArgument {
@@ -1255,11 +1268,12 @@ function New-CcxPackage {
     )
 
     $safeName = ($PackageName -replace '[^A-Za-z0-9_.-]', '-')
-    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ($safeName + "-" + [guid]::NewGuid().ToString("N"))
+    $tempRoot = Join-Path $InstallerStateRoot ("packages\" + $safeName + "-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     $zipPath = Join-Path $tempRoot ($safeName + ".zip")
     $ccxPath = Join-Path $tempRoot ($safeName + ".ccx")
-    Compress-Archive -Path (Join-Path $SourceDir "*") -DestinationPath $zipPath -Force
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($SourceDir, $zipPath)
     Move-Item -LiteralPath $zipPath -Destination $ccxPath -Force
     return $ccxPath
 }
@@ -1306,7 +1320,7 @@ function Install-PremiereUxpBridge {
         Add-InstallReport -Key "premiere-uxp" -Status "installed" -Message ("Installed via UPIA for: {0}" -f ($uxpTargets -join ", "))
     } finally {
         $tempRoot = Split-Path -Parent $ccx
-        if (Test-Path -LiteralPath $tempRoot) {
+        if ((Test-Path -LiteralPath $tempRoot) -and (Resolve-Path -LiteralPath $tempRoot).Path.StartsWith([IO.Path]::GetFullPath((Join-Path $InstallerStateRoot 'packages')) + '\', [StringComparison]::OrdinalIgnoreCase)) {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -1352,7 +1366,7 @@ function Install-PhotoshopUxpBridge {
         Add-InstallReport -Key "photoshop-uxp" -Status "installed" -Message ("Installed via UPIA. Photoshop target(s): {0}" -f ($photoshopTargets -join ", "))
     } finally {
         $tempRoot = Split-Path -Parent $ccx
-        if (Test-Path -LiteralPath $tempRoot) {
+        if ((Test-Path -LiteralPath $tempRoot) -and (Resolve-Path -LiteralPath $tempRoot).Path.StartsWith([IO.Path]::GetFullPath((Join-Path $InstallerStateRoot 'packages')) + '\', [StringComparison]::OrdinalIgnoreCase)) {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -1385,6 +1399,9 @@ function Install-IllustratorCepBridge {
             New-Item -ItemType Directory -Path $cepRoot -Force | Out-Null
         }
         if (Test-Path -LiteralPath $illustratorDest) {
+            if ((Resolve-Path -LiteralPath $illustratorDest).Path -ine [IO.Path]::GetFullPath((Join-Path $cepRoot 'mcp-bridge-illustrator')) -or
+                ((Get-Item -LiteralPath $illustratorDest).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unexpected Illustrator CEP path.' }
+            Backup-BridgeTarget $illustratorDest
             Remove-Item -LiteralPath $illustratorDest -Recurse -Force
         }
         Copy-Item -LiteralPath $source -Destination $illustratorDest -Recurse -Force
@@ -1699,6 +1716,8 @@ function Remove-McpAutostartRegistrations {
     }
 }
 
+if ($FunctionsOnly) { return }
+
 if ($RemoveAutostart) {
     Remove-McpAutostartRegistrations
     exit 0
@@ -1785,7 +1804,16 @@ if (-not $SkipHostBridgeInstall) {
                     if (-not (Test-Path -LiteralPath $shutdownDir)) {
                         New-Item -ItemType Directory -Path $shutdownDir -Force | Out-Null
                     }
-                    Copy-Item -LiteralPath $source -Destination $destFile -Force
+                    # Preserve same-version local customizations (including this PC's Undo workaround).
+                    $preserveCustom = (Test-Path -LiteralPath $destFile) -and
+                        ((Get-PanelScriptVersion $destFile) -eq (Get-PanelScriptVersion $source)) -and
+                        ((Get-FileHash -LiteralPath $destFile).Hash -ne (Get-FileHash -LiteralPath $source).Hash)
+                    foreach ($existing in @($destFile, $startupFile, $shutdownFile)) { Backup-BridgeTarget $existing }
+                    if ($preserveCustom) {
+                        Add-InstallReport -Key 'aftereffects-panel' -Status 'preserved' -Message "Preserved modified same-version runtime: $destFile"
+                    } else {
+                        Copy-Item -LiteralPath $source -Destination $destFile -Force
+                    }
                     Copy-Item -LiteralPath $startupSource -Destination $startupFile -Force
                     Copy-Item -LiteralPath $shutdownSource -Destination $shutdownFile -Force
                     Write-Host "Installed: $destFile"
@@ -1798,7 +1826,7 @@ if (-not $SkipHostBridgeInstall) {
             }
 
             Write-Host "Bridge deployment completed. Installed runtime and headless startup bootstrap to $installed location(s)."
-            Add-InstallReport -Key "aftereffects-panel" -Status "installed" -Message "Installed runtime and headless startup bootstrap to $installed After Effects location(s)."
+            Add-InstallReport -Key "aftereffects-panel" -Status $(if ($installed -gt 0) { 'installed' } else { 'failed' }) -Message "Installed runtime and headless startup bootstrap to $installed After Effects location(s)."
         }
     }
 
@@ -1826,6 +1854,9 @@ if (-not $SkipHostBridgeInstall) {
                 New-Item -ItemType Directory -Path $cepRoot -Force | Out-Null
             }
             if (Test-Path -LiteralPath $premiereDest) {
+                if ((Resolve-Path -LiteralPath $premiereDest).Path -ine [IO.Path]::GetFullPath((Join-Path $cepRoot 'mcp-bridge-premiere')) -or
+                    ((Get-Item -LiteralPath $premiereDest).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unexpected Premiere CEP path.' }
+                Backup-BridgeTarget $premiereDest
                 Remove-Item -LiteralPath $premiereDest -Recurse -Force
             }
             Copy-Item -LiteralPath $premiereSource -Destination $premiereDest -Recurse -Force

@@ -9,6 +9,40 @@ use std::time::{Duration, Instant};
 const CONTRACT_COMMAND_TIMEOUT_MS: u64 = 5_000;
 const CONTRACT_DAEMON_CALL_TIMEOUT_MS: u64 = 5_000;
 
+#[test]
+fn uxp_file_transport_and_panel_lifecycle() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/tests/uxp-bridge-runtime.cjs");
+    let output = std::process::Command::new("node")
+        .arg("--test")
+        .arg(script)
+        .output()
+        .expect("Node.js 20+ is required for the UXP bridge contract tests");
+    assert!(
+        output.status.success(),
+        "UXP bridge tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn after_effects_startup_runtime_lifecycle() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/tests/ae-startup-runtime.cjs");
+    let output = std::process::Command::new("node")
+        .arg("--test")
+        .arg(script)
+        .output()
+        .expect("Node.js 20+ is required for the AE Startup bridge contract tests");
+    assert!(
+        output.status.success(),
+        "AE Startup bridge tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn protocol_test_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -74,20 +108,28 @@ fn after_effects_startup_bridge_is_headless_and_generation_guarded() {
     assert!(runtime.contains("__adobeMcpBridgeCommandTick('"));
     assert!(runtime.contains("scheduledRuntimeId !== bridgeRuntimeId"));
     assert!(runtime.contains("Neutralize callbacks left by the pre-generation runtime"));
-    assert!(runtime.contains("schedulerMode = \"one-shot-reschedule\""));
+    assert!(runtime.contains("schedulerMode = \"one-shot-with-watchdog\""));
     assert!(runtime.contains("function scheduleNextCommandCheck()"));
     assert!(runtime.contains("function scheduleNextHeartbeat()"));
     assert!(runtime.contains("checkInterval,\n        false"));
     assert!(runtime.contains("heartbeatInterval,\n        false"));
     assert!(!runtime.contains("checkInterval,\n        true"));
-    assert!(!runtime.contains("heartbeatInterval,\n        true"));
+    assert!(runtime.contains("__adobeMcpBridgeWatchdogTick('"));
+    assert!(runtime.contains("heartbeatInterval,\n        true"));
     assert!(runtime.contains("scheduleNextCommandCheck();"));
     assert!(runtime.contains("scheduleNextHeartbeat();"));
     assert!(runtime.contains("function ensureBridgeRuntimeHealthy(options)"));
     assert!(runtime.contains("heartbeatAgeMs <= heartbeatStaleAfterMs"));
     assert!(runtime.contains("ae_mcp_scheduler_diagnostic.json"));
     assert!(runtime.contains("stale-scheduler-detected"));
-    assert!(runtime.contains("runtime.ensureHealthy"));
+    let panel_start = runtime.find("function refreshAttachedStatus()").unwrap();
+    let panel_end = runtime[panel_start..]
+        .find("attachedDiagnostics.onClick")
+        .unwrap()
+        + panel_start;
+    let panel_refresh = &runtime[panel_start..panel_end];
+    assert!(panel_refresh.contains("runtime.getState()"));
+    assert!(!panel_refresh.contains("runtime.ensureHealthy"));
     assert!(runtime.contains("debugLogCheckbox.value = false"));
     assert!(runtime.contains("Write diagnostic debug log"));
     assert!(runtime.contains("function refreshDebugLogConfig()"));
@@ -510,11 +552,35 @@ fn stale_and_malformed_heartbeats_are_reported_and_reconnect() -> Result<()> {
             "{} reasons: {reasons:?}",
             host.id
         );
-        let lost = daemon.call(
+        let unresolved = daemon.call(
             json!({ "op": "getResult", "requestId": request_id }),
             CONTRACT_DAEMON_CALL_TIMEOUT_MS,
         )?;
-        assert_eq!(lost["status"], "lost", "{} lost request", host.id);
+        assert_eq!(
+            unresolved["status"], "unknown",
+            "{} unresolved request",
+            host.id
+        );
+        assert!(fixture
+            .instance_dir("stale")
+            .join("current_request.json")
+            .exists());
+
+        // Heartbeat loss must not discard a later completion or release the
+        // mailbox. Recover the original result before submitting more work.
+        bridge_core::write_json_file(
+            std::path::Path::new(&mock.instance().result_file),
+            &json!({
+                "status": "success", "result": { "sequence": 20 },
+                "_requestId": request_id, "_commandExecuted": "ping",
+                "_hostInstance": { "hostId": host.id, "instanceId": "stale" }
+            }),
+        )?;
+        let recovered = daemon.call(
+            json!({ "op": "getResult", "requestId": request_id }),
+            CONTRACT_DAEMON_CALL_TIMEOUT_MS,
+        )?;
+        assert_completed(&recovered, *host, "stale", 20);
 
         mock.resume_heartbeat();
         thread::sleep(Duration::from_millis(40));

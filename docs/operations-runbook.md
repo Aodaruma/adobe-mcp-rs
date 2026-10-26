@@ -1,6 +1,6 @@
 # 運用 Runbook（Stage 7）
 
-- 最終更新: 2026-07-15
+- 最終更新: 2026-09-05
 - 対象: Rust版 `ae-mcp` / `pr-mcp` / `ps-mcp` / `ai-mcp` の日常運用
 
 ## 1. 基本コマンド
@@ -35,7 +35,9 @@
 <host>-mcp autostart uninstall
 ```
 
-`install` は現在のユーザーの Run key を登録するだけで、即時起動はしない。`uninstall` も登録削除だけなので、完全停止は `stop` の後に行う。`status` が `outdated` を返した場合は exe 移動または upgrade 後の登録ずれなので、`stop` → `install` → `start` の順で修復する。旧 exe のプロセスが生きている間は、安全のため新 daemon の `start` は失敗する。
+`install` は現在のユーザーの Run key と非表示launcherを登録し、即時起動はしない。`uninstall` も登録削除だけなので、完全停止は `stop` の後に行う。`status` が `outdated` を返した場合は exe 移動または upgrade 後の登録ずれなので、実行中requestがないことを確認してから `stop` → `install` → `start` の順で修復する。旧 exe のプロセスが生きている間は、安全のため新 daemon の `start` は失敗する。
+
+ログイン時にterminalが残る場合、Run keyが古い `ae-mcp.exe serve-daemon` の直接起動になっていないか確認する。現行の登録は `wscript.exe //B //NoLogo .../daemon-autostart.vbs` で、launcherがwindow style 0でdaemonを起動する。更新したbinaryで `autostart install` を実行して登録し直す。stdioのstdoutはMCP通信なので変更しない。
 
 Windows 版 CLI に `service` は存在しない。`service` を案内している古い手順は使用しない。
 
@@ -88,6 +90,22 @@ macOS 版 CLI に Windows 用 `autostart` は存在しない。
 - Premiere CEP fallback: `~/Documents/pr-mcp-bridge/instances/<instanceId>/heartbeat.json` が作成されているか確認
 
 ## 4. 監視ポイント
+
+### timeout / unknown と安全な復旧
+
+- `timeout`はclientが待機を終えた状態で、Adobe内の処理停止を意味しない。同じ`requestId`で`get-script-result`を確認し、変更操作を再送しない。
+- heartbeat途絶時の`unknown`、互換読込の`lost`、`cancelRequested`も後着結果を回収できる。キャンセルは強制停止ではない。
+- 未解決requestがある間は同一instanceの後続処理が待機する。global exclusiveが関係する場合は別instanceも待機する。結果が永久に返らなければ自動では解除しない。
+- 復旧前に新規送信を止め、request / result / current_requestと診断ログを保全する。Adobe側の実行が終了したことを確認し、保存可能な作業は保存してhostを通常終了する。実行中のままdaemonだけを再起動しない。global排他はdaemonのメモリにあり、再起動をまたいで保証されない。
+- host終了後にdaemonを再起動し、新しいhost instanceへ接続する。古いinstanceの未解決記録は履歴として残す。host終了確認前に`current_request.json`を削除して予約を解除しない。
+
+### AEの更新とUndo確認
+
+binaryをコピーしても稼働中のdaemon / stdioは旧版のまま。JSXを配置しても起動済みAEのruntimeは旧版のままなので、配置版と稼働版を区別する。daemonは`ping.version` / `processId`、AEは`ae_mcp_bootstrap.json.runtimeVersion`と新しいinstanceのheartbeatを照合する。
+
+AE 0.5.1 bridgeは`undoGroup:false`を解釈しない。0.5.3には外側の`endUndoGroup()`を重ねない修正があるが、任意JSXのUndo安全性全体を保証するものではない。作業を保存して通常再起動した後、使い捨てprojectで単純編集、throw、user側Undo group、`undoGroup:false`、import、renderを分けて確認する。既存の`run-bridge-test`はeffectを変更するため、制作projectの疎通確認に使わない。
+
+### 日常監視
 
 1. daemon 稼働状態（Windows: `<host>-mcp autostart status`、macOS: `<host>-mcp service status`）
 2. 結果ファイル更新時刻
