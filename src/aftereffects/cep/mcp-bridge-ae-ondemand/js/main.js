@@ -10,6 +10,11 @@
     var SAFETY_SCAN_MS = 5000;     // Node-only file read; never touches After Effects
     var HEARTBEAT_TOUCH_MS = 3000; // Node-only utimes; never touches After Effects
     var MAX_RETRIES = 2;
+    // Stay out of After Effects' way while it is still starting (welcome screen,
+    // plug-in and panel initialisation). Nothing needs the bridge this early.
+    var STARTUP_DELAY_MS = 8000;
+    var BOOTSTRAP_RETRY_MS = 5000;
+    var BOOTSTRAP_MAX_ATTEMPTS = 6;
 
     var state = { instanceId: "", runtimeId: "", bridgeRoot: "", dir: "", commandFile: "", heartbeatFile: "" };
     var busy = false;
@@ -116,9 +121,21 @@
         } catch (e) {}
     }
 
-    function start() {
-        bootstrap(function (ok) {
-            if (!ok) { return; }
+    // These failures cannot fix themselves, so retrying would only add host calls.
+    function isPermanentFailure(result) {
+        return result.indexOf("error|runtime-not-found") === 0 ||
+            result.indexOf("error|timer-runtime-already-loaded") === 0 ||
+            result.indexOf("error|runtime-api-missing") === 0;
+    }
+
+    function start(attempt) {
+        bootstrap(function (ok, result) {
+            if (!ok) {
+                if (!isPermanentFailure(result) && attempt < BOOTSTRAP_MAX_ATTEMPTS) {
+                    setTimeout(function () { start(attempt + 1); }, BOOTSTRAP_RETRY_MS);
+                }
+                return;
+            }
             watch();
             setInterval(check, SAFETY_SCAN_MS);
             setInterval(touchHeartbeat, HEARTBEAT_TOUCH_MS);
@@ -128,5 +145,7 @@
 
     window.onerror = function (message, source, line) { log("uncaught: " + message + " @" + line); };
     log("panel loaded");
-    try { start(); } catch (e) { log("start failed: " + e); }
+    setTimeout(function () {
+        try { start(1); } catch (e) { log("start failed: " + e); }
+    }, STARTUP_DELAY_MS);
 })();

@@ -3,6 +3,7 @@ set -euo pipefail
 
 AE_PATH=""
 DRY_RUN="false"
+ON_DEMAND="false"
 AE_PATHS=()
 AE_PATH_COUNT=0
 PREMIERE_PATHS=()
@@ -48,9 +49,14 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN="true"
       shift
       ;;
+    --on-demand)
+      ON_DEMAND="true"
+      shift
+      ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: $0 [--ae-path <path>] [--dry-run]" >&2
+      echo "Usage: $0 [--ae-path <path>] [--dry-run] [--on-demand]" >&2
+      echo "--on-demand installs the timer-free CEP companion instead of the Startup loader." >&2
       echo "If --ae-path is omitted, installs to all detected After Effects versions." >&2
       exit 1
       ;;
@@ -62,6 +68,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOURCE_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-auto.jsx"
 SOURCE_STARTUP_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-startup.jsx"
 SOURCE_SHUTDOWN_SCRIPT="$REPO_ROOT/src/scripts/mcp-bridge-shutdown.jsx"
+SOURCE_ONDEMAND_EXTENSION="$REPO_ROOT/src/aftereffects/cep/mcp-bridge-ae-ondemand"
 CODEX_CONFIG_INSTALLER="$SCRIPT_DIR/install-codex-mcp-config.sh"
 
 if [[ ! -f "$SOURCE_SCRIPT" ]]; then
@@ -74,6 +81,19 @@ if [[ ! -f "$SOURCE_STARTUP_SCRIPT" ]]; then
 fi
 if [[ ! -f "$SOURCE_SHUTDOWN_SCRIPT" ]]; then
   echo "Bridge shutdown script not found: $SOURCE_SHUTDOWN_SCRIPT" >&2
+  exit 1
+fi
+
+if [[ -n "${ADOBE_MCP_CEP_ROOT:-}" ]]; then
+  ON_DEMAND_CEP_ROOT="$ADOBE_MCP_CEP_ROOT"
+elif [[ "$(id -u)" -eq 0 ]]; then
+  ON_DEMAND_CEP_ROOT="/Library/Application Support/Adobe/CEP/extensions"
+else
+  ON_DEMAND_CEP_ROOT="$HOME/Library/Application Support/Adobe/CEP/extensions"
+fi
+
+if [[ "$ON_DEMAND" == "true" && ! -d "$SOURCE_ONDEMAND_EXTENSION" ]]; then
+  echo "On-demand CEP extension not found: $SOURCE_ONDEMAND_EXTENSION" >&2
   exit 1
 fi
 
@@ -119,9 +139,16 @@ else
   echo "Destinations:"
   for ae in "${AE_PATHS[@]}"; do
     echo "  - $ae/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx"
-    echo "  - $ae/Scripts/Startup/mcp-bridge-startup.jsx"
+    if [[ "$ON_DEMAND" == "true" ]]; then
+      echo "  - (on-demand) Startup loader skipped; any existing one moves to $ae/Scripts/Startup_backup/"
+    else
+      echo "  - $ae/Scripts/Startup/mcp-bridge-startup.jsx"
+    fi
     echo "  - $ae/Scripts/Shutdown/mcp-bridge-shutdown.jsx"
   done
+  if [[ "$ON_DEMAND" == "true" ]]; then
+    echo "  - $ON_DEMAND_CEP_ROOT/mcp-bridge-ae-ondemand (CEP companion; enables CEP PlayerDebugMode)"
+  fi
 fi
 
 if [[ "$DRY_RUN" == "true" ]]; then
@@ -148,7 +175,14 @@ if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
       mkdir -p "$STARTUP_DIR"
       mkdir -p "$SHUTDOWN_DIR"
       cp "$SOURCE_SCRIPT" "$DEST_FILE"
-      cp "$SOURCE_STARTUP_SCRIPT" "$STARTUP_FILE"
+      if [[ "$ON_DEMAND" == "true" ]]; then
+        if [[ -f "$STARTUP_FILE" ]]; then
+          mkdir -p "$ae/Scripts/Startup_backup"
+          mv "$STARTUP_FILE" "$ae/Scripts/Startup_backup/mcp-bridge-startup.jsx"
+        fi
+      else
+        cp "$SOURCE_STARTUP_SCRIPT" "$STARTUP_FILE"
+      fi
       cp "$SOURCE_SHUTDOWN_SCRIPT" "$SHUTDOWN_FILE"
     else
       echo "Destination may require sudo. Installing with sudo for: $ae"
@@ -156,10 +190,32 @@ if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
       sudo mkdir -p "$STARTUP_DIR"
       sudo mkdir -p "$SHUTDOWN_DIR"
       sudo cp "$SOURCE_SCRIPT" "$DEST_FILE"
-      sudo cp "$SOURCE_STARTUP_SCRIPT" "$STARTUP_FILE"
+      if [[ "$ON_DEMAND" == "true" ]]; then
+        if [[ -f "$STARTUP_FILE" ]]; then
+          sudo mkdir -p "$ae/Scripts/Startup_backup"
+          sudo mv "$STARTUP_FILE" "$ae/Scripts/Startup_backup/mcp-bridge-startup.jsx"
+        fi
+      else
+        sudo cp "$SOURCE_STARTUP_SCRIPT" "$STARTUP_FILE"
+      fi
       sudo cp "$SOURCE_SHUTDOWN_SCRIPT" "$SHUTDOWN_FILE"
     fi
   done
+fi
+
+if [[ "$AE_PATH_COUNT" -gt 0 && "$ON_DEMAND" == "true" ]]; then
+  ON_DEMAND_DEST="$ON_DEMAND_CEP_ROOT/mcp-bridge-ae-ondemand"
+  mkdir -p "$ON_DEMAND_CEP_ROOT"
+  rm -rf "$ON_DEMAND_DEST"
+  cp -R "$SOURCE_ONDEMAND_EXTENSION" "$ON_DEMAND_DEST"
+  # Unsigned CEP extensions only load with PlayerDebugMode enabled (CSXS 9-12).
+  if [[ -z "${ADOBE_MCP_SKIP_CSXS_DEBUG:-}" ]]; then
+    for csxs in 9 10 11 12; do
+      defaults write "com.adobe.CSXS.$csxs" PlayerDebugMode 1
+    done
+  fi
+  echo
+  echo "On-demand CEP companion installed: $ON_DEMAND_DEST"
 fi
 
 if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
@@ -167,7 +223,9 @@ if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
   echo "Bridge script installed to $AE_PATH_COUNT location(s)."
   for ae in "${AE_PATHS[@]}"; do
     echo "  - $ae/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx"
-    echo "  - $ae/Scripts/Startup/mcp-bridge-startup.jsx"
+    if [[ "$ON_DEMAND" != "true" ]]; then
+      echo "  - $ae/Scripts/Startup/mcp-bridge-startup.jsx"
+    fi
     echo "  - $ae/Scripts/Shutdown/mcp-bridge-shutdown.jsx"
   done
   echo "Next steps:"
@@ -175,7 +233,11 @@ if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
   echo "2. After Effects > Settings > Scripting & Expressions"
   echo "3. Enable \"Allow Scripts to Write Files and Access Network\""
   echo "4. Restart After Effects"
-  echo "5. The MCP bridge starts headlessly; no panel or Auto-run checkbox is required"
+  if [[ "$ON_DEMAND" == "true" ]]; then
+    echo "5. The on-demand bridge starts about 8 seconds after launch, runs no host timers, and needs no panel"
+  else
+    echo "5. The MCP bridge starts headlessly; no panel or Auto-run checkbox is required"
+  fi
 fi
 
 PREMIERE_SOURCE="$REPO_ROOT/src/premiere/cep/mcp-bridge-premiere"

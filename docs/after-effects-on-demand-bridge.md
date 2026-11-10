@@ -48,9 +48,34 @@ install and verification steps.
 - Write with `undoGroup: true`: one command, one Undo step restores the project.
 - Custom cursors hold indefinitely.
 
+## Install
+
+macOS: `scripts/install-bridge.sh --on-demand` installs `mcp-bridge-auto.jsx`, the CEP
+companion and the shutdown script, enables CEP `PlayerDebugMode` (CSXS 9 to 12) and moves
+any existing `Scripts/Startup/mcp-bridge-startup.jsx` to `Scripts/Startup_backup/`
+(otherwise the extension reports `timer-runtime-already-loaded`).
+
+Windows (manual): copy `src/aftereffects/cep/mcp-bridge-ae-ondemand` to
+`%APPDATA%\Adobe\CEP\extensions\`, set `HKCU\Software\Adobe\CSXS.<9..12>\PlayerDebugMode`
+to `1` (string), and remove the Startup loader.
+
+## Startup behaviour
+
+The extension waits 8 seconds after After Effects launches before its first host call and
+retries transient bootstrap failures (up to 6 times, 5 seconds apart). This keeps it out of
+the way of the welcome screen and plug-in initialisation. The bridge is therefore not
+available for the first few seconds after launch.
+
+## Verified (macOS, AE 26.5x89)
+
+- Read-only and write commands, one command tick per command, no heartbeat or watchdog ticks.
+- Long-running script (a 15 s blocking `$.sleep`): completed successfully.
+- Render queue (`renderQueue.render()` of a small comp, run inside a command): finished with
+  status DONE and wrote its output file.
+
 ## Not covered yet
 
-- Windows (host-side path discovery uses `Folder.appPackage` and its parent; unverified
-  there).
-- Render-queue and long-running scripts in on-demand mode.
-- Installer support (`scripts/install-bridge.*` still installs the Startup loader).
+- Windows (host-side path discovery uses `Folder.appPackage` and its parent; the manual
+  install steps above are unverified; `install-bridge.ps1` has no `-OnDemand` switch yet).
+- Behaviour while After Effects is blocked on a modal dialog (the Node-side heartbeat keeps
+  the instance looking alive).

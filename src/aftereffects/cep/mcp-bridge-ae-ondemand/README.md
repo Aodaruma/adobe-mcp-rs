@@ -22,6 +22,8 @@ Adobe's own). This extension removes that idle work:
 
 ## Install
 
+On macOS run `scripts/install-bridge.sh --on-demand` to do all of this automatically. Manually:
+
 1. Copy this folder into the CEP extensions directory
    (`~/Library/Application Support/Adobe/CEP/extensions/` on macOS,
    `%APPDATA%\Adobe\CEP\extensions\` on Windows).
