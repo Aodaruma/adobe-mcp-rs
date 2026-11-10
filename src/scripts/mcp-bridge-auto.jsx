@@ -23,6 +23,11 @@ var pendingResultReceipt = null;
 var fxDialogsSuppressed = false;
 var aeMcpBootstrapConfig = $.global.__adobeMcpBridgeBootstrapConfig || {};
 var aeMcpHeadless = aeMcpBootstrapConfig.headless === true;
+// On-demand mode (opt-in): no app.scheduleTask timers. A companion CEP extension
+// (src/aftereffects/cep/mcp-bridge-ae-ondemand) watches the command file from
+// Node and calls __adobeMcpBridgeCommandTick once per command, so After Effects
+// is not polled while idle. Idle scheduled tasks reset the macOS cursor.
+var aeMcpOnDemand = aeMcpBootstrapConfig.onDemand === true;
 var aeMcpLifecycleMode = aeMcpHeadless ? "startup-headless" : "scriptui-panel";
 var aeMcpPreviousInstanceId = "";
 var aeMcpPreviousRuntime = null;
@@ -2735,6 +2740,9 @@ var bridgeInstanceId = aeMcpPreviousInstanceId;
 var currentRequestId = "";
 var currentCommandName = "";
 var schedulerMode = "one-shot-with-watchdog";
+if (aeMcpOnDemand) {
+    schedulerMode = "on-demand";
+}
 var lastHeartbeatWriteAtMs = 0;
 var lastHeartbeatWriteAt = "";
 var lastCommandPollAtMs = 0;
@@ -4109,6 +4117,10 @@ function scheduleNextCommandCheck() {
         setCommandCheckerTaskId(0);
         return 0;
     }
+    if (aeMcpOnDemand) {
+        setCommandCheckerTaskId(0);
+        return 0;
+    }
     var taskId = app.scheduleTask(
         "$.global.__adobeMcpBridgeCommandTick('" + bridgeRuntimeId + "',function(args,mcp,code){return eval(code);})",
         checkInterval,
@@ -4123,6 +4135,10 @@ function scheduleNextCommandCheck() {
 
 function scheduleNextHeartbeat() {
     if (!bridgeRuntimeRunning) {
+        setHeartbeatTaskId(0);
+        return 0;
+    }
+    if (aeMcpOnDemand) {
         setHeartbeatTaskId(0);
         return 0;
     }
@@ -4194,6 +4210,9 @@ function getHeartbeatAgeMs() {
 }
 
 function hasScheduledBridgeProgress() {
+    if (aeMcpOnDemand) {
+        return bridgeRuntimeRunning;
+    }
     // Initial/manual writes do not prove that AE dispatched scheduled code.
     // These counters belong to the current generation, not the AE process.
     return bridgeRuntimeRunning && commandTickSequence > 0 &&
@@ -4224,6 +4243,13 @@ function getBridgeRuntimeHealth() {
         lastHeartbeatTickCompletedAtMs, bridgeStartedAtMs
     ) - heartbeatTickBlockedMs);
     var heartbeatTickFresh = heartbeatTickAgeMs <= heartbeatStaleAfterMs;
+    if (aeMcpOnDemand) {
+        // No timers exist in on-demand mode; the CEP companion supplies liveness.
+        tasksScheduled = true;
+        commandPollFresh = true;
+        heartbeatTickFresh = true;
+        heartbeatFresh = true;
+    }
     var schedulerHealthy =
         bridgeRuntimeRunning &&
         callbacksRegistered &&
@@ -4470,6 +4496,14 @@ function registerScheduledBridgeFunctions() {
     $.global.aeMcpHeartbeatTick = function () { return null; };
 }
 
+function scheduleWatchdogTask() {
+    return app.scheduleTask(
+        "$.global.__adobeMcpBridgeWatchdogTick('" + bridgeRuntimeId + "')",
+        heartbeatInterval,
+        true
+    );
+}
+
 function startBridgeRuntime() {
     if (bridgeRuntime && $.global.__adobeMcpBridgeRuntime !== bridgeRuntime) return getBridgeRuntimeState();
     if (deferRuntimeMutation()) return getBridgeRuntimeState();
@@ -4519,12 +4553,10 @@ function startBridgeRuntime() {
     // Separate repeating task survives a lost one-shot re-arm. It still uses
     // AE's scheduler, so it cannot run while AE blocks all scheduled scripts.
     // Arm it first so a partial failure starting either one-shot is recoverable.
-    watchdogTaskId = app.scheduleTask(
-        "$.global.__adobeMcpBridgeWatchdogTick('" + bridgeRuntimeId + "')",
-        heartbeatInterval,
-        true
-    );
-    if (!watchdogTaskId) throw new Error("After Effects did not return a watchdog task ID.");
+    if (!aeMcpOnDemand) {
+        watchdogTaskId = scheduleWatchdogTask();
+        if (!watchdogTaskId) throw new Error("After Effects did not return a watchdog task ID.");
+    }
     startHeartbeatTask();
     startCommandChecker();
     return getBridgeRuntimeState();
@@ -4597,6 +4629,9 @@ function ensureBridgeRuntimeHealthy(options) {
 }
 
 function observeSchedulerResume(nowMs) {
+    if (aeMcpOnDemand) {
+        return;
+    }
     if (!bridgeRuntimeRunning) return;
     var previousMs = Math.max(lastRecoveryObservationAtMs, lastWatchdogTickAtMs, bridgeStartedAtMs);
     if (nowMs - previousMs > heartbeatStaleAfterMs) {
