@@ -234,7 +234,7 @@ if [[ "$AE_PATH_COUNT" -gt 0 ]]; then
   echo "3. Enable \"Allow Scripts to Write Files and Access Network\""
   echo "4. Restart After Effects"
   if [[ "$ON_DEMAND" == "true" ]]; then
-    echo "5. The on-demand bridge starts about 8 seconds after launch, runs no host timers, and needs no panel"
+    echo "5. The on-demand bridge starts shortly after launch, runs no host timers, and needs no panel"
   else
     echo "5. The MCP bridge starts headlessly; no panel or Auto-run checkbox is required"
   fi

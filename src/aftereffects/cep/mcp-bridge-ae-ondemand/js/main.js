@@ -12,7 +12,7 @@
     var MAX_RETRIES = 2;
     // Stay out of After Effects' way while it is still starting (welcome screen,
     // plug-in and panel initialisation). Nothing needs the bridge this early.
-    var STARTUP_DELAY_MS = 8000;
+    var STARTUP_DELAY_MS = 2000;
     var BOOTSTRAP_RETRY_MS = 5000;
     var BOOTSTRAP_MAX_ATTEMPTS = 6;
 
@@ -22,7 +22,13 @@
     var watcher = null;
 
     function logFile() {
-        return path.join(state.bridgeRoot || os.tmpdir(), "cep-on-demand.log");
+        var root = state.bridgeRoot;
+        if (!root) {
+            // Before bootstrap the host has not told us the bridge folder yet.
+            var guess = path.join(os.homedir(), "Documents", "ae-mcp-bridge");
+            root = fs.existsSync(guess) ? guess : os.tmpdir();
+        }
+        return path.join(root, "cep-on-demand.log");
     }
 
     function log(message) {
@@ -128,8 +134,23 @@
             result.indexOf("error|runtime-api-missing") === 0;
     }
 
+    // Diagnostics only: how long after launch the panel loads and the bridge comes up.
+    var loadedAt = Date.now();
+
+    function hostLaunchTime() {
+        try {
+            if (process.platform !== "darwin") { return ""; }
+            var out = require("child_process").execSync(
+                "ps -axo lstart=,command= | grep 'MacOS/After Effects' | grep -v grep | head -1",
+                { encoding: "utf8", timeout: 2000 });
+            var started = new Date(out.substring(0, 24).trim()).getTime();
+            return isNaN(started) ? "" : String(Math.round((Date.now() - started) / 1000));
+        } catch (e) { return ""; }
+    }
+
     function start(attempt) {
         bootstrap(function (ok, result) {
+            log("bootstrap attempt " + attempt + (ok ? " ok" : " failed") + " " + (Date.now() - loadedAt) + " ms after panel load");
             if (!ok) {
                 if (!isPermanentFailure(result) && attempt < BOOTSTRAP_MAX_ATTEMPTS) {
                     setTimeout(function () { start(attempt + 1); }, BOOTSTRAP_RETRY_MS);
@@ -144,7 +165,7 @@
     }
 
     window.onerror = function (message, source, line) { log("uncaught: " + message + " @" + line); };
-    log("panel loaded");
+    log("panel loaded; ae_uptime_s=" + hostLaunchTime());
     setTimeout(function () {
         try { start(1); } catch (e) { log("start failed: " + e); }
     }, STARTUP_DELAY_MS);

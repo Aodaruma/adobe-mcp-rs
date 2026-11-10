@@ -61,10 +61,10 @@ to `1` (string), and remove the Startup loader.
 
 ## Startup behaviour
 
-The extension waits 8 seconds after After Effects launches before its first host call and
+The extension waits 2 seconds after the extension loads before its first host call and
 retries transient bootstrap failures (up to 6 times, 5 seconds apart). This keeps it out of
-the way of the welcome screen and plug-in initialisation. The bridge is therefore not
-available for the first few seconds after launch.
+the way of the welcome screen and plug-in initialisation. The extension only loads once After Effects has finished initialising (the
+`ApplicationInitialized` event), so this is a small extra buffer, not the main gate.
 
 ## Verified (macOS, AE 26.5x89)
 
