@@ -25,6 +25,7 @@
   var networkTransport = null;
   var currentRequestId = null;
   var atomicWriteCounter = 0;
+  var fileWriteTail = Promise.resolve();
   var state = {
     autoRun: true,
     lastStatus: "idle",
@@ -171,7 +172,15 @@
     return fs.readFileSync(path, { encoding: "utf-8" });
   }
 
-  async function writeTextFile(path, text) {
+  function writeTextFile(path, text) {
+    var write = fileWriteTail.then(function () {
+      return performAtomicWrite(path, text);
+    });
+    fileWriteTail = write.catch(function () {});
+    return write;
+  }
+
+  async function performAtomicWrite(path, text) {
     if (!fs) {
       throw new Error("UXP fs module is not available.");
     }
@@ -181,7 +190,7 @@
     var prefix = "." + fileName + ".tmp-";
     var now = Date.now();
     try {
-      var entries = fs.readdirSync(parent);
+      var entries = await fs.readdir(parent);
       for (var i = 0; i < entries.length; i++) {
         if (entries[i].indexOf(prefix) !== 0) {
           continue;
@@ -206,16 +215,23 @@
       prefix + pid + "-" + now + "-" + atomicWriteCounter + "-" + Math.random().toString(36).slice(2, 10)
     );
     try {
-      // UXP supports path-based sync writes, but rename/unlink are asynchronous.
-      fs.writeFileSync(tempPath, text, { encoding: "utf-8", flag: "wx" });
-      for (var attempt = 0; ; attempt++) {
+      await fs.writeFile(tempPath, text, { encoding: "utf-8", flag: "wx" });
+
+      var lastError = null;
+      for (var attempt = 0; attempt < 5; attempt++) {
         try {
           await fs.rename(tempPath, path);
+          lastError = null;
           break;
         } catch (renameErr) {
-          if (attempt >= 4) { throw renameErr; }
-          await new Promise(function (resolve) { window.setTimeout(resolve, 10); });
+          lastError = renameErr;
+          if (attempt < 4) {
+            await new Promise(function (resolve) { window.setTimeout(resolve, 10); });
+          }
         }
+      }
+      if (lastError) {
+        throw lastError;
       }
     } catch (err) {
       try { await fs.unlink(tempPath); } catch (_removeErr) {}
@@ -562,12 +578,15 @@
     return resultObj;
   }
 
-  async function writeResult(context, resultObj) {
+  async function writeResult(context, resultObj, finalStatus) {
     var paths = getBridgePaths();
-    await writeJsonFile(context.resultFile, resultObj);
     if (context.resultFile !== paths.resultFile) {
       await writeJsonFile(paths.resultFile, resultObj);
     }
+    await updateCommandStatus(context.commandFile, context.payload, finalStatus);
+    // Publishing this result releases the Rust-side queue. Do not write the
+    // old command afterwards: a caller may already have submitted its successor.
+    await writeJsonFile(context.resultFile, resultObj);
   }
 
   async function executePendingCommand(context) {
@@ -599,10 +618,7 @@
     }
 
     var finalStatus = resultObj.status === "error" ? "error" : "completed";
-    // Publish the final command state before the result; the broker may dispatch
-    // the next command as soon as it sees that result.
-    await updateCommandStatus(context.commandFile, payload, finalStatus);
-    await writeResult(context, resultObj);
+    await writeResult(context, resultObj, finalStatus);
     currentRequestId = null;
     setState({
       lastStatus: finalStatus,

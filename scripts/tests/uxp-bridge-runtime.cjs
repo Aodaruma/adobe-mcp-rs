@@ -37,6 +37,7 @@ function loadBridge(host, prefix, network = false) {
       dirs.add(p);
     },
     readdirSync(p) { return [...files.keys()].filter(f => path.posix.dirname(f) === p).map(f => path.posix.basename(f)); },
+    async readdir(p) { return this.readdirSync(p); },
     readFileSync(p) { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
     writeFileSync(p, text, options) {
       assert.equal(typeof p, 'string', 'UXP writeFileSync takes a path');
@@ -44,6 +45,7 @@ function loadBridge(host, prefix, network = false) {
       if (options.flag === 'wx' && files.has(p)) throw new Error('EEXIST');
       files.set(p, text);
     },
+    async writeFile(p, text, options) { this.writeFileSync(p, text, options); },
     async rename(from, to) {
       await Promise.resolve();
       if (failRename) throw new Error('EACCES simulated rename failure');
