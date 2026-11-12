@@ -316,6 +316,9 @@ pub struct AppConfig {
     pub result_retention_max_seconds: u64,
     #[serde(default = "default_instance_heartbeat_stale_ms")]
     pub instance_heartbeat_stale_ms: u64,
+    /// Opt-in until the native recovery monitor passes interactive AE 2025 acceptance.
+    #[serde(default)]
+    pub ae_native_recovery_enabled: bool,
     #[serde(default = "default_daemon_addr")]
     pub daemon_addr: String,
     #[serde(default = "default_log_level")]
@@ -338,6 +341,7 @@ impl Default for AppConfig {
             result_retention_seconds: default_result_retention_seconds(),
             result_retention_max_seconds: default_result_retention_max_seconds(),
             instance_heartbeat_stale_ms: default_instance_heartbeat_stale_ms(),
+            ae_native_recovery_enabled: false,
             daemon_addr: default_daemon_addr(),
             log_level: default_log_level(),
             script_files: ScriptFilePolicyConfig::default(),
@@ -1403,6 +1407,10 @@ result_file = "bridge/result.json"
         .unwrap();
         let cfg = AppConfig::load_for_host(Some(&path), PREMIERE_PRO_HOST).unwrap();
         assert_eq!(cfg.daemon_addr, PREMIERE_PRO_HOST.daemon_addr());
+        assert!(
+            !cfg.ae_native_recovery_enabled,
+            "existing configs never enable unvalidated native recovery"
+        );
         assert!(!cfg.script_files.allowed_roots.is_empty());
 
         let raw = fs::read_to_string(&path).unwrap();
@@ -1410,6 +1418,16 @@ result_file = "bridge/result.json"
         let overridden = AppConfig::load_for_host(Some(&path), PREMIERE_PRO_HOST).unwrap();
         let _ = fs::remove_file(path);
         assert_eq!(overridden.daemon_addr, "127.0.0.1:49000");
+    }
+
+    #[test]
+    fn ae_native_recovery_requires_explicit_opt_in() {
+        let cfg = AppConfig::default();
+        assert!(!cfg.ae_native_recovery_enabled);
+        let mut value = serde_json::to_value(cfg).unwrap();
+        value["ae_native_recovery_enabled"] = json!(true);
+        let enabled: AppConfig = serde_json::from_value(value).unwrap();
+        assert!(enabled.ae_native_recovery_enabled);
     }
 
     #[test]

@@ -78,6 +78,7 @@ impl ProtocolFixture {
             // ordinary scenarios tolerant of that scheduler delay; tests that
             // exercise stale-heartbeat behavior opt into a shorter window.
             instance_heartbeat_stale_ms: 10_000,
+            ae_native_recovery_enabled: false,
             daemon_addr: "127.0.0.1:0".to_string(),
             log_level: "error".to_string(),
             script_files: Default::default(),

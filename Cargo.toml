@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/adobe-mcp-app",
     "crates/ae-mcp",
     "crates/ai-core",
     "crates/ai-mcp",

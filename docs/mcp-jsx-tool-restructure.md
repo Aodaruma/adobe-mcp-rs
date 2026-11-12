@@ -1,5 +1,7 @@
 # MCP Tool再構成案: JSX実行中心設計
 
+> これは2026-05時点の提案です。その後、共通script contractとcanonical Toolが実装されています。現行契約は[script-contract.md](script-contract.md)、2026-10の後続計画は[公開Toolの整理案](public-tool-surface-plan.md)と[native移行案](native-execution-migration.md)を参照してください。
+
 - 作成日: 2026-05-11
 - 対象: `ae-mcp` / After Effects連携
 - 目的: LLMが扱いやすいようにMCP公開面を絞り、After Effects操作はJSX実行に寄せる

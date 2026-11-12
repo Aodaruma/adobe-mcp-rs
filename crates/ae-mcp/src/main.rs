@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use mcp_core::{AppConfig, AFTER_EFFECTS_HOST};
+use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::time::Duration;
 use tracing::info;
 
 mod mcp_stdio;
@@ -46,7 +46,7 @@ enum Commands {
         #[command(subcommand)]
         command: AutostartCommands,
     },
-    /// Stage 2: direct bridge operations for validation.
+    /// Bridge operations through the host daemon broker.
     Bridge {
         #[command(subcommand)]
         command: BridgeCommands,
@@ -57,15 +57,24 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum BridgeCommands {
-    /// Queue a script command for After Effects.
+    /// Run an allowlisted command through the daemon and print its retained request.
     RunScript {
         #[arg(long)]
         script: String,
         #[arg(long, default_value = "{}")]
         parameters: String,
+        #[arg(long)]
+        target_instance_id: Option<String>,
+        #[arg(long)]
+        target_version: Option<String>,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout_ms: Option<u64>,
     },
-    /// Read the latest result payload.
+    /// Read a retained request by ID, or the latest retained request.
     GetResults {
+        #[arg(long)]
+        request_id: Option<String>,
+        /// Deprecated compatibility option; retained requests do not use file-age warnings.
         #[arg(long, default_value_t = 30)]
         stale_seconds: u64,
     },
@@ -222,9 +231,20 @@ fn run_autostart_command(
 }
 
 fn run_bridge_command(cfg: AppConfig, command: BridgeCommands) -> Result<()> {
-    let bridge = bridge_core::BridgeClient::new(cfg)?;
+    let value = bridge_command_result(&cfg, command)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+fn bridge_command_result(cfg: &AppConfig, command: BridgeCommands) -> Result<Value> {
     match command {
-        BridgeCommands::RunScript { script, parameters } => {
+        BridgeCommands::RunScript {
+            script,
+            parameters,
+            target_instance_id,
+            target_version,
+            timeout_ms,
+        } => {
             if !mcp_core::is_allowed_script(&script) {
                 anyhow::bail!(
                     "script '{}' is not allowed. Allowed scripts: {}",
@@ -232,20 +252,35 @@ fn run_bridge_command(cfg: AppConfig, command: BridgeCommands) -> Result<()> {
                     mcp_core::ALLOWED_SCRIPTS.join(", ")
                 );
             }
-            let value: serde_json::Value = serde_json::from_str(&parameters)?;
-            bridge.clear_results_file()?;
-            bridge.write_command_file(&script, value)?;
-            println!(
-                "queued command='{}' and cleared previous result. open AE MCP Bridge panel and execute.",
-                script
-            );
-            Ok(())
+            let value: Value = serde_json::from_str(&parameters)?;
+            let timeout_ms = timeout_ms.unwrap_or(cfg.result_timeout_ms);
+            daemon_core::call_daemon(
+                cfg,
+                json!({
+                    "op": "runCommand",
+                    "command": script,
+                    "args": value,
+                    "targetInstanceId": target_instance_id,
+                    "targetVersion": target_version,
+                    "timeoutMs": timeout_ms,
+                    "pollIntervalMs": cfg.poll_interval_ms,
+                    "retentionSeconds": cfg.result_retention_seconds,
+                    "globalExclusive": false
+                }),
+                timeout_ms,
+            )
         }
-        BridgeCommands::GetResults { stale_seconds } => {
-            let raw = bridge.read_results_with_stale_warning(Duration::from_secs(stale_seconds))?;
-            println!("{raw}");
-            Ok(())
-        }
+        BridgeCommands::GetResults {
+            request_id,
+            stale_seconds: _,
+        } => daemon_core::call_daemon(
+            cfg,
+            match request_id {
+                Some(request_id) => json!({"op":"getResult", "requestId":request_id}),
+                None => json!({"op":"latestResult"}),
+            },
+            cfg.result_timeout_ms,
+        ),
     }
 }
 
@@ -253,6 +288,224 @@ fn run_bridge_command(cfg: AppConfig, command: BridgeCommands) -> Result<()> {
 mod cli_tests {
     use super::*;
     use clap::CommandFactory;
+
+    fn parse_bridge_command(arguments: &[&str]) -> BridgeCommands {
+        let cli = Cli::try_parse_from(arguments).expect("compatible CLI arguments");
+        match cli.command {
+            Commands::Bridge { command } => command,
+            _ => panic!("expected bridge command"),
+        }
+    }
+
+    fn isolated_config(label: &str) -> AppConfig {
+        let root = std::env::temp_dir().join(format!(
+            "ae-mcp-cli-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let mut cfg = AppConfig::default();
+        cfg.bridge.root_dir = root.clone();
+        cfg.bridge.command_file = root.join("ae_command.json");
+        cfg.bridge.result_file = root.join("ae_mcp_result.json");
+        bridge_core::ensure_bridge_dir(&cfg).unwrap();
+        cfg
+    }
+
+    #[test]
+    fn bridge_cli_uses_broker_and_tracks_a_timed_out_request_without_resubmission() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        let mut cfg = isolated_config("broker");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        cfg.daemon_addr = listener.local_addr().unwrap().to_string();
+        listener.set_nonblocking(true).unwrap();
+        std::fs::write(&cfg.bridge.command_file, "existing command").unwrap();
+        std::fs::write(&cfg.bridge.result_file, "existing result").unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut requests = Vec::new();
+            while requests.len() < 4 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing broker request");
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                };
+                // Match the production broker regardless of inherited socket flags.
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(&mut stream).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let request_id = request["requestId"]
+                    .as_str()
+                    .unwrap_or("req-cli-test")
+                    .to_string();
+                requests.push(request);
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({
+                        "ok":true,
+                        "value": {
+                            "requestId":request_id,
+                            "state":if requests.len() == 1 { "timeout" } else { "completed" }
+                        }
+                    })
+                )
+                .unwrap();
+            }
+            requests
+        });
+
+        let legacy = bridge_command_result(
+            &cfg,
+            parse_bridge_command(&[
+                "ae-mcp",
+                "bridge",
+                "run-script",
+                "--script",
+                "listCompositions",
+                "--parameters",
+                "{\"marker\":42}",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(legacy["state"], "timeout");
+        assert_eq!(legacy["requestId"], "req-cli-test");
+        let recovered = bridge_command_result(
+            &cfg,
+            parse_bridge_command(&[
+                "ae-mcp",
+                "bridge",
+                "get-results",
+                "--request-id",
+                "req-cli-test",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(recovered["state"], "completed");
+        assert_eq!(recovered["requestId"], legacy["requestId"]);
+        bridge_command_result(
+            &cfg,
+            parse_bridge_command(&[
+                "ae-mcp",
+                "bridge",
+                "run-script",
+                "--script",
+                "listCompositions",
+                "--target-instance-id",
+                "ae-test",
+                "--target-version",
+                "25.6",
+                "--timeout-ms",
+                "123",
+            ]),
+        )
+        .unwrap();
+        bridge_command_result(
+            &cfg,
+            parse_bridge_command(&["ae-mcp", "bridge", "get-results", "--stale-seconds", "30"]),
+        )
+        .unwrap();
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests[0]["op"], "runCommand");
+        assert_eq!(requests[0]["command"], "listCompositions");
+        assert_eq!(requests[0]["args"], json!({"marker":42}));
+        assert_eq!(requests[0]["timeoutMs"], cfg.result_timeout_ms);
+        assert_eq!(
+            requests[0]["retentionSeconds"],
+            cfg.result_retention_seconds
+        );
+        assert_eq!(requests[0]["targetInstanceId"], Value::Null);
+        assert_eq!(
+            requests[1],
+            json!({"op":"getResult", "requestId":"req-cli-test"})
+        );
+        assert_eq!(requests[2]["op"], "runCommand");
+        assert_eq!(requests[2]["args"], json!({}));
+        assert_eq!(requests[2]["targetInstanceId"], "ae-test");
+        assert_eq!(requests[2]["targetVersion"], "25.6");
+        assert_eq!(requests[2]["timeoutMs"], 123);
+        assert_eq!(requests[3], json!({"op":"latestResult"}));
+        assert_eq!(
+            std::fs::read_to_string(&cfg.bridge.command_file).unwrap(),
+            "existing command"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&cfg.bridge.result_file).unwrap(),
+            "existing result"
+        );
+        std::fs::remove_dir_all(&cfg.bridge.root_dir).unwrap();
+    }
+
+    #[test]
+    fn bridge_cli_requires_a_daemon_and_never_falls_back_to_local_mailboxes() {
+        let mut cfg = isolated_config("offline");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        cfg.daemon_addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        std::fs::write(&cfg.bridge.command_file, "active request").unwrap();
+        std::fs::write(&cfg.bridge.result_file, "retained response").unwrap();
+        for command in [
+            parse_bridge_command(&[
+                "ae-mcp",
+                "bridge",
+                "run-script",
+                "--script",
+                "listCompositions",
+            ]),
+            parse_bridge_command(&["ae-mcp", "bridge", "get-results"]),
+        ] {
+            let error = bridge_command_result(&cfg, command)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("failed to connect"), "{error}");
+            assert!(error.contains("serve-daemon"), "{error}");
+        }
+        for parameters in ["not JSON", "{}"] {
+            let command = BridgeCommands::RunScript {
+                script: if parameters == "{}" {
+                    "notAllowlisted"
+                } else {
+                    "listCompositions"
+                }
+                .into(),
+                parameters: parameters.into(),
+                target_instance_id: None,
+                target_version: None,
+                timeout_ms: None,
+            };
+            assert!(bridge_command_result(&cfg, command).is_err());
+        }
+        assert!(Cli::try_parse_from([
+            "ae-mcp",
+            "bridge",
+            "run-script",
+            "--script",
+            "listCompositions",
+            "--timeout-ms",
+            "0",
+        ])
+        .is_err());
+        assert_eq!(
+            std::fs::read_to_string(&cfg.bridge.command_file).unwrap(),
+            "active request"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&cfg.bridge.result_file).unwrap(),
+            "retained response"
+        );
+        std::fs::remove_dir_all(&cfg.bridge.root_dir).unwrap();
+    }
 
     #[test]
     fn platform_management_commands_match_the_target_os() {
