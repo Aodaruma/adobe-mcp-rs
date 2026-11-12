@@ -22,3 +22,6 @@ and reload the plugin before sending commands. A dropped WebSocket never switche
 to files or automatically re-executes an uncertain command. Results are retained
 in UXP memory until the application acknowledges them; plugin/host termination
 before acknowledgement can lose that result. See `docs/desktop-app.md` for recovery.
+
+Bridge file writes are asynchronous. Raw UXP code must await
+`bridge.writeTextFile(...)` and `bridge.writeJsonFile(...)`.

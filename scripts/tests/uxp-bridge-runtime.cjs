@@ -44,6 +44,7 @@ function loadBridge(host, prefix, network = false) {
       if (options.flag === 'wx' && files.has(p)) throw new Error('EEXIST');
       files.set(p, text);
     },
+    async writeFile(p, text, options) { this.writeFileSync(p, text, options); },
     async rename(from, to) {
       await Promise.resolve();
       if (failRename) throw new Error('EACCES simulated rename failure');
