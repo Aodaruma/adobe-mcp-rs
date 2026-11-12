@@ -888,6 +888,11 @@ function aiAttachResultMetadata(resultString, command, requestId) {
             result: resultString
         };
     }
+    // Array properties are omitted by JSON.stringify; primitive values cannot
+    // carry protocol metadata. Preserve them inside the normal result envelope.
+    if (resultObj === null || typeof resultObj !== "object" || resultObj instanceof Array) {
+        resultObj = { status: "success", result: resultObj };
+    }
     resultObj._responseTimestamp = aiIsoDate(new Date());
     resultObj._commandExecuted = command;
     resultObj._requestId = requestId || null;

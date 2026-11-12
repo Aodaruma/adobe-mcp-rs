@@ -43,6 +43,23 @@ fn after_effects_startup_runtime_lifecycle() {
     );
 }
 
+#[test]
+fn illustrator_result_envelope_and_following_request() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/tests/illustrator-result-runtime.cjs");
+    let output = std::process::Command::new("node")
+        .arg("--test")
+        .arg(script)
+        .output()
+        .expect("Node.js 20+ is required for the Illustrator bridge contract tests");
+    assert!(
+        output.status.success(),
+        "Illustrator bridge tests failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn protocol_test_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))

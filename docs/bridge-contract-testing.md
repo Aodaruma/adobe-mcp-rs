@@ -15,6 +15,7 @@ cargo test -p bridge-contract-tests
 
 - host-first / daemon-first の両方で heartbeat を発見できる
 - `requestId` 付き command と対応する result を取り違えない
+- Illustrator の JSX が配列や JSON の単一値を返しても、結果を識別して次の要求を処理できる
 - timeout 後の late result を retained registry から回収できる
 - 新しい daemon endpoint へ再接続しても retained result を回収できる
 - stale / malformed heartbeat を active instance に含めず、理由を返す
