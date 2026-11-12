@@ -1,6 +1,7 @@
 param(
     [string]$OutputDir = ".\dist\windows",
-    [switch]$RequireMsi
+    [switch]$RequireMsi,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,8 +72,10 @@ if (-not $output) {
 
 Push-Location $repoRoot
 try {
-    Write-Host "Building release binaries..."
-    Invoke-NativeChecked -FilePath "cargo" -ArgumentList @("build", "--release", "-p", "ae-mcp", "-p", "pr-mcp", "-p", "ps-mcp", "-p", "ai-mcp", "-p", "id-mcp")
+    if (-not $SkipBuild) {
+        Write-Host "Building release binaries..."
+        Invoke-NativeChecked -FilePath "cargo" -ArgumentList @("build", "--release", "--locked", "-p", "adobe-mcp-app", "-p", "ae-mcp", "-p", "pr-mcp", "-p", "ps-mcp", "-p", "ai-mcp", "-p", "id-mcp")
+    }
 
     $exePath = Join-Path $repoRoot "target\release\ae-mcp.exe"
     if (!(Test-Path $exePath)) {
@@ -137,9 +140,20 @@ try {
 
     $stageDir = Join-Path $output "stage"
     if (Test-Path -LiteralPath $stageDir) {
+        $resolvedStage = (Resolve-Path -LiteralPath $stageDir).Path
+        if (-not $resolvedStage.StartsWith(([string]$output).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            ((Get-Item -LiteralPath $stageDir).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe staging directory: $resolvedStage"
+        }
         Remove-Item -LiteralPath $stageDir -Recurse -Force
     }
     Ensure-Directory $stageDir
+    Copy-Item (Join-Path $repoRoot "target\release\adobe-mcp-app.exe") $stageDir -Force
+    Copy-Item (Join-Path $repoRoot "assets\icons\adobe-mcp.ico") $stageDir -Force
+    Copy-Item (Join-Path $repoRoot "scripts\install-desktop-integration.ps1") $stageDir -Force
+    Copy-Item (Join-Path $repoRoot "docs\windows-beta.md") (Join-Path $stageDir "README-beta.txt") -Force
+    Copy-Item (Join-Path $repoRoot "docs\windows-beta.md") (Join-Path $output "README-beta.txt") -Force
+    Copy-Item (Join-Path $repoRoot "LICENSE") $stageDir -Force
     Copy-Item $exePath (Join-Path $stageDir "ae-mcp.exe") -Force
     Copy-Item $prExePath (Join-Path $stageDir "pr-mcp.exe") -Force
     Copy-Item $psExePath (Join-Path $stageDir "ps-mcp.exe") -Force
@@ -163,6 +177,12 @@ try {
     Copy-Item $indesignBridgePath (Join-Path $stageDir "mcp-bridge-indesign.idjs") -Force
     Copy-Item $installerBridgeScriptPath (Join-Path $stageDir "install-bridge-installer.ps1") -Force
     Copy-Item $indesignInstallerScriptPath (Join-Path $stageDir "install-indesign-bridge.ps1") -Force
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    foreach ($hostName in @("photoshop", "premiere")) {
+        $ccxSource = Join-Path $stageDir "$hostName-uxp\mcp-bridge-$hostName"
+        [IO.Compression.ZipFile]::CreateFromDirectory($ccxSource, (Join-Path $stageDir "$hostName-mcp-bridge.ccx"))
+    }
 
     $zipPath = Join-Path $output "adobe-mcp-rs-windows-x86_64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
@@ -209,12 +229,14 @@ try {
     $escapedPremiereUxpReadme = (Join-Path $premiereUxpRoot "README.md").Replace("\", "\\")
     $escapedPremiereUxpCss = (Join-Path $premiereUxpRoot "css\styles.css").Replace("\", "\\")
     $escapedPremiereUxpJs = (Join-Path $premiereUxpRoot "js\main.js").Replace("\", "\\")
+    $escapedPremiereUxpWebSocket = (Join-Path $premiereUxpRoot "js\websocket.js").Replace("\", "\\")
     $photoshopUxpRoot = Join-Path $stageDir "photoshop-uxp\mcp-bridge-photoshop"
     $escapedPhotoshopUxpManifest = (Join-Path $photoshopUxpRoot "manifest.json").Replace("\", "\\")
     $escapedPhotoshopUxpIndex = (Join-Path $photoshopUxpRoot "index.html").Replace("\", "\\")
     $escapedPhotoshopUxpReadme = (Join-Path $photoshopUxpRoot "README.md").Replace("\", "\\")
     $escapedPhotoshopUxpCss = (Join-Path $photoshopUxpRoot "css\styles.css").Replace("\", "\\")
     $escapedPhotoshopUxpJs = (Join-Path $photoshopUxpRoot "js\main.js").Replace("\", "\\")
+    $escapedPhotoshopUxpWebSocket = (Join-Path $photoshopUxpRoot "js\websocket.js").Replace("\", "\\")
     $illustratorCepRoot = Join-Path $stageDir "illustrator-cep\mcp-bridge-illustrator"
     $escapedIllustratorManifest = (Join-Path $illustratorCepRoot "CSXS\manifest.xml").Replace("\", "\\")
     $escapedIllustratorIndex = (Join-Path $illustratorCepRoot "index.html").Replace("\", "\\")
@@ -225,17 +247,29 @@ try {
     @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <Package Name="Adobe MCP (Rust)"
+  <Package Name="Adobe MCP Beta"
            Manufacturer="adobe-mcp-rs contributors"
            Version="0.5.3.0"
            UpgradeCode="D7C1D860-4DA9-4E1E-B64A-8F64B7D9CC6E"
            Compressed="yes">
     <MediaTemplate EmbedCab="yes" />
-    <MajorUpgrade AllowDowngrades="yes" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer Adobe MCP version is already installed." />
+    <Icon Id="AdobeMcpIcon" SourceFile="$(Join-Path $stageDir 'adobe-mcp.ico')" />
+    <Property Id="ARPPRODUCTICON" Value="AdobeMcpIcon" />
     <WixVariable Id="WixUILicenseRtf" Value="$escapedLicenseRtf" />
-    <ui:WixUI Id="WixUI_FeatureTree" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="AfterEffectsMcp">
+        <Component Id="DesktopAppComponent" Guid="*">
+          <File Id="DesktopAppFile" Source="$(Join-Path $stageDir 'adobe-mcp-app.exe')" KeyPath="yes" />
+        </Component>
+        <Component Id="DesktopSetupComponent" Guid="E848670C-4802-4C7F-BE25-F25EA6697BFC">
+          <File Id="DesktopSetupFile" Source="$(Join-Path $stageDir 'install-desktop-integration.ps1')" KeyPath="yes" />
+          <File Source="$(Join-Path $stageDir 'README-beta.txt')" />
+          <File Source="$(Join-Path $stageDir 'LICENSE')" />
+          <File Source="$(Join-Path $stageDir 'photoshop-mcp-bridge.ccx')" />
+          <File Source="$(Join-Path $stageDir 'premiere-mcp-bridge.ccx')" />
+        </Component>
         <Component Id="AeMcpExeComponent" Guid="F94E8CF7-36DE-4E55-8FE5-C86069A6A4F9">
           <File Id="AeMcpExeFile" Source="$escapedExe" KeyPath="yes" />
         </Component>
@@ -306,6 +340,7 @@ try {
             <Directory Id="PremiereUxpJs" Name="js">
               <Component Id="PremiereUxpJsComponent" Guid="8C20F181-F4AC-45B9-A6E9-05ED4322A774">
                 <File Id="PremiereUxpJsFile" Source="$escapedPremiereUxpJs" KeyPath="yes" />
+                <File Id="PremiereUxpWebSocketFile" Source="$escapedPremiereUxpWebSocket" />
               </Component>
             </Directory>
             <Component Id="PremiereUxpManifestComponent" Guid="B8F3412B-91CE-47C6-AB6A-6329E6D89C87">
@@ -329,6 +364,7 @@ try {
             <Directory Id="PhotoshopUxpJs" Name="js">
               <Component Id="PhotoshopUxpJsComponent" Guid="4F96FD3D-E305-461B-8582-1CB5B00D42BA">
                 <File Id="PhotoshopUxpJsFile" Source="$escapedPhotoshopUxpJs" KeyPath="yes" />
+                <File Id="PhotoshopUxpWebSocketFile" Source="$escapedPhotoshopUxpWebSocket" />
               </Component>
             </Directory>
             <Component Id="PhotoshopUxpManifestComponent" Guid="4C00817C-CB15-4240-BA24-6E7983BB0370">
@@ -371,6 +407,16 @@ try {
         </Directory>
       </Directory>
     </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AdobeMcpMenuFolder" Name="Adobe MCP">
+        <Component Id="DesktopShortcuts" Guid="*">
+          <Shortcut Id="DesktopShortcut" Name="Adobe MCP" Target="[#DesktopAppFile]" WorkingDirectory="INSTALLFOLDER" Icon="AdobeMcpIcon" />
+          <Shortcut Id="DesktopSetupShortcut" Name="Adobe MCP - Repair setup" Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe" Arguments="-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-desktop-integration.ps1&quot; -ShowResult" WorkingDirectory="INSTALLFOLDER" Icon="AdobeMcpIcon" />
+          <RemoveFolder Id="RemoveAdobeMcpMenu" On="uninstall" />
+          <RegistryValue Root="HKLM" Key="Software\AdobeMcp" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
     <SetProperty Id="InstallMachineHostIntegration"
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -BridgeStartupScriptPath &quot;[INSTALLFOLDER]mcp-bridge-startup.jsx&quot; -BridgeShutdownScriptPath &quot;[INSTALLFOLDER]mcp-bridge-shutdown.jsx&quot; -InDesignBridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-indesign.idjs&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -IdMcpPath &quot;[INSTALLFOLDER]id-mcp.exe&quot; -NonInteractive -SkipUserInstall"
                  Before="InstallMachineHostIntegration"
@@ -382,7 +428,7 @@ try {
                   Impersonate="no"
                   Return="ignore" />
     <SetProperty Id="WixQuietExecCmdLine"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -BridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-auto.jsx&quot; -BridgeStartupScriptPath &quot;[INSTALLFOLDER]mcp-bridge-startup.jsx&quot; -BridgeShutdownScriptPath &quot;[INSTALLFOLDER]mcp-bridge-shutdown.jsx&quot; -InDesignBridgeScriptPath &quot;[INSTALLFOLDER]mcp-bridge-indesign.idjs&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -IdMcpPath &quot;[INSTALLFOLDER]id-mcp.exe&quot; -NonInteractive -SkipHostBridgeInstall"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-desktop-integration.ps1&quot; -InstallDir &quot;[INSTALLFOLDER].&quot; -ShowResult"
                  Before="InstallUserHostIntegration"
                  Sequence="execute" />
     <CustomAction Id="InstallUserHostIntegration"
@@ -391,7 +437,7 @@ try {
                   Execute="immediate"
                   Return="ignore" />
     <SetProperty Id="RemoveUserAutostart"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-bridge-installer.ps1&quot; -AeMcpPath &quot;[INSTALLFOLDER]ae-mcp.exe&quot; -PrMcpPath &quot;[INSTALLFOLDER]pr-mcp.exe&quot; -PsMcpPath &quot;[INSTALLFOLDER]ps-mcp.exe&quot; -AiMcpPath &quot;[INSTALLFOLDER]ai-mcp.exe&quot; -IdMcpPath &quot;[INSTALLFOLDER]id-mcp.exe&quot; -RemoveAutostart -NonInteractive"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]install-desktop-integration.ps1&quot; -InstallDir &quot;[INSTALLFOLDER].&quot; -Remove"
                  Before="RemoveUserAutostart"
                  Sequence="execute" />
     <CustomAction Id="RemoveUserAutostart"
@@ -405,6 +451,9 @@ try {
       <Custom Action="RemoveUserAutostart" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
     <Feature Id="MainFeature" Title="Adobe MCP Core" Description="Installs the MCP command-line binaries and installer helper." Level="1" Display="expand">
+      <ComponentRef Id="DesktopAppComponent" />
+      <ComponentRef Id="DesktopSetupComponent" />
+      <ComponentRef Id="DesktopShortcuts" />
       <ComponentRef Id="AeMcpExeComponent" />
       <ComponentRef Id="PrMcpExeComponent" />
       <ComponentRef Id="PsMcpExeComponent" />
@@ -458,20 +507,15 @@ try {
     }
     Invoke-NativeChecked -FilePath $wixCmd -ArgumentList @("extension", "add", "WixToolset.UI.wixext/5.0.2", "--global")
     Invoke-NativeChecked -FilePath $wixCmd -ArgumentList @("extension", "add", "WixToolset.Util.wixext/5.0.2", "--global")
-    Invoke-NativeChecked -FilePath $wixCmd -ArgumentList @("build", $wxsPath, "-arch", "x64", "-ext", "WixToolset.UI.wixext", "-ext", "WixToolset.Util.wixext", "-out", $msiPath)
+    Invoke-NativeChecked -FilePath $wixCmd -ArgumentList @("build", $wxsPath, "-arch", "x64", "-ext", "WixToolset.UI.wixext/5.0.2", "-ext", "WixToolset.Util.wixext/5.0.2", "-out", $msiPath)
     if (!(Test-Path $msiPath)) {
         throw "MSI generation failed. See WiX output above."
     }
     Write-Host "Created MSI: $msiPath"
 
-    $tmpDropDir = "D:\GoogleDrive\tmp"
-    if (Test-Path -LiteralPath $tmpDropDir) {
-        $tmpMsiPath = Join-Path $tmpDropDir "adobe-mcp-rs-windows-x86_64.msi"
-        Copy-Item -LiteralPath $msiPath -Destination $tmpMsiPath -Force
-        Write-Host "Copied MSI: $tmpMsiPath"
-    } else {
-        Write-Warning "MSI copy target not found: $tmpDropDir"
-    }
+    Get-FileHash -Algorithm SHA256 -LiteralPath $msiPath, $zipPath |
+        ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } |
+        Set-Content -LiteralPath (Join-Path $output "SHA256SUMS.txt") -Encoding ASCII
 }
 finally {
     Pop-Location

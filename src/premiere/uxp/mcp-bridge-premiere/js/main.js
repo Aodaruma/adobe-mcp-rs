@@ -18,6 +18,8 @@
   var pollInFlight = false;
   var pollTimer = null;
   var heartbeatTimer = null;
+  var bridgeGeneration = 0;
+  var networkTransport = null;
   var currentRequestId = null;
   var atomicWriteCounter = 0;
   var fileWriteTail = Promise.resolve();
@@ -164,7 +166,16 @@
     if (!fs || !path || pathExists(path)) {
       return;
     }
-    await fs.mkdir(path, { recursive: true });
+    var splitAt = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    if (splitAt > 0) {
+      await ensureDir(path.slice(0, splitAt));
+    }
+    try {
+      await fs.mkdir(path);
+    } catch (err) {
+      // Another lifecycle callback may have created the directory meanwhile.
+      if (!pathExists(path)) { throw err; }
+    }
   }
 
   async function ensureBridgeDirs() {
@@ -273,7 +284,7 @@
     }
   }
 
-  async function writeHeartbeat(status) {
+  async function heartbeatPayload(status) {
     var paths = getBridgePaths();
     var host = uxp && uxp.host ? uxp.host : {};
     var appVersion = host.version || "";
@@ -298,7 +309,46 @@
       updatedAt: nowIso(),
       heartbeatPath: paths.heartbeatFile
     };
-    await writeJsonFile(paths.heartbeatFile, payload);
+    return payload;
+  }
+
+  async function writeHeartbeat(status) {
+    await writeJsonFile(getBridgePaths().heartbeatFile, await heartbeatPayload(status));
+  }
+
+  function startNetworkTransport() {
+    var configPath = joinPath(getBridgePaths().root, "connection.json");
+    var config = null;
+    try { config = readJsonFile(configPath); } catch (_e) {}
+    // File transport is an explicit compatibility choice, never a disconnect fallback.
+    if (!networkTransport && config && config.transport === "file") { return false; }
+    if (!networkTransport) {
+      // HTML script tags resolve require() from the plugin root in UXP.
+      var createTransport = safeRequire("./js/websocket.js");
+      if (!createTransport) {
+        setState({ lastStatus: "error", lastError: "WebSocket transport module is missing." });
+        return true;
+      }
+      networkTransport = createTransport({
+        hostId: "premiere",
+        WebSocket: window.WebSocket,
+        config: function () { return readJsonFile(configPath); },
+        instance: function () { return heartbeatPayload("idle"); },
+        enabled: function () { return autoRun; },
+        execute: async function (command, args, id) {
+          currentRequestId = id;
+          try { return normalizeResult(command, id, await dispatchCommand(command, args)); }
+          finally { currentRequestId = null; }
+        },
+        status: function (status, message) {
+          setState({ lastStatus: status, lastMessage: message, lastError: null });
+        },
+        setInterval: function (fn, ms) { return window.setInterval(fn, ms); },
+        clearInterval: function (id) { window.clearInterval(id); }
+      });
+    }
+    networkTransport.start();
+    return true;
   }
 
   function updateUi() {
@@ -361,7 +411,7 @@
     return null;
   }
 
-  function updateCommandStatus(commandFile, payload, status) {
+  async function updateCommandStatus(commandFile, payload, status) {
     var next = {};
     for (var key in payload) {
       if (Object.prototype.hasOwnProperty.call(payload, key)) {
@@ -369,7 +419,7 @@
       }
     }
     next.status = status;
-    return writeJsonFile(commandFile, next);
+    await writeJsonFile(commandFile, next);
   }
 
   function normalizeResult(command, requestId, rawResult) {
@@ -1078,18 +1128,24 @@
   }
 
   async function startBridge() {
+    var generation = bridgeGeneration;
+    if (!initialized) { initElements(); }
+    if (startNetworkTransport()) { return; }
     refreshRequiredModules();
     if (!initialized) {
       initElements();
     }
     startHeartbeatTimer();
     await pollOnce();
+    if (generation !== bridgeGeneration) { return; }
     if (!pollTimer) {
       pollTimer = window.setInterval(pollOnce, 1000);
     }
   }
 
   function stopBridge() {
+    bridgeGeneration += 1;
+    if (networkTransport) { networkTransport.stop(); }
     if (pollTimer) {
       window.clearInterval(pollTimer);
       pollTimer = null;
@@ -1107,27 +1163,19 @@
     try {
       if (uxp && uxp.entrypoints && uxp.entrypoints.setup) {
         uxp.entrypoints.setup({
+          plugin: {
+            create: function () { startBridge(); },
+            destroy: function () { stopBridge(); stopHeartbeat(); }
+          },
           panels: {
             mcpBridgePanel: {
               show: function () {
                 startBridge();
               },
               hide: function () {
-                setState({
-                  lastStatus: "hidden",
-                  lastMessage: "Panel hidden; heartbeat remains active.",
-                  lastError: null
-                });
-                startHeartbeatTimer();
-                if (pollTimer) {
-                  window.clearInterval(pollTimer);
-                  pollTimer = null;
-                }
+                startBridge();
               },
-              destroy: function () {
-                stopBridge();
-                stopHeartbeat();
-              }
+              destroy: function () {}
             }
           }
         });

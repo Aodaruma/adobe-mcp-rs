@@ -1,10 +1,10 @@
 // mcp-bridge-startup.jsx
 // Headless After Effects startup bootstrap for adobe-mcp-rs.
 #target aftereffects
-#targetengine "ae_mcp_bridge"
+// Use AE's host-selected shared engine; do not assume a named persistent engine.
 
 (function () {
-    var BOOTSTRAP_VERSION = "1";
+    var BOOTSTRAP_VERSION = "2";
     var runtimeName = "__adobeMcpBridgeRuntime";
     var stateName = "__adobeMcpBridgeBootstrapState";
 
@@ -75,6 +75,13 @@
                 "  \"lifecycleMode\": " + quoteJson(details.lifecycleMode || "") + ",\n" +
                 "  \"runtimeId\": " + quoteJson(details.runtimeId || "") + ",\n" +
                 "  \"instanceId\": " + quoteJson(details.instanceId || "") + ",\n" +
+                "  \"startupEngineName\": " + quoteJson($.engineName || "") + ",\n" +
+                "  \"runtimeEngineName\": " + quoteJson(details.runtimeEngineName || "") + ",\n" +
+                "  \"schedulerMode\": " + quoteJson(details.schedulerMode || "") + ",\n" +
+                "  \"schedulerReady\": " + quoteOptionalBoolean(details.schedulerReady) + ",\n" +
+                "  \"commandTickSequence\": " + (details.commandTickSequence || 0) + ",\n" +
+                "  \"heartbeatTickSequence\": " + (details.heartbeatTickSequence || 0) + ",\n" +
+                "  \"watchdogTickSequence\": " + (details.watchdogTickSequence || 0) + ",\n" +
                 "  \"running\": " + quoteOptionalBoolean(details.running) + "\n" +
                 "}\n");
             diagnosticFile.close();

@@ -25,7 +25,7 @@ After Effects had a localhost TCP request broker, while Premiere Pro, Photoshop,
 | Photoshop | `127.0.0.1:47657` |
 | Illustrator | `127.0.0.1:47658` |
 
-The binary-specific `bridge run-script` and `bridge get-results` commands, plus root-level command/result files, remain as direct file-bridge compatibility and diagnostic paths. MCP stdio execution for Premiere Pro, Photoshop, and Illustrator uses the daemon. Existing After Effects legacy dispatch entries that intentionally queue compatibility files are not the common transport contract and are tracked separately from this ADR.
+2026-10-26更新: After Effectsの旧MCP stdio経路と `bridge run-script` / `bridge get-results` もdaemonへ統一する。直接ファイル書込みによるFIFO・requestId・実行記録の迂回を廃止し、CLIもrequestId入りの結果を返す。結果確認は `bridge get-results --request-id <id>` で行い、daemon不在時は直接書込みに切り替えない。他hostのCLI互換経路はこの変更の対象外。
 
 ## Consequences
 

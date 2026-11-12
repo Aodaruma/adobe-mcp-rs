@@ -278,6 +278,8 @@ Illustrator:
 
 ## 今後の拡張方針
 
+2026-10-13時点の後続作業は、[bridgeを不要にする移行案](docs/native-execution-migration.md)と[公開Toolの整理案](docs/public-tool-surface-plan.md)にまとめています。実機PoCで確認した範囲と未実装の仕様を分けて記載しています。現在はAE接続障害の修正を優先し、必要ならAEのnative対応を先行します。
+
 公開 API は **raw-script-first** とします。LLM が JavaScript / JSX を直接組み立てられる操作は、操作ごとの Tool を増やすより `run-script` / `run-jsx` 系、structured input、recipe、結果回収を優先します。静的な削除検知や確認は事故防止には有用ですが sandbox にはならないため、`safe mode` とは呼ばず risk policy として扱います。host 別の比較、schema 案、guard の限界、Tool 追加基準は [capability matrix](docs/capability-matrix.md) を参照してください。
 
 1. **完了:** host metadata を `HostSpec` に集約する。
